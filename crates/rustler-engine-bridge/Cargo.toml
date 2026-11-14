@@ -1,0 +1,19 @@
+[package]
+name = "rustler-engine-bridge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+rustler-core.workspace = true
+rustler-registry.workspace = true
+rustler-tools.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1,0 +1,12 @@
+[package]
+name = "rustler-captions"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+rustler-core.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
