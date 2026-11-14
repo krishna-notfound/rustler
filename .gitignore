@@ -1,0 +1,7 @@
+target/
+repos/
+**/__pycache__/
+engine/.venv/
+*.mp4
+!tests/fixtures/**/*.mp4
+.claude/settings.local.json
