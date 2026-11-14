@@ -92,3 +92,8 @@
   inspected visually: layout, karaoke captions and labels correct.
 - Fixes from that inspection: hormozi pop scale 115%→108/112% (active word touched neighbour);
   see.tiles auto-fits columns to count.
+- Full workspace test run: **308 passed, 1 failed** ? the failure was an outdated test expecting gui/mcp "not built yet"; replaced with a real `mcp serve` stdio test (26/26 CLI tests pass).
+- Bug found by real use + fixed: `rustler --project <dir> gui` treated the dir as the command.
+- MCP checked over stdio like an agent: 55 tools, 8 prompts, 14 resources; `prompts/get make_viral_clips` renders.
+- YouTube scan-first verified live on a 20-min TED talk: `source info` (10 chapters, 8 heatmap peaks), `fetch-transcript` (3,170 words, no download), `import --sections 2:00-2:40` (40 s downloaded, offset 120 s kept).
+- GUI verified in a real browser on the e2e project: Project page, Renders page plays the NVENC render, QC table (12 pass, -14.3 LUFS), contact sheet; no console errors. Known nit: reloading with a `#view` hash lands on Project.
