@@ -61,6 +61,7 @@ async fn setup_run(ctx: Ctx, opts: SetupOptions) -> rustler_core::Result<SetupOu
     let paths = ToolPaths::from_home(&ctx.home);
     let mut report = setup(&paths, &opts, &ctx.progress).await?;
     let mut out = SetupOutput::default();
+    out.warnings.extend(report.notes.iter().cloned());
 
     if opts.whisper_models.is_empty() {
         out.warnings.push("no whisper models requested; skipping model download".into());

@@ -9,7 +9,7 @@ use crate::see_cmds::find_fonts;
 use crate::{extras, overlay_cmds};
 use rustler_media::RenderReport;
 use chrono::Utc;
-use rustler_captions::write_ass;
+use rustler_captions::write_ass_with;
 use rustler_core::{
     CaptionScript, Clip, ClipId, ErrorCode, ProjectStore, RenderId, RenderQuality, RenderRecord, RustlerError,
     SourceId, TimeMap,
@@ -91,9 +91,13 @@ fn source_media(store: &ProjectStore, clip: &Clip) -> Result<HashMap<SourceId, S
     Ok(map)
 }
 
-/// Copies every font below `<home>/fonts/**` flat into `dest` (libass `fontsdir`).
-fn stage_fonts(paths: &ToolPaths, dest: &Path) -> Result<Vec<PathBuf>> {
-    let fonts = find_fonts(&paths.fonts);
+/// Copies every font below `<home>/fonts/**` and the font assets of the library (global + project)
+/// flat into `dest` (libass `fontsdir`).
+fn stage_fonts(paths: &ToolPaths, store: &ProjectStore, dest: &Path) -> Result<Vec<PathBuf>> {
+    let mut fonts = find_fonts(&paths.fonts);
+    for d in crate::asset_cmds::asset_font_dirs(&paths.home, Some(&store.root)) {
+        fonts.extend(find_fonts(&d));
+    }
     std::fs::create_dir_all(dest).map_err(|e| io_err("create", dest, e))?;
     for f in &fonts {
         if let Some(name) = f.file_name() {
@@ -129,9 +133,10 @@ async fn prepare(
         if words.is_empty() {
             warnings.push("captions are enabled but no transcript words fall inside the clip; rendering without captions".into());
         } else {
-            let fonts = stage_fonts(paths, &fonts_dir)?;
+            let fonts = stage_fonts(paths, store, &fonts_dir)?;
             let family = caption_font_family(clip.captions.script, &fonts);
-            let text = write_ass(&words, &clip.captions, &clip.canvas, family)?;
+            let custom = crate::asset_cmds::custom_presets(&paths.home, Some(&store.root));
+            let text = write_ass_with(&words, &clip.captions, &clip.canvas, family, &custom)?;
             let p = workdir.join("captions.ass");
             std::fs::write(&p, text).map_err(|e| io_err("write", &p, e))?;
             ass = Some(p);
@@ -147,7 +152,7 @@ async fn prepare(
     cx.two_pass_loudness = two_pass_loudness;
     if !cx.overlays.is_empty() && ass.is_none() {
         // Overlays need the fonts even when there are no captions.
-        stage_fonts(paths, &fonts_dir)?;
+        stage_fonts(paths, store, &fonts_dir)?;
     }
     if let Some(m) = &cx.music {
         if !m.path.is_file() {

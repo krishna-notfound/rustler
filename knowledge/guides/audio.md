@@ -62,6 +62,24 @@ Rules:
 - Source clips with loud copyrighted music in the background (stream music, a song in a vlog) are
   risky: prefer other moments; if unavoidable, flag it in the report.
 
+### Asset library: SFX and music with licenses
+
+`rustler asset list --kind sfx`, `rustler asset search whoosh --kind sfx` and `rustler asset show <id>`
+(duration, codec) browse the library; every entry shows its `license`, `source_url` and `attribution`.
+`rustler setup` fills it with a curated subset of Kenney's CC0 sound packs (clicks, pops, swipes/whooshes,
+impacts, about 26 files). **No music is bundled**: there is no verifiably CC0, login-free music source,
+so add your own with a license:
+
+```text
+rustler asset add bed.mp3 --kind music --license "CC-BY-4.0" --attribution "Artist - Track" --source-url https://...
+rustler audio add-music <clip_id> asset:music-bed        # `asset:<id>` can replace the file path
+```
+
+`asset add` **refuses** a missing or placeholder license (`unknown`, `n/a`...) and never fetches anything.
+If the license requires attribution, put the credit line in the clip's caption/description.
+`--scope project` (default inside a project) keeps the file with the project; `--scope global` is shared
+by all projects (`~/.rustler/assets`).
+
 ## 4. Silence and pauses
 
 `analyze audio` gives `silences` (below −35 dB for ≥ 0.6 s) in the source. QC flags `long_silence`

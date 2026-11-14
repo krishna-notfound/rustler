@@ -1,6 +1,7 @@
 //! All Rustler commands. `register_all` is the single entry point front-ends use.
 
 pub mod analyze_cmds;
+pub mod asset_cmds;
 pub mod brief_cmds;
 pub mod clip_cmds;
 pub mod cut_cmds;
@@ -44,4 +45,5 @@ pub fn register_all(reg: &mut Registry) {
     highlights_cmds::register(reg);
     brief_cmds::register(reg);
     variant_cmds::register(reg);
+    asset_cmds::register(reg);
 }

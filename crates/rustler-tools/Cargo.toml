@@ -16,6 +16,7 @@ flate2.workspace = true
 futures-util.workspace = true
 include_dir.workspace = true
 reqwest.workspace = true
+rustler-captions.workspace = true
 rustler-core.workspace = true
 rustler-registry.workspace = true
 schemars.workspace = true

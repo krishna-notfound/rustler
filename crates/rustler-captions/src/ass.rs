@@ -1,7 +1,8 @@
 //! ASS (Advanced SubStation Alpha) writer and SRT export. (Task 7)
 
 use crate::chunk::{CaptionWord, chunk_words};
-use crate::presets::{ActiveStyle, PRESETS, Preset, find_preset};
+use crate::custom::find_preset_in;
+use crate::presets::{ActiveStyle, PRESETS, Preset};
 use rustler_core::{Canvas, CaptionTrack, ErrorCode, RustlerError};
 
 /// Gap (seconds) between words that always starts a new chunk.
@@ -61,13 +62,27 @@ pub fn write_ass(
     canvas: &Canvas,
     font_family: &str,
 ) -> rustler_core::Result<String> {
-    let p = find_preset(&track.preset).ok_or_else(|| {
+    write_ass_with(words, track, canvas, font_family, &[])
+}
+
+/// [`write_ass`] that also resolves `track.preset` against `custom` presets (see
+/// [`crate::load_custom_presets`]) when it is not a built-in name.
+pub fn write_ass_with(
+    words: &[CaptionWord],
+    track: &CaptionTrack,
+    canvas: &Canvas,
+    font_family: &str,
+    custom: &[Preset],
+) -> rustler_core::Result<String> {
+    let p = find_preset_in(&track.preset, custom).ok_or_else(|| {
+        let mut names: Vec<&str> = PRESETS.to_vec();
+        names.extend(custom.iter().map(|c| c.name));
         RustlerError::new(
             ErrorCode::Validation,
             "captions",
             format!("unknown caption preset '{}'", track.preset),
         )
-        .hint(format!("available presets: {}", PRESETS.join(", ")))
+        .hint(format!("available presets: {}", names.join(", ")))
     })?;
     let font = if font_family.trim().is_empty() { p.font_family } else { font_family.trim() };
     let size = (f64::from(canvas.width) * p.size_factor).round() as u32;
