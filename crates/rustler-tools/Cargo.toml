@@ -5,6 +5,11 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+default = ["embed-engine"]
+# Embed the Python engine (`engine/`) in the binary; `setup` extracts it to `home/engine`.
+embed-engine = []
+
 [dependencies]
 chrono.workspace = true
 flate2.workspace = true

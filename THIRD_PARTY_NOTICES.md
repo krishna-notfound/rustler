@@ -17,3 +17,17 @@ family's `OFL.txt` (not bundled in this repository):
 - Anton (google/fonts `ofl/anton`)
 - Montserrat (google/fonts `ofl/montserrat`)
 - Noto Sans Devanagari (google/fonts `ofl/notosansdevanagari`)
+
+## Adapted code (MIT)
+- Render filtergraph approach (frame-grid allocation, audio sync, blur-fit backdrop) — adapted from
+  BridgeClip (MIT, (c) BridgeMind LLC): https://github.com/bridge-mind/bridgeclip
+- Music ducking filter chain — adapted from opensource-clipping (MIT, (c) NaufalRizqullah):
+  https://github.com/NaufalRizqullah/opensource-clipping
+- Crop-path emission via `sendcmd` — idea from OpenShorts (MIT, (c) mutonby): https://github.com/mutonby/openshorts
+- Face-path smoothing (One-Euro, dead zone, velocity clamp) — ported from autoclip (MIT, (c) artbyjazi):
+  https://github.com/artbyjazi/autoclip
+- Face detector model YuNet `face_detection_yunet_2023mar.onnx` — MIT, (c) 2020 Shiqi Yu, fetched at runtime
+  from opencv_zoo.
+
+## Fonts (SIL Open Font License 1.1, fetched from google/fonts at setup with OFL.txt)
+Anton, Poppins (ExtraBold, Bold), Noto Sans Devanagari.

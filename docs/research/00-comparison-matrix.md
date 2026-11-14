@@ -1,6 +1,6 @@
 # Comparison matrix: cross-repo synthesis
 
-Inputs: `docs/00-vision-and-requirements.md` (wins on conflict), `docs/research-methodology.md`, `findings/00-license-and-dependency-inventory.md`, and the 7 per-repo findings. The repo source was not re-read; all facts come from the findings files. Their citations use paths relative to `repos/<repo>/`. Anything a report marked UNVERIFIED stays UNVERIFIED here.
+Inputs: `docs/00-vision-and-requirements.md` (wins on conflict), `docs/research-methodology.md`, `docs/research/00-license-and-dependency-inventory.md`, and the 7 per-repo findings. The repo source was not re-read; all facts come from the findings files. Their citations use paths relative to `repos/<repo>/`. Anything a report marked UNVERIFIED stays UNVERIFIED here.
 
 **Repo key / license / reuse mode.**
 
