@@ -26,8 +26,8 @@ rustler clip set-layout clp_X --segment-id seg_Y --preset split-vertical \
     --params '{"top":{"x":0.753,"y":0.656,"w":0.241,"h":0.333},"bottom":{"x":0.22,"y":0,"w":0.56,"h":1},"split":0.44}'
 ```
 
-Without `--segment-id`, `clip set-layout` applies to every segment. Later presets such as
-`split-2speaker`, `screencast+inset` and `pip` may exist: check `rustler commands describe clip.set_layout`.
+Without `--segment-id`, `clip set-layout` applies to every segment. Anything beyond the three presets (picture-in-picture, two panes of any shape) is built from regions: see
+"Adjusting regions" below. `rustler layout presets` lists built-in and saved presets.
 
 ## 2. Choosing a layout (decision rules)
 
@@ -66,7 +66,28 @@ dominant one; if it swings between people, go back to a fixed `focus_x` or `blur
 
 ## 4. split-vertical for streamers (webcam top / gameplay bottom)
 
-### Step 1: find the webcam rectangle
+### Step 0 (fastest): let Rustler find the webcam
+
+```
+rustler layout detect-webcam src_A --clip-id clp_X
+```
+
+Samples 6 frames (`--samples N`, or exact times `--at '[120,480,900]'`), runs face detection and looks for
+a **small face (< 15 % of the frame) at the same spot in at least half the samples**. It returns the webcam
+rect (face box expanded 2.6x wide / 2.2x tall, clamped to the frame, snapped flush to a nearby edge), a
+gameplay rect that avoids the webcam, a `split`, and a ready-to-run line:
+
+```
+rustler clip set-layout clp_X --preset split-vertical --params '{"top":{...webcam...},"bottom":{...gameplay...},"split":0.5}'
+```
+
+`set_layout_input` / `from_frame_boxes_input` in the result are the same thing as JSON. If it fails with
+"no small, consistent face" (full-frame face cam, no webcam, face not visible) pick the rect by hand with
+Steps 1-3 below. **Always check the result** with `rustler render preview-frame clp_X --out-t 1.0`: the
+suggestion is a good starting point, not a measurement (it can include a few percent of overlay border;
+nudge it, see "Adjusting regions").
+
+### Step 1: find the webcam rectangle (by hand)
 
 ```
 rustler see frame src_A --t 120 --width 640
@@ -109,6 +130,38 @@ chin or forehead, no overlay border, gameplay readable, no duplicate webcam.
 
 Variations: webcam on the left → same steps; full-screen face-cam moments (streamer stands up) →
 change that segment to `center-crop`; "just chatting" with no gameplay → `center-crop`.
+
+### Adjusting regions (webcam top / gameplay bottom, picture-in-picture, custom layouts)
+
+A layout is a list of **regions**: a source rect (`src`, on the source frame) drawn into a destination rect
+(`dst`, on the 1080x1920 canvas) with a `fit` (`cover` fills and crops, `contain` fits whole) and a `z`
+(higher = in front). All rects are normalized 0-1; `layout show` also prints pixel rects.
+
+```
+rustler layout show clp_X                                   # regions with src_px (source pixels) and dst_px (canvas pixels), warnings
+rustler layout from-frame-boxes clp_X --boxes '[{"role":"top","rect":{"x":0.71,"y":0,"w":0.29,"h":0.53}},{"role":"bottom","rect":{"x":0.08,"y":0,"w":0.63,"h":1}}]'
+rustler layout from-frame-boxes clp_X --split 0.4 --boxes '[...]'        # force the top pane height
+rustler layout edit-region clp_X top --nudge '{"dx":-0.02,"dy":0.01}'    # move the selection inside the source frame
+rustler layout edit-region clp_X top --nudge '{"dw":-0.02,"dh":-0.02}'   # shrink it (drop the overlay border)
+rustler layout edit-region clp_X bottom --src '{"x":0.1,"y":0,"w":0.6,"h":1}'   # replace a rect
+rustler layout edit-region clp_X bottom --dst '{"x":0,"y":0.44,"w":1,"h":0.56}' --fit contain --z 0
+rustler layout add-region clp_X --src '{"x":0.75,"y":0.02,"w":0.23,"h":0.3}' --dst '{"x":0.6,"y":0.04,"w":0.36,"h":0.14}'   # picture-in-picture, in front by default
+rustler layout reorder clp_X --region-ids '["bottom","top","r1"]'        # back to front
+rustler layout remove-region clp_X r1
+```
+
+- `--segment-id seg_Y` limits any of these to one segment; omitted = every segment (regions are matched by id).
+- Roles for `from-frame-boxes`: `top` + `bottom` (vertical split, optional `inset`), or `main` (full canvas,
+  `--main-fit contain` gives a blur-fit look) plus an optional `inset`; `{"role":"inset","rect":...,"dst":...}`.
+- Rects must lie inside 0-1 and be larger than 0.02 in w and h; otherwise the command fails and nothing is saved.
+- Heed the warnings: **"will crop heavily"** (source and destination aspect differ by more than 25 % with
+  `cover`: pick a rect with the destination's aspect or change the split) and **"will look soft"** (a small
+  source rect upscaled more than 2.6x).
+- Hand-edited layouts show `preset: null`; `crop track-face` needs the `center-crop` preset.
+- Save and reuse a layout (per project, in `layouts/<name>.json`):
+  `rustler layout save-preset streamer-split clp_X --description "webcam top, game bottom"`,
+  `rustler layout apply-preset clp_Y streamer-split`, `rustler layout presets`, `rustler layout delete-preset streamer-split`.
+  `apply-preset` also takes the built-ins (`rustler layout apply-preset clp_X split-vertical --params '{...}'`).
 
 ## 5. When NOT to crop
 
