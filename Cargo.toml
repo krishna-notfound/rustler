@@ -1,0 +1,46 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+# Versions resolved by `cargo add` on 2026-11-15 (see Task 0); members use `dep.workspace = true`.
+[workspace.dependencies]
+rustler-core = { path = "crates/rustler-core" }
+rustler-registry = { path = "crates/rustler-registry" }
+rustler-tools = { path = "crates/rustler-tools" }
+rustler-engine-bridge = { path = "crates/rustler-engine-bridge" }
+rustler-media = { path = "crates/rustler-media" }
+rustler-captions = { path = "crates/rustler-captions" }
+rustler-commands = { path = "crates/rustler-commands" }
+
+ab_glyph = "0.2.32"
+anyhow = "1.0.104"
+assert_cmd = "2.2.2"
+async-trait = "0.1.92"
+chrono = { version = "0.4.45", features = ["serde"] }
+clap = { version = "4.6.7", features = ["derive"] }
+flate2 = "1.1.11"
+futures-util = "0.3.34"
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
+imageproc = "0.27.0"
+include_dir = "0.7.4"
+reqwest = { version = "0.13.5", features = ["json", "stream"] }
+schemars = { version = "1.2.3", features = ["chrono04"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha2 = "0.11.1"
+strsim = "0.11.1"
+tar = "0.4.46"
+tempfile = "3.27.0"
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = ["full"] }
+tokio-util = "0.7.20"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+ulid = "3.0.0"
+xz2 = "0.1.7"
+zip = { version = "9.5.1", default-features = false, features = ["deflate"] }
