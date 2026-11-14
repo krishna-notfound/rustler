@@ -7,3 +7,4 @@ engine/.venv/
 .claude/settings.local.json
 !**/tests/fixtures/**/*.mp4
 .venv/
+.claude/worktrees/

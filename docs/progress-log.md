@@ -51,3 +51,10 @@
   priority CLI pipeline → MCP → edit ops → face reframe → caption styles → music → simple web GUI.
 - Private GitHub repo created: github.com/krishna-notfound/rustler (remote `origin`, branch master).
   `repos/` (third-party clones) is gitignored and never pushed.
+- Wave 0 done (commits 246c040, 9a0a224, 086bc63): workspace + frozen contracts, 13 tests green.
+  Notes: real MSRV is ≥1.89 (deps); `tiles` label fn needs `+ Send + Sync`; rustler-tools cannot call
+  the engine (bridge depends on tools) → engine calls for setup/doctor live in rustler-commands.
+- Tools pre-installed at ~/.rustler/bin (ffmpeg BtbN GPL w/ libass, ffprobe, yt-dlp, uv); NVENC OK.
+- Wave 1 launched in worktrees: T3 core impl, T4 setup/doctor, T6 media basics, T7 captions (4 presets +
+  SRT), T8 CLI, T9 render compiler (+music bed, crop sendcmd), MCP server crate, simple web GUI crate.
+  Python engine agent still running in main tree.
