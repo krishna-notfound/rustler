@@ -24,25 +24,45 @@ pub struct TimeMap {
 
 impl TimeMap {
     pub fn from_segments(segs: &[Segment]) -> Self {
-        let _ = segs;
-        todo!("Task 3: TimeMap::from_segments")
+        let mut out = 0.0;
+        let segments = segs
+            .iter()
+            .map(|s| {
+                let len = (s.end - s.start).max(0.0);
+                let m = MappedSegment {
+                    segment_id: s.id.clone(),
+                    source_id: s.source_id.clone(),
+                    src_start: s.start,
+                    src_end: s.end,
+                    out_start: out,
+                    out_end: out + len,
+                };
+                out += len;
+                m
+            })
+            .collect();
+        Self { segments }
     }
 
     /// Total output duration in seconds.
     pub fn duration(&self) -> f64 {
-        todo!("Task 3: TimeMap::duration")
+        self.segments.last().map_or(0.0, |s| s.out_end)
     }
 
     /// Output time for source time `t` of `source_id` (first segment containing it, `[start, end)`).
     pub fn to_output(&self, source_id: &SourceId, t: f64) -> Option<f64> {
-        let _ = (source_id, t);
-        todo!("Task 3: TimeMap::to_output")
+        self.segments
+            .iter()
+            .find(|s| &s.source_id == source_id && t >= s.src_start && t < s.src_end)
+            .map(|s| s.out_start + (t - s.src_start))
     }
 
-    /// Source id and source time for output time `out_t`.
+    /// Source id and source time for output time `out_t` (`[out_start, out_end)` per segment).
     pub fn to_source(&self, out_t: f64) -> Option<(SourceId, f64)> {
-        let _ = out_t;
-        todo!("Task 3: TimeMap::to_source")
+        self.segments
+            .iter()
+            .find(|s| out_t >= s.out_start && out_t < s.out_end)
+            .map(|s| (s.source_id.clone(), s.src_start + (out_t - s.out_start)))
     }
 
     /// Segments in output order with their output placement.
