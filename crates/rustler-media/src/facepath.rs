@@ -37,13 +37,8 @@ pub struct FaceSample {
     pub faces: Vec<FaceBox>,
 }
 
-/// One horizontal crop keyframe: at `t` (seconds, relative to the first sample) the crop's
-/// left edge is at `x` (normalized 0..1 of the frame width). Piecewise-constant.
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
-pub struct CropKey {
-    pub t: f64,
-    pub x: f64,
-}
+/// Crop keyframes are the render compiler's type, so face paths feed `compile_with` directly.
+pub use crate::compile::CropKey;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct SmoothParams {
