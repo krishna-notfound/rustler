@@ -10,13 +10,14 @@
 <body>
 <div id="app">
   <nav id="nav">
-    <div class="brand">Rustler</div>
+    <div class="brand"><span class="logo">R</span><span class="bname">Rustler</span></div>
     <div id="navlinks"></div>
     <div class="navfoot" id="navfoot">same commands as the CLI</div>
   </nav>
-  <main>
+  <main id="main">
     <header id="topbar">
       <div id="projchip" class="chip">no project</div>
+      <div id="jobchip" class="chip jobs" hidden></div>
       <div id="busy" class="busy" hidden>working...</div>
     </header>
     <section id="view"></section>
@@ -24,6 +25,5 @@
   <div id="toasts"></div>
 </div>
 <noscript>This page needs JavaScript.</noscript>
-<script src="/app.js?t=__TOKEN__"></script>
-</body>
+__SCRIPTS__</body>
 </html>
