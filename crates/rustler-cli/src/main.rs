@@ -56,6 +56,10 @@ fn main() {
 
 /// `rustler mcp serve` and `rustler gui` are long-running servers over the same registry.
 fn is_server_builtin(args: &[String]) -> bool {
+    // `--help`/`--version` always answer immediately instead of starting a server.
+    if args.iter().any(|a| matches!(a.as_str(), "--help" | "-h" | "--version" | "-V")) {
+        return false;
+    }
     let words = positional_words(args);
     (words.first() == Some(&"mcp") && words.get(1) == Some(&"serve")) || words.first() == Some(&"gui")
 }

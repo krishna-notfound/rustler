@@ -643,23 +643,29 @@ async fn execute(g: &Globals, rest: Vec<String>, reg: &Registry, opts: &CliOptio
     // ---- reserved built-ins -------------------------------------------------------------
     match group.as_str() {
         "help" => return Reply::Env(help_envelope(&specs)),
-        "mcp" => {
-            // The orchestrator wires `rustler_mcp::serve_stdio` here.
-            let msg = match action.as_deref() {
-                Some("serve") | None => "`mcp serve` is not built yet".to_string(),
-                Some(a) => format!("unknown command `mcp {a}`; only `mcp serve` is reserved (not built yet)"),
+        // `mcp serve` and `gui` run as servers from the binary (main.rs); here we only answer
+        // `--help` (or a mistyped action) for them.
+        "mcp" | "gui" => {
+            let info = if group == "mcp" {
+                json!({
+                    "command": "rustler mcp serve",
+                    "summary": "Run the MCP server on stdio: every registry command as a tool, knowledge guides as resources, workflows as prompts.",
+                    "flags": {"--project <dir>": "default project for tool calls (tools also accept a `project` argument)"},
+                    "example_config": {"command": "rustler", "args": ["mcp", "serve"]}
+                })
+            } else {
+                json!({
+                    "command": "rustler gui",
+                    "summary": "Start the local web GUI (127.0.0.1, token in the URL) over the same commands as the CLI.",
+                    "flags": {"--project <dir>": "project to open", "--port <n>": "fixed port (default random)", "--no-open": "don't open a browser"}
+                })
             };
-            return Reply::Env(Envelope::err(
-                RustlerError::new(ErrorCode::NotFound, "cli", msg)
-                    .hint("use the CLI commands for now: `rustler commands list`"),
-            ));
-        }
-        "gui" => {
-            // The orchestrator wires `rustler_gui::serve` here.
-            return Reply::Env(Envelope::err(
-                RustlerError::new(ErrorCode::NotFound, "cli", "`gui` is not built yet")
-                    .hint("use the CLI commands for now: `rustler commands list`"),
-            ));
+            if group == "mcp" && action.as_deref().is_some_and(|a| a != "serve") {
+                return Reply::Env(Envelope::err(
+                    usage(format!("unknown command `mcp {}`", action.unwrap_or_default())).hint("did you mean `rustler mcp serve`?"),
+                ));
+            }
+            return Reply::Env(Envelope::ok(&format!("{group}.help"), info));
         }
         "commands" => {
             return Reply::Env(commands_builtin(&specs, action.as_deref(), &rest, g));

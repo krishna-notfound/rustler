@@ -437,10 +437,14 @@ async fn cancellation_of_a_command_that_ignores_the_token_still_exits_8() {
 }
 
 #[tokio::test]
-async fn reserved_mcp_and_gui() {
+async fn mcp_and_gui_help_in_process() {
+    // The servers themselves start from the binary (main.rs); in-process the library answers help.
     let (v, code, _) = run(&["mcp", "serve"]).await;
-    assert_eq!(code, 3);
-    assert!(v["error"]["message"].as_str().unwrap().contains("not built yet"));
-    let (_, code, _) = run(&["gui"]).await;
-    assert_eq!(code, 3);
+    assert_eq!(code, 0);
+    assert_eq!(v["data"]["command"], "rustler mcp serve");
+    let (v, code, _) = run(&["gui"]).await;
+    assert_eq!(code, 0);
+    assert_eq!(v["data"]["command"], "rustler gui");
+    let (_, code, _) = run(&["mcp", "nope"]).await;
+    assert_eq!(code, 2);
 }

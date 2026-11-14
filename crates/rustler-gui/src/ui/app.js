@@ -631,6 +631,8 @@
 
   // ------------------------------------------------------------ boot
   function boot() {
+    // Read the requested view before anything rewrites the hash (refreshProject may re-render).
+    var initialView = (location.hash || '').replace('#', '');
     window.addEventListener('error', function (e) { toast('UI error: ' + e.message, 'bad'); });
     window.addEventListener('unhandledrejection', function (e) { toast('UI error: ' + e.reason, 'bad'); });
     var saved = store('rustler.project');
@@ -641,9 +643,8 @@
       return refreshProject(true);
     }).then(function (d) {
       if (!d && S.project) { /* saved path may be stale; leave it, the user can re-open */ }
-      var hash = (location.hash || '').replace('#', '');
-      var ok = VIEWS.some(function (x) { return x[0] === hash; });
-      go(ok ? hash : 'project');
+      var ok = VIEWS.some(function (x) { return x[0] === initialView; });
+      go(ok ? initialView : 'project');
     });
   }
   boot();
