@@ -1,6 +1,7 @@
 //! External tools: install (`setup`), health check (`doctor`), tool paths and the
 //! subprocess helper. Task 4 implements the bodies.
 
+pub(crate) mod archive;
 pub mod doctor;
 pub mod download;
 pub mod engine_install;
