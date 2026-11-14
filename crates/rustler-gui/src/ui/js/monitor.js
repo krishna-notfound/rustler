@@ -59,6 +59,7 @@
     // the <video> itself is shown by the Source panel (regions.js)
     video.addEventListener('seeked', draw);
     video.addEventListener('loadeddata', draw);
+    video.addEventListener('canplay', function () { if (!E || !E.playing) requestAnimationFrame(draw); });
     video.addEventListener('ended', function () { M.pause(); });
     E.on('load', function (reason) {
       var m = E.segAt(E.t);

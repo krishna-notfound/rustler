@@ -7,6 +7,7 @@
   --r: 8px;
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
   font: 13px/1.45 "Segoe UI", system-ui, -apple-system, Roboto, sans-serif; }
 #app { display: flex; min-height: 100%; }
@@ -160,10 +161,11 @@ details.raw { background: transparent; border-color: var(--line); margin-top: 8p
 .renderview video { max-height: 70vh; max-width: 46%; }
 
 /* ---------- editor */
-.editor { display: grid; grid-template-rows: auto minmax(0, 1fr) minmax(220px, 34vh); height: 100%; min-height: 0; }
+.editor { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; grid-template-columns: minmax(0, 1fr); height: 100%; min-height: 0; overflow: hidden; }
+.ed-toolbar { min-width: 0; overflow: hidden; }
 .ed-toolbar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--line); background: var(--panel); }
 .ed-name { font-weight: 650; font-size: 14px; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ed-main { display: grid; grid-template-columns: minmax(300px, 1.35fr) minmax(220px, .8fr) minmax(330px, 380px); min-height: 0; }
+.ed-main { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, .8fr) minmax(320px, 370px); min-height: 0; min-width: 0; }
 .ed-panel { display: flex; flex-direction: column; min-height: 0; min-width: 0; border-right: 1px solid var(--line); background: var(--bg); }
 .ed-inspector { border-right: 0; background: var(--panel); overflow: auto; padding: 8px 12px 20px; }
 .phead { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--line); background: var(--bg2); min-height: 34px; }
@@ -207,7 +209,10 @@ details.raw { background: transparent; border-color: var(--line); margin-top: 8p
 .insp .tab { padding: 5px 7px; font-size: 12px; }
 .isec { margin-top: 12px; }
 .ititle { display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .7px; font-weight: 650; border-bottom: 1px solid var(--line); padding-bottom: 4px; margin-bottom: 6px; }
-.kv { display: grid; grid-template-columns: 90px 1fr; gap: 3px 10px; font-size: 12px; }
+.kv { display: grid; grid-template-columns: 80px minmax(0, 1fr); gap: 3px 10px; font-size: 12px; }
+.kv b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ed-inspector { overflow-x: hidden; }
+.ed-inspector .tbl td { white-space: nowrap; }
 .kv span { color: var(--muted); }
 .region-row { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 6px; cursor: pointer; }
 .region-row:hover { background: var(--panel2); }
@@ -245,7 +250,7 @@ button.pill { padding: 2px 9px; }
 .tl-bar { display: flex; align-items: center; gap: 8px; padding: 5px 10px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
 .tl-bar strong { font-size: 12px; text-transform: uppercase; letter-spacing: .7px; color: var(--muted); }
 .tl-bar input[type=range] { width: 130px; }
-.tl-body { flex: 1; min-height: 0; display: flex; }
+.tl-body { flex: 1; min-height: 182px; display: flex; }
 .tl-heads { width: 52px; flex: none; border-right: 1px solid var(--line); padding-top: 24px; background: var(--bg2); }
 .thead { height: 46px; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; color: var(--muted); border-bottom: 1px solid var(--line); }
 .thead.th-cap, .thead.th-txt { height: 30px; } .thead.th-a { height: 38px; }
@@ -281,7 +286,7 @@ button.pill { padding: 2px 9px; }
 .tl-tip { position: absolute; top: 26px; transform: translateX(-50%); background: #000; color: #fff; font-size: 11px; padding: 2px 6px; border-radius: 4px; z-index: 30; pointer-events: none; white-space: nowrap; font-family: var(--mono); }
 
 @media (max-width: 1450px) {
-  .ed-main { grid-template-columns: minmax(280px, 1.2fr) minmax(200px, .75fr) minmax(310px, 340px); }
+  .ed-main { grid-template-columns: minmax(0, 1.2fr) minmax(0, .75fr) minmax(300px, 330px); }
 }
 @media (max-width: 800px) {
   #app { flex-direction: column; }

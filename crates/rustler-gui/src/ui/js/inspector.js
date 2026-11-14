@@ -89,8 +89,11 @@
     }, { small: true, primary: true });
     box.appendChild(h('div', { class: 'row' }, status, h('span', { class: 'grow' }), apply));
     box.appendChild(list);
-    var cache = E.units[sid];
-    var p = cache ? Promise.resolve(cache) : R.run('transcript.get', { source_id: sid }, true).then(function (d) { var u = d ? R.extractUnits(d) : []; E.units[sid] = u; return u; });
+    // units around the segment (2 minutes either side), full objects
+    var key = sid + '@' + Math.floor(seg.start / 60);
+    var cache = E.units[key];
+    var p = cache ? Promise.resolve(cache) : R.run('transcript.get', { source_id: sid, format: 'json', start: Math.max(0, seg.start - 120), end: seg.end + 120, limit: 400 }, true)
+      .then(function (d) { var u = d ? R.extractUnits(d) : []; E.units[key] = u; return u; });
     p.then(function (units) {
       R.clear(list);
       if (!units.length) { list.appendChild(h('span', { class: 'muted small' }, 'no transcript units')); return; }

@@ -135,7 +135,7 @@
       unitsBox.appendChild(box);
     }
     function load() {
-      return R.run('transcript.get', { source_id: id }, true).then(function (d) {
+      return R.run('transcript.get', { source_id: id, format: 'json', limit: 3000 }, true).then(function (d) {
         if (!d) { unitsBox.appendChild(h('p', { class: 'muted' }, 'No transcript yet. Run "Analyze quick".')); return; }
         allUnits = R.extractUnits(d);
         if (!allUnits.length && Array.isArray(d.lines)) R.clear(unitsBox).appendChild(h('pre', null, d.lines.join('\n')));
