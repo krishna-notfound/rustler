@@ -127,7 +127,7 @@
         var built = (d.built_in || []), custom = (d.custom || []);
         var opts = built.filter(function (p) { return !(p.required_params || []).length; }).map(function (p) { return ['b:' + p.name, p.name]; })
           .concat(custom.map(function (p) { return ['c:' + p.name, p.name + ' (custom)']; }));
-        var sel = R.select(opts, '');
+        var sel = R.select(opts, lay.preset ? (custom.some(function (p) { return p.name === lay.preset; }) ? 'c:' : 'b:') + lay.preset : '');
         var desc = h('div', { class: 'muted small' });
         var setDesc = function () { var v = sel.value.slice(2); var p = built.concat(custom).filter(function (x) { return x.name === v; })[0]; desc.textContent = p ? (p.description || '') : ''; };
         sel.addEventListener('change', setDesc); setDesc();
@@ -191,7 +191,7 @@
     function grp(which, rect) {
       var row = h('div', { class: 'rgrid' }, h('span', { class: 'muted small' }, which === 'src' ? 'source %' : 'canvas %'));
       ['x', 'y', 'w', 'h'].forEach(function (k) {
-        var inp = h('input', { type: 'number', step: '0.1', min: 0, max: 100, value: R.round(rect[k] * 100, 2), title: which + '.' + k });
+        var inp = h('input', { type: 'number', step: '0.1', min: 0, max: 100, value: R.round(rect[k] * 100, 1), title: which + '.' + k + ' (% of the ' + (which === 'src' ? 'source frame' : 'canvas') + ')' });
         ins[which + k] = inp;
         row.appendChild(h('label', { class: 'mini' }, h('span', null, k), inp));
       });

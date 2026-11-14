@@ -226,10 +226,11 @@ details.raw { background: transparent; border-color: var(--line); margin-top: 8p
 .region-row.sel { background: var(--accent3); }
 .swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
 .region-ed { background: var(--bg2); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; margin: 2px 0 8px; }
-.rgrid { display: grid; grid-template-columns: 62px repeat(4, 1fr); gap: 4px; align-items: center; margin: 3px 0; }
-.mini { display: flex; align-items: center; gap: 3px; }
-.mini span { color: var(--dim); font-size: 11px; width: 8px; }
-.mini input { width: 100%; padding: 3px 4px; font-size: 12px; font-family: var(--mono); }
+.rgrid { display: grid; grid-template-columns: 50px repeat(4, minmax(0, 1fr)); gap: 3px; align-items: center; margin: 3px 0; }
+.mini { display: flex; align-items: center; gap: 2px; min-width: 0; }
+.mini span { color: var(--dim); font-size: 10px; width: 7px; flex: none; }
+.mini input { width: 100%; min-width: 0; padding: 3px 2px; font-size: 11px; font-family: var(--mono); }
+.mini input::-webkit-inner-spin-button { display: none; }
 .pill { display: inline-flex; align-items: center; gap: 4px; background: var(--panel2); border: 1px solid var(--line); border-radius: 99px; padding: 1px 4px 1px 9px; font-size: 12px; }
 .pill .x { background: transparent; border: 0; padding: 0 4px; color: var(--muted); }
 button.pill { padding: 2px 9px; }
