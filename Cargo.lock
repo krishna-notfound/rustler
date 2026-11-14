@@ -2361,6 +2361,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustler-mcp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "image",
+ "rustler-core",
+ "rustler-registry",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "rustler-media"
 version = "0.1.0"
 dependencies = [
