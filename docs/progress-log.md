@@ -77,3 +77,4 @@
 - **Docs consolidated into `docs/`**: `findings/`→`docs/research/`, `features/`→`docs/features/`,
   `context/`→`docs/context/`; all path references updated; `docs/README.md` rewritten as the index.
 - Merged face tracking: engine faces.track (YuNet, MIT model, auto-download) + Rust facepath::crop_keys (median+One-Euro+dead zone+speed cap, ported from autoclip MIT). 85 py + 13 rust tests. TODO: unify CropKey with render compiler's type; crop.track_face command still to wire.
+- Merged face tracking: engine faces.track (YuNet, MIT model, auto-download) + Rust facepath::crop_keys (median+One-Euro+dead zone+speed cap, ported from autoclip MIT). 85 py + 13 rust tests. TODO: unify CropKey with render compiler type; wire crop.track_face command.
