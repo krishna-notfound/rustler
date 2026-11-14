@@ -314,7 +314,10 @@ async fn see_tiles(ctx: Ctx, i: TilesIn) -> Result<TilesOut> {
 
     let paths = ToolPaths::from_home(&ctx.home);
     let font = label_font(&paths)?;
-    let spec = TileSpec { start, end, count: i.count.unwrap_or(12), cols: i.cols.unwrap_or(4), ..Default::default() };
+    let count = i.count.unwrap_or(12);
+    // Default columns fit the count (6 → 3×2, 12 → 4×3) so the grid has no empty cells.
+    let auto_cols = match count { 0..=3 => count.max(1), 4 => 2, 5..=6 => 3, 7..=9 => 3, _ => 4 };
+    let spec = TileSpec { start, end, count, cols: i.cols.unwrap_or(auto_cols), ..Default::default() };
     let out = analysis_see_dir(&store, &source.id)?
         .join(format!("tiles_{}_{}_{}.jpg", (start * 1000.0).round() as u64, (end * 1000.0).round() as u64, spec.count));
     let labels = move |t: f64| words_around(&words, t, 8);

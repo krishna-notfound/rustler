@@ -9,7 +9,7 @@ const MAX_GAP: f64 = 0.6;
 /// How long the last word of a chunk lingers after it ends.
 const TAIL: f64 = 0.15;
 /// Pop animation: grow in 80 ms, settle in another 80 ms (relative to event start).
-const POP: &str = r"\t(0,80,\fscx115\fscy115)\t(80,160,\fscx100\fscy100)";
+const POP: &str = r"\t(0,80,\fscx108\fscy112)\t(80,160,\fscx100\fscy100)";
 const HIDE: &str = r"\alpha&HFF&";
 const SHOW: &str = r"\alpha&H00&";
 
