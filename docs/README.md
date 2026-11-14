@@ -10,6 +10,7 @@ Read this file first when resuming work, then `progress-log.md`.
 | `superpowers/specs/2026-11-15-rustler-design.md` | **System design** (architecture, contracts, feature slices) — approved |
 | `superpowers/plans/2026-11-15-slice1-first-real-clip.md` | **Implementation plan** (Slice 1 + 5-hour scope) |
 | `agent-brief.md` | Rules every implementation agent reads first (toolchain, ownership, commits) |
+| `agent-integration.md` | How to give an agent Rustler: CLI on PATH, MCP config per agent, Claude Code skill, sample session |
 | `features/README.md` | Feature index f01–f29 with slices, dependencies, status |
 | `research/00-comparison-matrix.md` | Research synthesis: best source per capability, choices, gaps, assets |
 | `research/00-license-and-dependency-inventory.md` | Licenses of the 7 studied repos and their deps/assets |
