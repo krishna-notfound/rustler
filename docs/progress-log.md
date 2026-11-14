@@ -83,3 +83,12 @@
 - Merged QC v1 + export: 12 checks with fix_hint commands, qc.run (exit 7 on fail, allow_fail), export.clip (mp4 + report.json + srt). 19 tests.
 - **Real `rustler setup` on this laptop: OK** (engine lite+cuda, whisper small fetched, fonts Anton/Poppins/NotoSansDevanagari; existing ffmpeg/yt-dlp/uv adopted). `rustler doctor`: ready=true, libass, CUDA engine, encoders h264_nvenc/hevc_nvenc/h264_qsv/libx264 OK.
 - Merged see/clip/render/caption/layout/audio/crop commands (clip.*, caption.*, layout.list_presets, audio.add_music/remove_music via extras.json, crop.track_face/clear, see.frame/tiles/preview, render.run/preview_frame). Real render of Devanagari-named source with captions+music verified 1080x1920.
+- Merged project/source/analyze/transcript commands (live: source.info + heatmap peaks OK; TED video
+  fetch-transcript → 307 units; Big Buck Bunny correctly reports "no captions").
+- **END-TO-END PASSED via real CLI** on a 55 s demo video named `jfk talk (demo) – टेस्ट.mp4`:
+  project create → source import → analyze quick (110 words, 15 units) → transcript search "fellow
+  Americans" → see tiles --around → clip create --start-unit/--end-unit --expect-text, blur-fit,
+  hormozi-pop → render run (h264_nvenc) → qc run (12/12 pass) → export clip. Contact sheet and tile grid
+  inspected visually: layout, karaoke captions and labels correct.
+- Fixes from that inspection: hormozi pop scale 115%→108/112% (active word touched neighbour);
+  see.tiles auto-fits columns to count.
