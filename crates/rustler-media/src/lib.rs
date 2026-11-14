@@ -22,5 +22,5 @@ pub use frames::{frame, preview};
 pub use probe::probe;
 pub use proxy::{extract_audio_wav, make_proxy};
 pub use qc::run_qc;
-pub use render::{preview_frame, render};
+pub use render::{RenderReport, preview_frame, render, render_with_report};
 pub use tiles::{TileLabel, TileSpec, tiles};
