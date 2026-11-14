@@ -536,3 +536,255 @@ fn split_vertical_captions_music_graph() {
     assert!(g.contains("sidechaincompress"), "{g}");
     assert!(g.contains("afade=t=out:st=14.5:d=1"), "{g}");
 }
+
+// ---------------------------------------------------------------------------------------------
+// Two-pass loudnorm
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn two_pass_loudness_measurement_pass() {
+    let fx = fixture(center_crop(), probe(1920, 1080, 60.0, true), 2.0, 12.0);
+    let tmp = tempfile::tempdir().unwrap();
+    let extras = CompileExtras {
+        music: Some(MusicBed::new(tmp.path().join("bed.mp3"))),
+        ..Default::default()
+    };
+    assert!(extras.two_pass_loudness, "two-pass is the default");
+    let work = tmp.path().join("w");
+    let c = compile_with(
+        &fx.clip,
+        &fx.sources,
+        None,
+        tmp.path(),
+        &enc(),
+        &tmp.path().join("o.mp4"),
+        &work,
+        &extras,
+    )
+    .unwrap();
+    // The final graph keeps the single-pass filter text (swapped at render time).
+    assert!(
+        c.filter_script.contains("loudnorm=I=-14:TP=-2:LRA=11,"),
+        "{}",
+        c.filter_script
+    );
+    let lp = c.loudness.as_ref().expect("measurement pass");
+    assert_eq!(lp.filter, "loudnorm=I=-14:TP=-2:LRA=11");
+    let a = args_str(&lp.args).join(" ");
+    assert!(a.contains("-loglevel info"), "{a}");
+    assert!(a.contains("-ss 2.000 -to 12.000 -i "), "{a}");
+    assert!(a.contains("-stream_loop -1 -i "), "{a}");
+    assert!(
+        a.ends_with("-/filter_complex graph_loudness.txt -map [aout] -f null -"),
+        "{a}"
+    );
+    // The measurement graph is the same audio graph, audio only, printing JSON.
+    let g =
+        std::fs::read_to_string(work.join(rustler_media::compile::LOUDNESS_GRAPH_FILE)).unwrap();
+    assert!(g.contains("[a0]concat=n=1:v=0:a=1[acat]"), "{g}");
+    assert!(!g.contains(":v:0"), "no video in the measurement graph: {g}");
+    assert!(g.contains("[1:a:0]aresample=48000"), "{g}");
+    assert!(g.contains("sidechaincompress"), "{g}");
+    assert!(
+        g.contains("loudnorm=I=-14:TP=-2:LRA=11:print_format=json,aresample=48000"),
+        "{g}"
+    );
+    assert!(g.trim_end().ends_with("[aout]"), "{g}");
+    // Every audio chain of the final graph before loudnorm is in the measurement graph.
+    for line in c
+        .filter_script
+        .split(";\n")
+        .filter(|l| (l.contains(":a:0]") || l.contains("[mus]")) && !l.contains("loudnorm"))
+    {
+        assert!(g.contains(line), "missing {line} in {g}");
+    }
+
+    // Off when disabled or when loudnorm is off.
+    let off = CompileExtras {
+        two_pass_loudness: false,
+        ..Default::default()
+    };
+    let o = tmp.path().join("o.mp4");
+    let c2 = compile_with(&fx.clip, &fx.sources, None, tmp.path(), &enc(), &o, &work, &off).unwrap();
+    assert!(c2.loudness.is_none());
+    assert!(!work.join(rustler_media::compile::LOUDNESS_GRAPH_FILE).exists());
+    let mut clip = fx.clip.clone();
+    clip.audio.loudnorm = false;
+    let d = CompileExtras::default();
+    let c3 = compile_with(&clip, &fx.sources, None, tmp.path(), &enc(), &o, &work, &d).unwrap();
+    assert!(c3.loudness.is_none());
+    assert!(!c3.filter_script.contains("loudnorm"));
+}
+
+#[test]
+fn loudnorm_json_parsing_and_second_pass_filter() {
+    use rustler_media::compile::{measured_loudnorm, parse_loudnorm_json};
+    let log = "[Parsed_loudnorm_12 @ 000001] \n{\n\t\"input_i\" : \"-13.59\",\n\t\"input_tp\" : \"-5.06\",\n\
+               \t\"input_lra\" : \"17.40\",\n\t\"input_thresh\" : \"-29.23\",\n\t\"output_i\" : \"-15.89\",\n\
+               \t\"output_tp\" : \"-4.16\",\n\t\"output_lra\" : \"11.50\",\n\t\"output_thresh\" : \"-27.50\",\n\
+               \t\"normalization_type\" : \"dynamic\",\n\t\"target_offset\" : \"1.89\"\n}\n\
+               [out#0/null @ 0000] video:0KiB audio:7500KiB\n";
+    let m = parse_loudnorm_json(log).unwrap();
+    assert_eq!(
+        (m.input_i, m.input_tp, m.input_lra, m.input_thresh, m.target_offset),
+        (-13.59, -5.06, 17.4, -29.23, 1.89)
+    );
+    assert_eq!(
+        measured_loudnorm("loudnorm=I=-14:TP=-2:LRA=11", &m),
+        "loudnorm=I=-14:TP=-2:LRA=11:measured_I=-13.59:measured_TP=-5.06:measured_LRA=17.4:\
+         measured_thresh=-29.23:offset=1.89:linear=true"
+    );
+    // Digital silence prints -inf: not usable -> single-pass fallback.
+    let silent = log.replace("\"-13.59\"", "\"-inf\"");
+    assert!(parse_loudnorm_json(&silent).is_none());
+    assert!(parse_loudnorm_json("no json here").is_none());
+}
+
+// ---------------------------------------------------------------------------------------------
+// Text overlays
+// ---------------------------------------------------------------------------------------------
+
+use rustler_media::compile::{OverlayStyle, TextOverlay, overlay_layout, overlays_ass};
+
+fn hook(id: &str, text: &str, start: f64, end: f64, style: OverlayStyle) -> TextOverlay {
+    TextOverlay::new(id, text, start, end, style)
+}
+
+#[test]
+fn overlays_burn_after_captions_in_one_graph() {
+    let fx = fixture(center_crop(), probe(1920, 1080, 60.0, true), 0.0, 10.0);
+    let extras = CompileExtras {
+        overlays: vec![hook("ovl_1", "He quit his job for this", 0.0, 3.0, OverlayStyle::HookTop)],
+        ..Default::default()
+    };
+    let plan = build_graph(&fx.clip, &fx.sources, true, &extras).unwrap();
+    let g = &plan.graph;
+    assert!(
+        g.contains(
+            "ass=captions.ass:fontsdir=fonts,ass=overlays.ass:fontsdir=fonts,format=yuv420p[vout]"
+        ),
+        "{g}"
+    );
+    let ass = plan.overlays_ass.as_ref().unwrap();
+    println!("{ass}");
+    assert!(ass.contains("PlayResX: 1080\nPlayResY: 1920"), "{ass}");
+    assert!(ass.contains("WrapStyle: 2"), "{ass}");
+    // 0.075 * 1080 = 81 px, BorderStyle 3 box padded 23 px, centred (Alignment 5).
+    assert!(
+        ass.contains(
+            "Style: ov0,Poppins ExtraBold,81,&H00FFFFFF,&H00FFFFFF,&H00141414,&H80000000,0,0,0,0,\
+             100,100,0,0,3,23,0,5,0,0,0,1"
+        ),
+        "{ass}"
+    );
+    assert!(
+        ass.contains(
+            "Dialogue: 0,0:00:00.00,0:00:03.00,ov0,,0,0,0,,{\\an5\\pos(540,230)\\fad(0,150)}He quit his job for this"
+        ),
+        "{ass}"
+    );
+
+    // Without captions the overlay still burns; without overlays there is no second ass.
+    let g2 = build_graph(&fx.clip, &fx.sources, false, &extras).unwrap().graph;
+    assert!(
+        g2.contains("setpts=N,ass=overlays.ass:fontsdir=fonts,format=yuv420p"),
+        "{g2}"
+    );
+    let p3 = build_graph(&fx.clip, &fx.sources, true, &CompileExtras::default()).unwrap();
+    assert!(p3.overlays_ass.is_none() && !p3.graph.contains("overlays.ass"));
+
+    // compile_with stages overlays.ass and the fonts next to graph.txt.
+    let tmp = tempfile::tempdir().unwrap();
+    let fonts = tmp.path().join("fonts src");
+    std::fs::create_dir_all(&fonts).unwrap();
+    std::fs::write(fonts.join("Poppins-ExtraBold.ttf"), b"x").unwrap();
+    let work = tmp.path().join("w");
+    let o = tmp.path().join("o.mp4");
+    compile_with(&fx.clip, &fx.sources, None, &fonts, &enc(), &o, &work, &extras).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(work.join("overlays.ass")).unwrap(),
+        *ass
+    );
+    assert!(work.join("fonts").join("Poppins-ExtraBold.ttf").is_file());
+}
+
+#[test]
+fn overlay_wraps_to_two_balanced_lines_and_shrinks() {
+    let canvas = rustler_core::Canvas {
+        width: 1080,
+        height: 1920,
+        fps: 30.0,
+    };
+    let short = hook("a", "Wait for it", 0.0, 3.0, OverlayStyle::HookTop);
+    let l = overlay_layout(&short, &canvas);
+    assert_eq!(l.lines, vec!["Wait for it"]);
+    assert_eq!(l.font_size, 81);
+    assert!(l.fits);
+
+    let text = "Nobody expected the intern to fix the production outage";
+    let long = hook("b", text, 0.0, 3.0, OverlayStyle::HookTop);
+    let l = overlay_layout(&long, &canvas);
+    assert_eq!(l.lines.len(), 2, "{l:?}");
+    assert!(l.fits);
+    assert!(l.width <= 1080.0 * 0.86 + 0.5, "{l:?}");
+    // Balanced: neither line is more than ~2x the other.
+    let (a, b) = (l.lines[0].len() as f64, l.lines[1].len() as f64);
+    assert!(a / b < 2.0 && b / a < 2.0, "{l:?}");
+    // Block stays on the canvas even at y = 0.
+    let mut top = long.clone();
+    top.position_y = 0.0;
+    let lt = overlay_layout(&top, &canvas);
+    assert!(lt.top >= 0.0, "{lt:?}");
+
+    // Too long for 2 lines even when shrunk: still 2 lines, fits = false, smallest size.
+    let words = "supercalifragilistic expialidocious ".repeat(5);
+    let lh = overlay_layout(&hook("c", &words, 0.0, 3.0, OverlayStyle::HookTop), &canvas);
+    assert_eq!(lh.lines.len(), 2);
+    assert!(!lh.fits);
+    assert_eq!(lh.font_size, 49);
+
+    // ASS: \N between lines; overlays past the end are dropped, ends clamped, fade-in after t=0.
+    let late = hook("d", "late", 12.0, 14.0, OverlayStyle::Plain);
+    let mid = hook("e", "mid {\\b1}", 4.0, 30.0, OverlayStyle::LowerThird);
+    let ass = overlays_ass(&[long.clone(), late, mid], &canvas, 10.0).unwrap();
+    assert!(ass.contains(&l.lines.join("\\N")), "{ass}");
+    assert!(!ass.contains("late"), "{ass}");
+    assert!(ass.contains("0:00:04.00,0:00:10.00,ov1,"), "{ass}");
+    assert!(ass.contains("\\fad(150,0)}mid b1"), "{ass}");
+    assert!(ass.contains("\\pos(540,1536)"), "lower-third at y 0.80: {ass}");
+    assert!(overlays_ass(&[], &canvas, 10.0).is_none());
+}
+
+#[test]
+fn invalid_overlay_is_a_validation_error() {
+    let fx = fixture(center_crop(), probe(1920, 1080, 60.0, true), 0.0, 10.0);
+    let base = || hook("x", "t", 0.0, 3.0, OverlayStyle::HookTop);
+    for bad in [
+        TextOverlay {
+            position_y: 1.5,
+            ..base()
+        },
+        hook("x", "t", 3.0, 2.0, OverlayStyle::HookTop),
+        TextOverlay {
+            font_size_factor: 0.0,
+            ..base()
+        },
+    ] {
+        let extras = CompileExtras {
+            overlays: vec![bad],
+            ..Default::default()
+        };
+        let e = build_graph(&fx.clip, &fx.sources, false, &extras).unwrap_err();
+        assert_eq!(e.code, ErrorCode::Validation);
+    }
+    // JSON shape: "box" (not "boxed"), kebab-case style, defaults for missing fields.
+    let o: TextOverlay =
+        serde_json::from_value(json!({"id": "ovl_1", "text": "hi", "start": 0, "end": 2})).unwrap();
+    assert_eq!(
+        (o.style, o.position_y, o.font_size_factor, o.boxed),
+        (OverlayStyle::HookTop, 0.12, 0.075, true)
+    );
+    let v = serde_json::to_value(hook("ovl_2", "x", 0.0, 1.0, OverlayStyle::LowerThird)).unwrap();
+    assert_eq!(v["style"], "lower-third");
+    assert_eq!(v["box"], true);
+}

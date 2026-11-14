@@ -37,8 +37,9 @@ comma clause split. Prefer starting and ending at units with strength ≥ 0.8.
 2. Check whether the hook needs one sentence of setup to make sense. If yes, start one unit earlier
    **only if** that unit is itself short (< 4 s) and not filler.
 3. If the hook unit begins with a weak opener, still start on that unit (units can't split words),
-   then trim the opener: `edit trim clp_X --segment-id seg_Y --start-delta 0.4` (if available —
-   check `commands describe edit.trim` for the sign convention), using word times from `transcript get`.
+   then trim the opener: `rustler edit trim clp_X --segment-id seg_Y --start-delta 0.4` (positive
+   `--start-delta` cuts from the head), using word times from `rustler transcript get`. Or let
+   `rustler edit refine clp_X --dry-run` find and skip the opener for you (see "Automatic cut repair" below).
 4. Never start on an answer whose question is off-clip. Either include the question (if short and
    punchy) or pick another start.
 5. A pronoun start ("He said…", "That's when…") needs the referent inside the first 3 seconds or it
@@ -72,12 +73,28 @@ and should go.
 - If the source has a breath or room noise at a cut, a slightly later start (+0.05 s) is better than
   a mouth click.
 
+## 4b. Automatic cut repair: `edit refine`
+
+`rustler edit refine clp_X --dry-run` checks the clip's outer cut points (start of the first segment, end of
+the last; pass `--segment-id seg_Y` to treat one segment's two ends) and proposes:
+
+- **Start**: skip a weak opener at the head ("so", "and", "um", "like", "toh", "matlab", "haan", "yaar", ...
+  and phrases such as "so yeah", "you know", "matlab ki"), then place the cut in the silence just before the
+  first real word (about 0.15 s lead).
+- **End**: make the clip finish on a sentence-final word. It extends to the next sentence end or pulls back
+  to the previous one, whichever is closer, and puts a 0.25 s tail in the silence after it.
+- Nothing moves further than `--max-shift` (default 1.5 s) to reach a word boundary.
+
+Read `reasons`, `opening_after` and `closing_after` in the output. If you agree, rerun without `--dry-run`
+(a new revision is saved; `history undo clp_X` reverts it). If the pulled-back end drops your payoff, keep the
+original end or set it yourself with `edit trim --end`. It does not know what the payoff is: you do.
+
 ## 5. Removing pauses and fillers inside a clip
 
 Dead air kills retention. Tighten after creating the clip:
 
 ```
-rustler edit remove-pauses clp_X --min-gap 0.5        # (if available) splits segments at word gaps ≥ 0.5 s
+rustler edit remove-pauses clp_X --min-gap 0.5        # cuts word gaps ≥ 0.5 s out of every segment (keeps 0.12 s)
 rustler edit remove-words clp_X                       # default list: um uh umm uhh hmm erm
 rustler clip show clp_X                               # check the new segments and total duration
 ```

@@ -137,6 +137,8 @@ def _capabilities(params, progress):
         ("opencv-python-headless", "opencv"),
         ("indic-transliteration", "indic_transliteration"),
         ("numpy", "numpy"),
+        ("rapidocr", "rapidocr"),
+        ("onnxruntime", "onnxruntime"),
     ]:
         try:
             packages[key] = metadata.version(dist)
@@ -170,13 +172,18 @@ def _models_fetch(params, progress):
     from . import transcribe
 
     out: Dict[str, Any] = {"fetched": []}
-    if "whisper" in params or not params.get("yunet"):
+    if "whisper" in params or not (params.get("yunet") or params.get("yamnet")):
         out["fetched"] = transcribe.fetch_models(params, progress)["fetched"]
     if params.get("yunet"):
         from . import faces
 
         out["yunet_path"] = faces.fetch_yunet(progress)
         out["fetched"].append("yunet")
+    if params.get("yamnet"):
+        from . import audio_events
+
+        out["yamnet_path"] = audio_events.fetch_yamnet(progress)
+        out["fetched"].append("yamnet")
     return out
 
 
@@ -184,6 +191,18 @@ def _faces_track(params, progress):
     from . import faces
 
     return faces.track(params, progress)
+
+
+def _ocr_run(params, progress):
+    from . import ocr
+
+    return ocr.run(params, progress)
+
+
+def _audio_events(params, progress):
+    from . import audio_events
+
+    return audio_events.run(params, progress)
 
 
 def default_methods() -> Dict[str, Handler]:
@@ -195,4 +214,6 @@ def default_methods() -> Dict[str, Handler]:
         "translit.to_latin": _translit,
         "models.fetch": _models_fetch,
         "faces.track": _faces_track,
+        "ocr.run": _ocr_run,
+        "audio.events": _audio_events,
     }

@@ -85,19 +85,46 @@ against your single best moment.
 Rustler gives you cheap, deterministic signals. A great transcript line with no matching signal is
 fine; a signal with no good line is a lead to read, not a clip.
 
-| Signal | Where | What it suggests |
+| Signal | Command | What it suggests |
 |---|---|---|
-| Loudness peaks | `analyze audio` → `peaks` (≥ median + 6 LU) | shouting, laughing, hype, crowd |
-| Long silence before a line | `silences` | dramatic pause, or dead air to cut |
-| Scene cuts dense in a range | `analyze scenes` | edited source: action or montage |
-| Heatmap spike | `source info` | viewers rewatched; payoff is near the spike |
-| Questions / exclamations | transcript text `?` `!` | Q&A hooks, reactions |
-| Faces in tiles | `see tiles --around "<line>"` | is the reaction visible? is the speaker on screen? |
+| Loudness peaks | `rustler analyze audio SRC` (`peaks`), per window in `rustler highlights signals SRC` | shouting, laughing, hype, crowd |
+| Long silence before a line | `silences` in `analyze audio`; `pause_before` in `highlights signals` | dramatic pause, or dead air to cut |
+| Scene cuts dense in a range | `rustler analyze scenes SRC`; `scene_cuts` in `highlights signals` | edited source: action or montage |
+| Heatmap spike | `rustler source info URL` (`heatmap_peaks`); `heatmap` in `highlights signals` once the info JSON is saved as `analysis/SRC/source_info.json` | viewers rewatched; payoff is near the spike |
+| Questions / exclamations | `questions` / `exclamations` in `highlights signals` | Q&A hooks, reactions |
+| Speech rate, emphasis words | `wpm_vs_median`, `emphasis_words` in `highlights signals` | urgency, claims ("never", "secret", "bhai", "sach") |
+| Faces in tiles | `rustler see tiles SRC --around "<line>"` | is the reaction visible? is the speaker on screen? |
 | Laughter / `[Laughter]` tags | auto captions or audio peak after a line | joke landed |
 
 Always look at tiles for your top candidates. Check that the speaker is on screen when the hook line
 plays, that the reaction is visible, and that nothing visually confusing (slides, B-roll, black) sits
 in the first 2 seconds.
+
+### Using `highlights.candidates` as evidence, not as the decision
+
+```
+rustler highlights signals SRC --window 30                 # one row of signals per 30 s: where is something happening?
+rustler highlights candidates SRC --count 10 --min-len 20 --max-len 60 --platform shorts
+rustler transcript read-window SRC --start 2820 --end 2870  # read a candidate in full, with unit ids
+```
+
+`highlights candidates` returns sentence-aligned windows (unit ids, times, an opening line, a score with a
+per-feature breakdown, plain-text `reasons`, and a ready `create_cmd`). They never start on a weak opener,
+never overlap, and are spread over the timeline. The score only adds up loudness, speech rate, questions,
+emphasis words, scene cuts, heatmap, completeness and length. It cannot tell whether a joke is funny, whether
+the clip stands alone, or whether there is a payoff.
+
+How to use it:
+
+1. Treat the list as **leads to read**, in rank order. Read each with `transcript read-window`, look at tiles
+   for the best few, and score them yourself with the rubric in section 4.
+2. A candidate with a high score and a weak line is a loud moment, not a clip. Drop it.
+3. A great moment the tool missed (quiet, deadpan, no emphasis words) is normal. Find those with
+   `transcript search` and your own reading.
+4. Check `available` and `warnings` first: a `null` signal means that analysis has not been run, so the score
+   leaned on fewer features.
+5. Create the clip with `create_cmd` (change `--name`, keep `--expect-text`), then run
+   `rustler edit refine clp_X --dry-run` to repair the cut points (see `cut-points`).
 
 ## 6. Length guidance
 

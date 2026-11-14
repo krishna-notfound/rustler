@@ -60,3 +60,40 @@ Line-delimited JSON-RPC 2.0 over the worker's stdin/stdout. Start with
     `model_path` is missing).
   - Progress: `stage: "faces.track"`, `pct` = samples done / total * 100 (about every 8 samples);
     `stage: "models.fetch"` notifications while the model downloads.
+- `ocr.run {"video_path", "times": [..] | "every": 2.0, "start": 0.0, "end": null|float, "max_width": 1024}`
+  -> `{"frames": [{"t", "t_end", "lines": [{"text", "box": {"x","y","w","h"}, "conf"}]}], "width", "height", "samples", "every", "engine"}`
+  - Sample times: the explicit `times` list (seconds, sorted and de-duplicated), else
+    `start + i*every` for every `i` while the time is `< end` (`end` defaults to the video duration;
+    `every` > 0; at most 5000 samples, else `validation`). A sample whose frame cannot be read ends the run.
+  - Frames are downscaled to at most `max_width` px wide (default 1024, min 160) and read with RapidOCR
+    (PP-OCRv6 small, Apache-2.0; no text-angle classifier). Boxes are normalized 0..1 of the frame
+    (`x`,`y` = top-left); `conf` in [0.5, 1]; lines are ordered top-to-bottom, then left-to-right.
+    Lines without an alphanumeric character, or with `conf` < 0.5, are dropped.
+  - **Dedupe:** consecutive samples that show the same text (compared case- and whitespace-insensitively)
+    become ONE entry: `t` = first sample, `t_end` = last sample still showing it. Samples without any text
+    produce no entry, so a gap between two identical captions yields two entries. A sample whose picture
+    is essentially unchanged from the previous sample (thumbnail comparison) reuses the previous result.
+    `samples` = frames actually read.
+  - Errors: `validation` (missing/invalid params, video not found), `media` (cannot open video),
+    `dependency_missing` (`rapidocr`/`onnxruntime` not installed). Progress: `stage: "ocr.run"`,
+    `pct` = samples done / total * 100.
+  - Devanagari text is not recognised by the bundled model (Latin and Chinese scripts are).
+- `audio.events {"audio_path", "hop": 0.5, "model": "auto"|"yamnet"|"heuristic"}`
+  -> `{"events": [{"start","end","label","score"}], "model": "yamnet"|"heuristic", "duration", "hop", "warnings"?: [..]}`
+  - `audio_path` is a PCM WAV (the source's 16 kHz wav; other rates are resampled, stereo is mixed down;
+    anything else = `media`). `hop` in [0.1, 5.0] seconds.
+  - `label` is one of `laughter | applause | cheer | music | speech | silence`. Events are ordered,
+    non-overlapping, and merge adjacent hops with the same label (a single unlabeled hop between two
+    equal labels is bridged). Hops with no confident label produce no event. `score` is the mean label
+    score 0..1. `end <= duration`.
+  - `model: "auto"` (default) uses YAMNet (Apache-2.0 ONNX, downloaded to `$RUSTLER_HOME/models/yamnet/`
+    on first use and sha256-verified, see `MODELS.md`) and falls back to a spectral heuristic when the model
+    cannot be obtained (the result then says `"model": "heuristic"` and carries a `warnings` entry; the
+    heuristic only distinguishes silence / speech / music / applause). `"yamnet"` fails with `media` /
+    `dependency_missing` instead of falling back; `"heuristic"` never loads a model.
+  - Hops are labelled from YAMNet frames (0.96 s window, 0.48 s hop) whose window contains the hop centre;
+    reactions (laughter, applause, cheer, score >= 0.30) take priority over speech/music; digital quiet
+    (RMS < -55 dBFS) is `silence`.
+  - Progress: `stage: "audio.events"` per 600 s chunk; `stage: "models.fetch"` while the model downloads.
+- `models.fetch` also accepts `{"yamnet": true}` -> adds `"yamnet"` to `fetched` and `"yamnet_path"`.
+- `engine.capabilities` `packages` now also lists `rapidocr` and `onnxruntime` when installed.
