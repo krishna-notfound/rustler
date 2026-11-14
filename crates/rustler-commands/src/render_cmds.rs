@@ -6,10 +6,9 @@
 
 use crate::clip_cmds::{ClipExtras, caption_words_for_clip, compile_extras, log_event};
 use crate::see_cmds::find_fonts;
-use crate::{extras, overlay_cmds};
+use crate::{audio_cmds, extras, fx_cmds, overlay_cmds};
 use rustler_media::RenderReport;
 use chrono::Utc;
-
 use rustler_core::{
     CaptionScript, Clip, ClipId, ErrorCode, ProjectStore, RenderId, RenderQuality, RenderRecord, RustlerError,
     SourceId, TimeMap,
@@ -91,9 +90,13 @@ fn source_media(store: &ProjectStore, clip: &Clip) -> Result<HashMap<SourceId, S
     Ok(map)
 }
 
-/// Copies every font below `<home>/fonts/**` flat into `dest` (libass `fontsdir`).
-fn stage_fonts(paths: &ToolPaths, dest: &Path) -> Result<Vec<PathBuf>> {
-    let fonts = find_fonts(&paths.fonts);
+/// Copies every font below `<home>/fonts/**` and the font assets of the library (global + project)
+/// flat into `dest` (libass `fontsdir`).
+fn stage_fonts(paths: &ToolPaths, store: &ProjectStore, dest: &Path) -> Result<Vec<PathBuf>> {
+    let mut fonts = find_fonts(&paths.fonts);
+    for d in crate::asset_cmds::asset_font_dirs(&paths.home, Some(&store.root)) {
+        fonts.extend(find_fonts(&d));
+    }
     std::fs::create_dir_all(dest).map_err(|e| io_err("create", dest, e))?;
     for f in &fonts {
         if let Some(name) = f.file_name() {
@@ -126,12 +129,16 @@ async fn prepare(
     if clip.captions.enabled {
         let (words, w) = caption_words_for_clip(store, clip)?;
         warnings.extend(w);
+        let colors = crate::speaker_cmds::word_colors_for_clip(store, clip, &words, &mut warnings)?;
+        // Captions follow the picture through transitions (edit -> rendered timeline).
+        let (words, colors) = crate::speaker_cmds::map_words_with_colors(words, colors, &fx_cmds::transition_map(store, clip)?);
         if words.is_empty() {
             warnings.push("captions are enabled but no transcript words fall inside the clip; rendering without captions".into());
         } else {
-            let fonts = stage_fonts(paths, &fonts_dir)?;
+            let fonts = stage_fonts(paths, store, &fonts_dir)?;
             let family = caption_font_family(clip.captions.script, &fonts);
-            let text = crate::speaker_cmds::write_clip_ass(store, clip, &words, family, &mut warnings)?;
+            let custom = crate::asset_cmds::custom_presets(&paths.home, Some(&store.root));
+            let text = crate::speaker_cmds::write_captions_ass(&words, colors.as_deref(), clip, family, &custom)?;
             let p = workdir.join("captions.ass");
             std::fs::write(&p, text).map_err(|e| io_err("write", &p, e))?;
             ass = Some(p);
@@ -145,9 +152,12 @@ async fn prepare(
     let mut cx: CompileExtras = compile_extras(&typed_extras, clip);
     cx.overlays = extras::from_map(&map, overlay_cmds::KEY)?.unwrap_or_default();
     cx.two_pass_loudness = two_pass_loudness;
+    // Audio post (denoise, gains, sfx) and transitions / effects / progress bar.
+    warnings.extend(audio_cmds::apply_to_compile(store, clip, &map, &mut cx)?);
+    warnings.extend(fx_cmds::apply_to_compile(&map, clip, &mut cx)?);
     if !cx.overlays.is_empty() && ass.is_none() {
         // Overlays need the fonts even when there are no captions.
-        stage_fonts(paths, &fonts_dir)?;
+        stage_fonts(paths, store, &fonts_dir)?;
     }
     if let Some(m) = &cx.music {
         if !m.path.is_file() {
@@ -170,7 +180,10 @@ pub(crate) async fn preview_frame_image(ctx: &Ctx, clip_id: &ClipId, out_t: f64)
     let store = ctx.store()?;
     let clip = store.load_clip(clip_id)?;
     let duration = TimeMap::from_segments(&clip.segments).duration();
+    // out_t is on the edit timeline; the frame comes from the rendered (transition-shortened) one.
+    let tmap = fx_cmds::transition_map(&store, &clip)?;
     let t = clamp_preview_time(out_t, duration)?;
+    let t = tmap.map_time(t).min((tmap.duration() - 0.04).max(0.0));
     let dir = abs_root(&store).join("clips").join(clip.id.as_str()).join("preview");
     let work = dir.join("work");
     let jpg = dir.join(format!("frame_{}ms.jpg", (t * 1000.0).round() as u64));
@@ -222,7 +235,7 @@ pub struct RenderRunOut {
     /// Absolute path of the mp4.
     pub path: PathBuf,
     pub encoder: String,
-    /// Output duration in seconds.
+    /// Duration of the rendered file in seconds (edit duration minus transition overlaps).
     pub duration: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dry_run: Option<bool>,
@@ -238,7 +251,8 @@ async fn render_run(ctx: Ctx, i: RenderRunIn) -> Result<RenderRunOut> {
     let store = ctx.store()?;
     let clip = store.load_clip(&i.clip_id)?;
     let quality = i.quality.unwrap_or(RenderQuality::Final);
-    let duration = TimeMap::from_segments(&clip.segments).duration();
+    // Rendered length: transitions shorten the clip by their overlaps.
+    let duration = fx_cmds::effective_duration_of(&store, &clip)?;
     let render_id = RenderId::new();
     let renders = abs_root(&store).join("clips").join(clip.id.as_str()).join("renders");
     let workdir = renders.join(render_id.as_str());

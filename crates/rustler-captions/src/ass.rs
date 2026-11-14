@@ -1,7 +1,8 @@
 //! ASS (Advanced SubStation Alpha) writer and SRT export. (Task 7)
 
 use crate::chunk::{CaptionWord, chunk_words};
-use crate::presets::{ActiveStyle, PRESETS, Preset, find_preset};
+use crate::custom::find_preset_in;
+use crate::presets::{ActiveStyle, PRESETS, Preset};
 use rustler_core::{Canvas, CaptionTrack, ErrorCode, RustlerError};
 
 /// Gap (seconds) between words that always starts a new chunk.
@@ -61,7 +62,19 @@ pub fn write_ass(
     canvas: &Canvas,
     font_family: &str,
 ) -> rustler_core::Result<String> {
-    write_ass_impl(words, None, track, canvas, font_family)
+    write_ass_with(words, track, canvas, font_family, &[])
+}
+
+/// [`write_ass`] that also resolves `track.preset` against `custom` presets (see
+/// [`crate::load_custom_presets`]) when it is not a built-in name.
+pub fn write_ass_with(
+    words: &[CaptionWord],
+    track: &CaptionTrack,
+    canvas: &Canvas,
+    font_family: &str,
+    custom: &[Preset],
+) -> rustler_core::Result<String> {
+    write_ass_impl(words, None, track, canvas, font_family, custom)
 }
 
 /// `#RRGGBB` (or `RRGGBB`) to an ASS `0x00BBGGRR` colour; `None` for anything else.
@@ -85,6 +98,18 @@ pub fn write_ass_colored(
     canvas: &Canvas,
     font_family: &str,
 ) -> rustler_core::Result<String> {
+    write_ass_colored_with(words, colors, track, canvas, font_family, &[])
+}
+
+/// [`write_ass_colored`] that also resolves custom presets (like [`write_ass_with`]).
+pub fn write_ass_colored_with(
+    words: &[CaptionWord],
+    colors: &[Option<String>],
+    track: &CaptionTrack,
+    canvas: &Canvas,
+    font_family: &str,
+    custom: &[Preset],
+) -> rustler_core::Result<String> {
     let parsed = colors
         .iter()
         .map(|c| match c {
@@ -95,7 +120,7 @@ pub fn write_ass_colored(
             }),
         })
         .collect::<rustler_core::Result<Vec<Option<u32>>>>()?;
-    write_ass_impl(words, Some(&parsed), track, canvas, font_family)
+    write_ass_impl(words, Some(&parsed), track, canvas, font_family, custom)
 }
 
 fn write_ass_impl(
@@ -104,14 +129,17 @@ fn write_ass_impl(
     track: &CaptionTrack,
     canvas: &Canvas,
     font_family: &str,
+    custom: &[Preset],
 ) -> rustler_core::Result<String> {
-    let p = find_preset(&track.preset).ok_or_else(|| {
+    let p = find_preset_in(&track.preset, custom).ok_or_else(|| {
+        let mut names: Vec<&str> = PRESETS.to_vec();
+        names.extend(custom.iter().map(|c| c.name));
         RustlerError::new(
             ErrorCode::Validation,
             "captions",
             format!("unknown caption preset '{}'", track.preset),
         )
-        .hint(format!("available presets: {}", PRESETS.join(", ")))
+        .hint(format!("available presets: {}", names.join(", ")))
     })?;
     let font = if font_family.trim().is_empty() { p.font_family } else { font_family.trim() };
     let size = (f64::from(canvas.width) * p.size_factor).round() as u32;

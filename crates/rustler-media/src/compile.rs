@@ -35,6 +35,8 @@ pub const ASS_FILE: &str = "captions.ass";
 pub const OVERLAYS_ASS_FILE: &str = "overlays.ass";
 /// Audio-only graph of the loudness measurement pass (two-pass loudnorm).
 pub const LOUDNESS_GRAPH_FILE: &str = "graph_loudness.txt";
+/// Audio-only graph of the noise-floor pass (denoise).
+pub const NOISE_GRAPH_FILE: &str = "graph_noise.txt";
 pub const FONTS_DIR: &str = "fonts";
 /// Font family of text overlays (`~/.rustler/fonts/Poppins/Poppins-ExtraBold.ttf`).
 pub const OVERLAY_FONT: &str = "Poppins ExtraBold";
@@ -56,6 +58,18 @@ pub struct CompiledRender {
     pub workdir: PathBuf,
     /// Two-pass loudnorm: the measurement pass to run before the final encode.
     pub loudness: Option<LoudnessPass>,
+    /// Denoise: the noise-floor pass to run first (before the loudness pass).
+    pub noise: Option<NoisePass>,
+}
+
+/// Audio-only pass that measures the dialogue noise floor for `afftdn`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NoisePass {
+    /// ffmpeg argv (without the program); cwd = workdir; reads `graph_noise.txt`.
+    pub args: Vec<OsString>,
+    /// The denoise filter text (default floor) inside `filter_script` and `graph_loudness.txt`.
+    pub filter: String,
+    pub denoise: Denoise,
 }
 
 /// First pass of two-pass loudnorm: an audio-only run of the same audio graph into `-f null`.
@@ -248,6 +262,27 @@ pub struct CompileExtras {
     /// Text overlays (hook titles) burned on top of the captions.
     #[serde(default)]
     pub overlays: Vec<TextOverlay>,
+    /// Speech denoise (`highpass` 80 Hz + `afftdn`) on the joined dialogue, before the mix.
+    #[serde(default)]
+    pub denoise: Denoise,
+    /// Per-segment gain (dB) applied to that segment's audio before the join.
+    #[serde(default)]
+    pub segment_gain_db: HashMap<SegmentId, f64>,
+    /// Whole-dialogue gain (dB) after denoise, before the mix and loudnorm.
+    #[serde(default)]
+    pub speech_gain_db: f64,
+    /// Sound effects placed on the edit timeline.
+    #[serde(default)]
+    pub sfx: Vec<SfxCue>,
+    /// Transitions between consecutive segments (`xfade` + `acrossfade`).
+    #[serde(default)]
+    pub transitions: Vec<Transition>,
+    /// Camera effects on the composed canvas (before captions).
+    #[serde(default)]
+    pub effects: Vec<Effect>,
+    /// Progress bar across the whole rendered clip (on top of everything).
+    #[serde(default)]
+    pub progress_bar: Option<ProgressBar>,
 }
 
 impl Default for CompileExtras {
@@ -257,8 +292,479 @@ impl Default for CompileExtras {
             crop_paths: HashMap::new(),
             two_pass_loudness: true,
             overlays: Vec::new(),
+            denoise: Denoise::Off,
+            segment_gain_db: HashMap::new(),
+            speech_gain_db: 0.0,
+            sfx: Vec::new(),
+            transitions: Vec::new(),
+            effects: Vec::new(),
+            progress_bar: None,
         }
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Audio post, transitions, effects, progress bar (B1)
+// ---------------------------------------------------------------------------------------------
+//
+// Time convention: every time stored in the extras (overlays, sfx `at`, effect start/end) is on
+// the *edit timeline* (the clip's `TimeMap`, what `clip show` prints). Transitions overlap
+// consecutive segments, so the rendered file is shorter; [`TransitionMap`] maps edit time to
+// rendered time. The cut point of a transition sits in the middle of the overlap: material
+// before a boundary keeps its time but is clamped to end at the overlap midpoint, material after
+// it moves earlier by the overlap and is clamped to start at the midpoint. Captions, overlays,
+// sfx and effects all go through the same map, so they stay in sync with the picture.
+
+/// Speech denoise strength.
+#[derive(Serialize, Deserialize, JsonSchema, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Denoise {
+    #[default]
+    Off,
+    Light,
+    Medium,
+    Strong,
+}
+
+/// Noise floor assumed when the measurement pass cannot run (dBFS RMS).
+pub const DEFAULT_NOISE_FLOOR_DB: f64 = -50.0;
+
+impl Denoise {
+    /// (afftdn `nr` dB, `nf` margin above the measured noise floor dB).
+    fn params(self) -> Option<(f64, f64)> {
+        match self {
+            Self::Off => None,
+            Self::Light => Some((12.0, 4.0)),
+            Self::Medium => Some((20.0, 8.0)),
+            Self::Strong => Some((30.0, 12.0)),
+        }
+    }
+
+    /// `highpass=f=80,afftdn=nr=..:nf=..` for a dialogue whose noise floor is `noise_floor_db`
+    /// (dBFS RMS of the quiet parts); `None` when off. afftdn only removes noise up to its `nf`,
+    /// so `nf` sits a strength-dependent margin above the measured floor. Measured with this
+    /// FFmpeg build: white noise under a tone drops 12 / 20 / 30 dB (light / medium / strong),
+    /// pink noise under real speech (jfk.wav) 8 / 12 / 19 dB; the speech level moves < 0.1 dB.
+    pub fn filter_for(self, noise_floor_db: f64) -> Option<String> {
+        let (nr, margin) = self.params()?;
+        let floor = if noise_floor_db.is_finite() { noise_floor_db } else { DEFAULT_NOISE_FLOOR_DB };
+        let nf = (floor + margin).clamp(-80.0, -20.0);
+        Some(format!("highpass=f=80,afftdn=nr={}:nf={}", num(nr), num((nf * 10.0).round() / 10.0)))
+    }
+
+    /// The filter at the default floor (what the graph holds until the noise pass measured it).
+    pub fn filter(self) -> Option<String> {
+        self.filter_for(DEFAULT_NOISE_FLOOR_DB)
+    }
+}
+
+/// Noise floor (dBFS) from the noise pass log: the 10th percentile of the 50 ms RMS windows
+/// (digital silence below -90 dB ignored), but never closer than 12 dB to the median window,
+/// so audio without pauses (continuous speech, a tone) is not mistaken for noise.
+/// `None` with fewer than 5 usable windows.
+pub fn noise_floor_from_log(log: &str) -> Option<f64> {
+    let key = "lavfi.astats.Overall.RMS_level=";
+    let mut v: Vec<f64> = log
+        .lines()
+        .filter_map(|l| l.find(key).map(|i| &l[i + key.len()..]))
+        .filter_map(|s| s.trim().parse::<f64>().ok())
+        .filter(|x| x.is_finite() && *x > -90.0)
+        .collect();
+    if v.len() < 5 {
+        return None;
+    }
+    v.sort_by(f64::total_cmp);
+    Some(v[v.len() / 10].min(v[v.len() / 2] - 12.0))
+}
+
+/// A sound effect, already resolved to an edit-timeline time.
+#[derive(Serialize, Deserialize, JsonSchema, Clone, PartialEq, Debug)]
+pub struct SfxCue {
+    pub id: String,
+    pub path: PathBuf,
+    /// Edit-timeline time (seconds) where the effect starts.
+    pub at: f64,
+    /// Gain (dB) before mixing (default -6).
+    pub volume_db: f64,
+}
+
+/// Transition between two consecutive segments.
+#[derive(Serialize, Deserialize, JsonSchema, Clone, Copy, PartialEq, Eq, Debug, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum TransitionKind {
+    /// Hard cut (no overlap).
+    Cut,
+    /// Dip through black (`xfade=fadeblack`).
+    Fade,
+    /// Cross-dissolve: the two shots blend (`xfade=fade`).
+    Dissolve,
+    Wipeleft,
+    Wiperight,
+    Slideup,
+    Zoomin,
+}
+
+impl TransitionKind {
+    /// `xfade` transition name; `None` for a hard cut.
+    pub fn xfade_name(self) -> Option<&'static str> {
+        match self {
+            Self::Cut => None,
+            Self::Fade => Some("fadeblack"),
+            Self::Dissolve => Some("fade"),
+            Self::Wipeleft => Some("wipeleft"),
+            Self::Wiperight => Some("wiperight"),
+            Self::Slideup => Some("slideup"),
+            Self::Zoomin => Some("zoomin"),
+        }
+    }
+}
+
+/// A transition after segment `after_segment_id` (into the next segment).
+#[derive(Serialize, Deserialize, JsonSchema, Clone, PartialEq, Debug)]
+pub struct Transition {
+    pub after_segment_id: SegmentId,
+    pub kind: TransitionKind,
+    /// Overlap in seconds (rounded to whole frames; default 0.3).
+    pub duration: f64,
+}
+
+/// Camera effect on the composed canvas.
+#[derive(Serialize, Deserialize, JsonSchema, Clone, Copy, PartialEq, Eq, Debug, Hash)]
+#[serde(rename_all = "kebab-case")]
+pub enum EffectKind {
+    /// Instant zoom to `amount` (default 1.15) for the range.
+    PunchIn,
+    /// Linear zoom 1.0 -> `amount` (default 1.15) over the range.
+    ZoomSlow,
+    /// Small sinusoidal shake; `amount` = amplitude as a fraction of the frame (default 0.02).
+    Shake,
+    /// White flash fading out over the range (`amount` is not used).
+    Flash,
+}
+
+impl EffectKind {
+    pub fn default_amount(self) -> f64 {
+        match self {
+            Self::PunchIn | Self::ZoomSlow => 1.15,
+            Self::Shake => 0.02,
+            Self::Flash => 1.0,
+        }
+    }
+    /// Allowed `amount` range (inclusive).
+    pub fn amount_range(self) -> (f64, f64) {
+        match self {
+            Self::PunchIn | Self::ZoomSlow => (1.01, 2.0),
+            Self::Shake => (0.002, 0.08),
+            Self::Flash => (0.0, 1.0),
+        }
+    }
+}
+
+/// An effect over an edit-timeline range.
+#[derive(Serialize, Deserialize, JsonSchema, Clone, PartialEq, Debug)]
+pub struct Effect {
+    pub id: String,
+    pub kind: EffectKind,
+    pub start: f64,
+    pub end: f64,
+    /// Zoom factor (punch-in, zoom-slow) or shake amplitude; default by kind.
+    #[serde(default)]
+    pub amount: Option<f64>,
+}
+
+impl Effect {
+    pub fn amount_or_default(&self) -> f64 {
+        self.amount.unwrap_or_else(|| self.kind.default_amount())
+    }
+}
+
+#[derive(Serialize, Deserialize, JsonSchema, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum BarPosition {
+    #[default]
+    Top,
+    Bottom,
+}
+
+fn default_bar_color() -> String {
+    "#FFE000".into()
+}
+fn default_bar_height() -> u32 {
+    8
+}
+
+/// A bar that grows from 0 to the full canvas width over the rendered clip.
+#[derive(Serialize, Deserialize, JsonSchema, Clone, PartialEq, Debug)]
+pub struct ProgressBar {
+    /// `#RRGGBB` (default `#FFE000`).
+    #[serde(default = "default_bar_color")]
+    pub color: String,
+    /// Pixels (default 8; rounded up to even).
+    #[serde(default = "default_bar_height")]
+    pub height: u32,
+    #[serde(default)]
+    pub position: BarPosition,
+}
+
+impl Default for ProgressBar {
+    fn default() -> Self {
+        Self { color: default_bar_color(), height: default_bar_height(), position: BarPosition::Top }
+    }
+}
+
+/// `#RRGGBB` / `RRGGBB` -> ffmpeg `0xRRGGBB`; `None` when malformed.
+pub fn ffmpeg_color(hex: &str) -> Option<String> {
+    let h = hex.trim().trim_start_matches('#');
+    (h.len() == 6 && h.chars().all(|c| c.is_ascii_hexdigit())).then(|| format!("0x{}", h.to_ascii_uppercase()))
+}
+
+/// Edit timeline -> rendered timeline under the clip's transitions (see the time convention
+/// above). Built from the clip's segments and fps; transitions are rounded to whole frames.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TransitionMap {
+    /// Edit-timeline segment boundaries `0 = b0 < b1 < .. < bn = duration`.
+    bounds: Vec<f64>,
+    /// Per boundary k (between segment k and k+1): kind and overlap in frames.
+    boundary: Vec<Option<(TransitionKind, u64)>>,
+    fps: f64,
+}
+
+impl TransitionMap {
+    /// Transitions whose `after_segment_id` is not followed by another segment (or is unknown)
+    /// are ignored; `cut` and zero-frame transitions are hard cuts.
+    pub fn new(clip: &Clip, transitions: &[Transition]) -> Self {
+        let fps = clip.canvas.fps;
+        let mut bounds = vec![0.0];
+        let mut cum = 0.0;
+        for s in &clip.segments {
+            cum += s.end - s.start;
+            bounds.push(cum);
+        }
+        let n = clip.segments.len();
+        let boundary = (0..n.saturating_sub(1))
+            .map(|k| {
+                let id = &clip.segments[k].id;
+                transitions.iter().rev().find(|t| &t.after_segment_id == id).and_then(|t| {
+                    t.kind.xfade_name()?;
+                    if !(t.duration.is_finite() && t.duration > 0.0 && fps.is_finite() && fps > 0.0) {
+                        return None;
+                    }
+                    let frames = (t.duration * fps).round().max(1.0) as u64;
+                    Some((t.kind, frames))
+                })
+            })
+            .collect();
+        Self { bounds, boundary, fps }
+    }
+
+    /// Kind and overlap (frames) at boundary `k` (after segment k).
+    pub fn at_boundary(&self, k: usize) -> Option<(TransitionKind, u64)> {
+        self.boundary.get(k).copied().flatten()
+    }
+
+    pub fn is_identity(&self) -> bool {
+        self.boundary.iter().all(Option::is_none)
+    }
+
+    fn overlap(&self, k: usize) -> f64 {
+        self.at_boundary(k).map_or(0.0, |(_, f)| f as f64 / self.fps)
+    }
+
+    /// Seconds removed by all transitions.
+    pub fn total_overlap(&self) -> f64 {
+        (0..self.boundary.len()).map(|k| self.overlap(k)).sum()
+    }
+
+    /// Edit-timeline duration.
+    pub fn edit_duration(&self) -> f64 {
+        *self.bounds.last().unwrap_or(&0.0)
+    }
+
+    /// Rendered duration (edit duration minus the overlaps).
+    pub fn duration(&self) -> f64 {
+        (self.edit_duration() - self.total_overlap()).max(0.0)
+    }
+
+    /// Rendered time of edit-timeline time `t` (continuous and non-decreasing).
+    pub fn map_time(&self, t: f64) -> f64 {
+        let n = self.bounds.len().saturating_sub(1);
+        if n == 0 || !t.is_finite() || t <= 0.0 || self.is_identity() {
+            return t;
+        }
+        if t >= self.edit_duration() {
+            return t - self.total_overlap();
+        }
+        let k = self.bounds[1..n].partition_point(|b| *b <= t);
+        let shift: f64 = (0..k).map(|j| self.overlap(j)).sum();
+        let lo = self.bounds[k] - shift + if k > 0 { self.overlap(k - 1) / 2.0 } else { 0.0 };
+        let hi = self.bounds[k + 1] - shift - if k + 1 < n { self.overlap(k) / 2.0 } else { 0.0 };
+        (t - shift).clamp(lo, hi.max(lo))
+    }
+
+    /// Rendered interval of `[s, e]`; `None` when it collapses (it lay inside the hidden half
+    /// of a transition).
+    pub fn map_interval(&self, s: f64, e: f64) -> Option<(f64, f64)> {
+        let (a, b) = (self.map_time(s), self.map_time(e));
+        (b - a > 0.001).then_some((a, b))
+    }
+}
+
+/// Rendered duration of `clip` with these extras (edit duration minus transition overlaps).
+/// QC and `render.run` compare the file against this, not the bare TimeMap duration.
+pub fn effective_duration(clip: &Clip, extras: &CompileExtras) -> f64 {
+    TransitionMap::new(clip, &extras.transitions).duration()
+}
+
+/// `perspective` corner expressions: source quad = centre zoom `z` shifted by (ox, oy), all
+/// as expression strings in W/H.
+fn quad(z: &str, ox: &str, oy: &str) -> String {
+    let lo = format!("(0.5-0.5/({z}))");
+    let hi = format!("(0.5+0.5/({z}))");
+    let x = |e: &str| format!("'W*({e}+{ox})'");
+    let y = |e: &str| format!("'H*({e}+{oy})'");
+    format!(
+        "x0={}:y0={}:x1={}:y1={}:x2={}:y2={}:x3={}:y3={}",
+        x(&lo),
+        y(&lo),
+        x(&hi),
+        y(&lo),
+        x(&lo),
+        y(&hi),
+        x(&hi),
+        y(&hi)
+    )
+}
+
+/// The filter for one effect over rendered frames `[f0, f1)`; `in - 1` is the output frame index
+/// inside `perspective` (it counts every frame, also those the timeline disables).
+fn effect_filter(e: &Effect, f0: u64, f1: u64, fps: f64) -> String {
+    let a = e.amount_or_default();
+    let last = f1.saturating_sub(1).max(f0);
+    let enable = format!("enable='between(n,{f0},{last})'");
+    match e.kind {
+        EffectKind::PunchIn => {
+            format!("perspective={}:interpolation=linear:{enable}", quad(&num6(a), "0", "0"))
+        }
+        EffectKind::ZoomSlow => {
+            let span = (f1 - f0).max(1);
+            let z = format!("1+{}*clip((in-1-{f0})/{span},0,1)", num6(a - 1.0));
+            format!("perspective={}:interpolation=linear:eval=frame:{enable}", quad(&z, "0", "0"))
+        }
+        EffectKind::Shake => {
+            // Zoom in just enough that the offsets never show the frame edge.
+            let z = 1.0 + 2.0 * a;
+            let amp = 0.9 * (1.0 - 1.0 / z) / 2.0;
+            let wx = 2.0 * std::f64::consts::PI * 11.0 / fps;
+            let wy = 2.0 * std::f64::consts::PI * 7.0 / fps;
+            let ox = format!("{}*sin({}*(in-1))", num6(amp), num6(wx));
+            let oy = format!("{}*sin({}*(in-1)+1.3)", num6(amp), num6(wy));
+            format!("perspective={}:interpolation=linear:eval=frame:{enable}", quad(&num6(z), &ox, &oy))
+        }
+        EffectKind::Flash => {
+            let d = (f1 - f0).max(1);
+            format!(
+                "fade=t=in:st={}:d={}:color=white:{enable}",
+                num6(f0 as f64 / fps),
+                num6(d as f64 / fps)
+            )
+        }
+    }
+}
+
+/// Six-decimal number with trailing zeros trimmed (filter arguments that must be frame-exact).
+fn num6(v: f64) -> String {
+    let s = format!("{v:.6}");
+    let s = s.trim_end_matches('0').trim_end_matches('.');
+    if s == "-0" { "0".to_string() } else { s.to_string() }
+}
+
+/// Per-segment frame and sample counts on the cumulative grid.
+fn segment_lengths(clip: &Clip) -> (Vec<u64>, Vec<u64>) {
+    let fps = clip.canvas.fps;
+    let mut cum = 0.0f64;
+    let (mut fr, mut sa) = (Vec::new(), Vec::new());
+    for seg in &clip.segments {
+        let d = seg.end - seg.start;
+        fr.push((frame_at(cum + d, fps) - frame_at(cum, fps)).max(1));
+        sa.push(sample_at(cum + d) - sample_at(cum));
+        cum += d;
+    }
+    (fr, sa)
+}
+
+/// Joins `[v{i}]`/`[a{i}]` into `[vcat]`/`[acat]` (audio only when `video` is false): segments
+/// between transitions are concatenated, the groups are chained with `xfade` + `acrossfade`
+/// at frame-exact offsets.
+fn join_segments(
+    tmap: &TransitionMap,
+    frames: &[u64],
+    fps: f64,
+    video: bool,
+) -> Vec<String> {
+    let n = frames.len();
+    let mut parts = Vec::new();
+    if tmap.is_identity() {
+        if video {
+            let cat_in: String = (0..n).map(|i| format!("[v{i}][a{i}]")).collect();
+            parts.push(format!("{cat_in}concat=n={n}:v=1:a=1[vcat][acat]"));
+        } else {
+            let cat: String = (0..n).map(|i| format!("[a{i}]")).collect();
+            parts.push(format!("{cat}concat=n={n}:v=0:a=1[acat]"));
+        }
+        return parts;
+    }
+    let tb = tb_str(fps);
+    // Groups of segments separated by transitions.
+    let mut groups: Vec<(usize, usize)> = Vec::new();
+    let mut start = 0;
+    for k in 0..n {
+        if k + 1 == n || tmap.at_boundary(k).is_some() {
+            groups.push((start, k + 1));
+            start = k + 1;
+        }
+    }
+    let mut gframes = Vec::new();
+    for (g, &(a, b)) in groups.iter().enumerate() {
+        let (vin, ain) = if b - a == 1 {
+            (format!("[v{a}]"), format!("[a{a}]"))
+        } else if video {
+            let cat_in: String = (a..b).map(|i| format!("[v{i}][a{i}]")).collect();
+            parts.push(format!("{cat_in}concat=n={}:v=1:a=1[g{g}vc][g{g}ac]", b - a));
+            (format!("[g{g}vc]"), format!("[g{g}ac]"))
+        } else {
+            let cat: String = (a..b).map(|i| format!("[a{i}]")).collect();
+            parts.push(format!("{cat}concat=n={}:v=0:a=1[g{g}ac]", b - a));
+            (String::new(), format!("[g{g}ac]"))
+        };
+        if video {
+            parts.push(format!("{vin}settb={tb},setpts=N[g{g}v]"));
+        }
+        parts.push(format!("{ain}asetpts=N/SR/TB[g{g}a]"));
+        gframes.push(frames[a..b].iter().sum::<u64>());
+    }
+    let mut acc = gframes[0];
+    let (mut accv, mut acca) = ("[g0v]".to_string(), "[g0a]".to_string());
+    for g in 1..groups.len() {
+        let (kind, df) = tmap.at_boundary(groups[g].0 - 1).expect("group split at a transition");
+        let off = acc.saturating_sub(df);
+        let last = g + 1 == groups.len();
+        let (vout, aout) =
+            if last { ("[vcat]".to_string(), "[acat]".to_string()) } else { (format!("[x{g}v]"), format!("[x{g}a]")) };
+        if video {
+            parts.push(format!(
+                "{accv}[g{g}v]xfade=transition={}:duration={}:offset={}{vout}",
+                kind.xfade_name().unwrap_or("fade"),
+                num6(df as f64 / fps),
+                num6(off as f64 / fps)
+            ));
+        }
+        let ns = sample_at(df as f64 / fps).max(1);
+        parts.push(format!("{acca}[g{g}a]acrossfade=ns={ns}:c1=tri:c2=tri{aout}"));
+        acc = off + gframes[g];
+        accv = vout;
+        acca = aout;
+    }
+    parts
 }
 
 pub fn compile(
@@ -331,9 +837,14 @@ pub fn compile_with(
         inputs.push("-i".into());
         inputs.push(abs(&src.path).into_os_string());
     }
+    let seg_inputs = inputs.clone();
     if let Some(m) = &extras.music {
         inputs.extend(["-stream_loop", "-1", "-i"].iter().map(OsString::from));
         inputs.push(abs(&m.path).into_os_string());
+    }
+    for p in &plan.sfx_inputs {
+        inputs.push("-i".into());
+        inputs.push(abs(p).into_os_string());
     }
 
     let loudness = match (&plan.loudness_graph, &plan.loudnorm_filter) {
@@ -357,6 +868,28 @@ pub fn compile_with(
         }
         _ => {
             let _ = std::fs::remove_file(workdir.join(LOUDNESS_GRAPH_FILE));
+            None
+        }
+    };
+
+    let noise = match (&plan.noise_graph, &plan.denoise_filter) {
+        (Some(g), Some(filter)) => {
+            write_file(&workdir.join(NOISE_GRAPH_FILE), g)?;
+            // ametadata prints at info level.
+            let mut a: Vec<OsString> = ["-hide_banner", "-nostdin", "-nostats", "-loglevel", "info"]
+                .iter()
+                .map(OsString::from)
+                .collect();
+            a.extend(seg_inputs);
+            a.extend(
+                ["-/filter_complex", NOISE_GRAPH_FILE, "-map", "[aout]", "-f", "null", "-"]
+                    .iter()
+                    .map(OsString::from),
+            );
+            Some(NoisePass { args: a, filter: filter.clone(), denoise: extras.denoise })
+        }
+        _ => {
+            let _ = std::fs::remove_file(workdir.join(NOISE_GRAPH_FILE));
             None
         }
     };
@@ -390,6 +923,7 @@ pub fn compile_with(
         filter_script: plan.graph,
         workdir: workdir.to_path_buf(),
         loudness,
+        noise,
     })
 }
 
@@ -405,6 +939,14 @@ pub struct GraphPlan {
     pub loudness_graph: Option<String>,
     /// The single-pass loudnorm filter text inside `graph` (when loudnorm is on).
     pub loudnorm_filter: Option<String>,
+    /// Sound-effect files, in input order after the segments (and the music bed).
+    pub sfx_inputs: Vec<PathBuf>,
+    /// Rendered duration (edit duration minus transition overlaps), seconds.
+    pub duration: f64,
+    /// Audio-only graph that measures the dialogue noise floor (`graph_noise.txt`; denoise on).
+    pub noise_graph: Option<String>,
+    /// The denoise filter text inside `graph` (default floor), replaced after the noise pass.
+    pub denoise_filter: Option<String>,
 }
 
 pub fn build_graph(
@@ -421,18 +963,12 @@ pub fn build_graph(
     let mut parts: Vec<String> = Vec::new();
     let mut cmd_files = Vec::new();
     let mut seg_audio: Vec<String> = Vec::new();
+    let tmap = TransitionMap::new(clip, &extras.transitions);
+    let (seg_frames, seg_samples) = segment_lengths(clip);
 
-    let mut cum = 0.0f64;
-    let mut total_samples = 0u64;
     for (i, seg) in clip.segments.iter().enumerate() {
         let src = &sources[&seg.source_id];
-        let d = seg.end - seg.start;
-        let (f0, f1) = (frame_at(cum, canvas.fps), frame_at(cum + d, canvas.fps));
-        let (a0, a1) = (sample_at(cum), sample_at(cum + d));
-        cum += d;
-        let frames = (f1 - f0).max(1);
-        let samples = a1 - a0;
-        total_samples += samples;
+        let (frames, samples) = (seg_frames[i], seg_samples[i]);
 
         let crop_keys = extras
             .crop_paths
@@ -452,9 +988,15 @@ pub fn build_graph(
             crop_keys.map(|v| v.as_slice()),
         );
 
+        let gain = extras
+            .segment_gain_db
+            .get(&seg.id)
+            .filter(|g| g.is_finite() && **g != 0.0)
+            .map(|g| format!(",volume={}dB", num(*g)))
+            .unwrap_or_default();
         let achain = if src.probe.has_audio {
             format!(
-                "[{i}:a:0]aresample=48000:async=1:first_pts=0,{AUDIO_FORMAT},apad,\
+                "[{i}:a:0]aresample=48000:async=1:first_pts=0,{AUDIO_FORMAT}{gain},apad,\
                  asetpts=N/SR/TB,atrim=end_sample={samples},asetpts=N/SR/TB[a{i}]"
             )
         } else {
@@ -468,22 +1010,87 @@ pub fn build_graph(
     }
 
     let n = clip.segments.len();
-    let cat_in: String = (0..n).map(|i| format!("[v{i}][a{i}]")).collect();
-    parts.push(format!("{cat_in}concat=n={n}:v=1:a=1[vcat][acat]"));
+    parts.extend(join_segments(&tmap, &seg_frames, canvas.fps, true));
 
+    // Rendered length: the overlaps of the transitions are gone.
+    let overlap_frames: u64 = (0..n.saturating_sub(1)).filter_map(|k| tmap.at_boundary(k)).map(|(_, f)| f).sum();
+    let overlap_samples: u64 = (0..n.saturating_sub(1))
+        .filter_map(|k| tmap.at_boundary(k))
+        .map(|(_, f)| sample_at(f as f64 / canvas.fps).max(1))
+        .sum();
+    let total_frames = seg_frames.iter().sum::<u64>().saturating_sub(overlap_frames).max(1);
+    let total_samples = seg_samples.iter().sum::<u64>().saturating_sub(overlap_samples);
     let duration = total_samples as f64 / SR as f64;
-    let overlays_ass = overlays_ass(&extras.overlays, &canvas, duration);
+
+    // Overlays live on the edit timeline: map them through the transitions.
+    let mapped_overlays: Vec<TextOverlay> = extras
+        .overlays
+        .iter()
+        .filter_map(|o| {
+            let (s, e) = tmap.map_interval(o.start, o.end)?;
+            Some(TextOverlay { start: s, end: e, ..o.clone() })
+        })
+        .collect();
+    let overlays_ass = overlays_ass(&mapped_overlays, &canvas, duration);
 
     // Concat runs on a microsecond time base; rebuild exact frame timestamps.
     let mut vpost = format!("[vcat]settb={},setpts=N", tb_str(canvas.fps));
+    for e in &extras.effects {
+        let Some((s, t)) = tmap.map_interval(e.start, e.end) else { continue };
+        let (f0, f1) = (frame_at(s, canvas.fps), frame_at(t, canvas.fps).min(total_frames));
+        if f1 > f0 {
+            let _ = write!(vpost, ",{}", effect_filter(e, f0, f1, canvas.fps));
+        }
+    }
     if captions {
         let _ = write!(vpost, ",ass={ASS_FILE}:fontsdir={FONTS_DIR}");
     }
     if overlays_ass.is_some() {
         let _ = write!(vpost, ",ass={OVERLAYS_ASS_FILE}:fontsdir={FONTS_DIR}");
     }
-    vpost.push_str(",format=yuv420p[vout]");
-    parts.push(vpost);
+    match &extras.progress_bar {
+        None => {
+            vpost.push_str(",format=yuv420p[vout]");
+            parts.push(vpost);
+        }
+        Some(pb) => {
+            // A canvas-wide bar slides in from the left: at output frame n it shows
+            // (n+1)/N of the width, so the last frame is full.
+            let h = (pb.height.max(2) + pb.height % 2).min(ch);
+            let y = match pb.position {
+                BarPosition::Top => 0,
+                BarPosition::Bottom => ch - h,
+            };
+            let color = ffmpeg_color(&pb.color).unwrap_or_else(|| "0xFFE000".into());
+            vpost.push_str("[vbar]");
+            parts.push(vpost);
+            parts.push(format!(
+                "color=c={color}:s={cw}x{h}:r={fps},trim=end_frame={total_frames},format=yuv420p[pbar]"
+            ));
+            parts.push(format!(
+                "[vbar][pbar]overlay=x='W*(n+1)/{total_frames}-W':y={y}:eval=frame,format=yuv420p[vout]"
+            ));
+        }
+    }
+
+    // Sound effects: input index after the segments and the music bed.
+    let base = n + usize::from(extras.music.is_some());
+    let mut sfx_inputs = Vec::new();
+    let mut sfx_chains = Vec::new();
+    for cue in &extras.sfx {
+        let at = tmap.map_time(cue.at);
+        if !(at.is_finite() && at >= 0.0 && at < duration - 0.01) {
+            continue;
+        }
+        let idx = base + sfx_inputs.len();
+        sfx_chains.push(format!(
+            "[{idx}:a:0]aresample=48000,{AUDIO_FORMAT},volume={}dB,adelay=delays={}S:all=1,apad,\
+             atrim=end_sample={total_samples},asetpts=N/SR/TB",
+            num(cue.volume_db),
+            sample_at(at)
+        ));
+        sfx_inputs.push(cue.path.clone());
+    }
 
     let loudnorm_filter = clip.audio.loudnorm.then(|| {
         format!(
@@ -493,16 +1100,28 @@ pub fn build_graph(
             num(clip.audio.lra)
         )
     });
-    parts.extend(audio_tail(extras, n, total_samples, loudnorm_filter.as_deref()));
+    parts.extend(audio_tail(extras, n, &sfx_chains, total_samples, loudnorm_filter.as_deref()));
+
+    // Denoise: measure the noise floor of the joined dialogue first (50 ms RMS windows).
+    let denoise_filter = extras.denoise.filter();
+    let noise_graph = denoise_filter.as_ref().map(|_| {
+        let mut g = seg_audio.clone();
+        g.extend(join_segments(&tmap, &seg_frames, canvas.fps, false));
+        g.push(
+            "[acat]highpass=f=80,asetnsamples=n=2400:p=0,astats=metadata=1:reset=1:measure_perchannel=none:\
+             measure_overall=RMS_level,ametadata=mode=print:key=lavfi.astats.Overall.RMS_level[aout]"
+                .to_string(),
+        );
+        g.join(";\n")
+    });
 
     // Two-pass loudnorm: the same audio graph, audio-only, with loudnorm printing JSON.
     let loudness_graph = match (&loudnorm_filter, extras.two_pass_loudness) {
         (Some(f), true) => {
             let mut g = seg_audio;
-            let cat: String = (0..n).map(|i| format!("[a{i}]")).collect();
-            g.push(format!("{cat}concat=n={n}:v=0:a=1[acat]"));
+            g.extend(join_segments(&tmap, &seg_frames, canvas.fps, false));
             let measure = format!("{f}:print_format=json");
-            g.extend(audio_tail(extras, n, total_samples, Some(&measure)));
+            g.extend(audio_tail(extras, n, &sfx_chains, total_samples, Some(&measure)));
             Some(g.join(";\n"))
         }
         _ => None,
@@ -514,13 +1133,19 @@ pub fn build_graph(
         overlays_ass,
         loudness_graph,
         loudnorm_filter,
+        sfx_inputs,
+        duration,
+        noise_graph,
+        denoise_filter,
     })
 }
 
-/// `[acat]` (+ music bed) -> loudnorm -> `[aout]`.
+/// `[acat]` (+ denoise/gain, sound effects, music bed) -> loudnorm -> `[aout]`.
+/// `sfx` are the effect chains without their output label.
 fn audio_tail(
     extras: &CompileExtras,
     k: usize,
+    sfx: &[String],
     total_samples: u64,
     loudnorm: Option<&str>,
 ) -> Vec<String> {
@@ -532,8 +1157,30 @@ fn audio_tail(
     // loudnorm's buffered flush can leave a PTS jump; rebuild the sample clock after it.
     let _ = write!(apost, "{AUDIO_FORMAT},asetpts=N/SR/TB[aout]");
 
+    // Dialogue clean-up before anything is mixed in.
+    let mut pre: Vec<String> = Vec::new();
+    if let Some(f) = extras.denoise.filter() {
+        pre.push(f);
+    }
+    if extras.speech_gain_db.is_finite() && extras.speech_gain_db != 0.0 {
+        pre.push(format!("volume={}dB", num(extras.speech_gain_db)));
+    }
+    let speech = if pre.is_empty() {
+        "[acat]".to_string()
+    } else {
+        parts.push(format!("[acat]{}[speech0]", pre.join(",")));
+        "[speech0]".to_string()
+    };
+    let mut fx_labels = String::new();
+    for (j, chain) in sfx.iter().enumerate() {
+        parts.push(format!("{chain}[sfx{j}]"));
+        let _ = write!(fx_labels, "[sfx{j}]");
+    }
+    let mix = |inputs: usize| format!("amix=inputs={inputs}:duration=first:dropout_transition=0:normalize=0");
+
     match &extras.music {
-        None => parts.push(format!("[acat]{apost}")),
+        None if sfx.is_empty() => parts.push(format!("{speech}{apost}")),
+        None => parts.push(format!("{speech}{fx_labels}{},{apost}", mix(1 + sfx.len()))),
         Some(m) => {
             let total = total_samples as f64 / SR as f64;
             let fi = m.fade_in.clamp(0.0, total / 2.0);
@@ -551,16 +1198,17 @@ fn audio_tail(
             }
             mus.push_str("[mus]");
             parts.push(mus);
-            let mix = "amix=inputs=2:duration=first:dropout_transition=0:normalize=0";
+            let mix = mix(2 + sfx.len());
             if m.duck {
-                parts.push("[acat]asplit=2[speech][sc]".to_string());
+                // The sidechain keys on speech only, never on the sound effects.
+                parts.push(format!("{speech}asplit=2[speech][sc]"));
                 parts.push(
                     "[mus][sc]sidechaincompress=threshold=0.08:ratio=5:attack=100:release=1000[duck]"
                         .to_string(),
                 );
-                parts.push(format!("[speech][duck]{mix},{apost}"));
+                parts.push(format!("[speech][duck]{fx_labels}{mix},{apost}"));
             } else {
-                parts.push(format!("[acat][mus]{mix},{apost}"));
+                parts.push(format!("{speech}[mus]{fx_labels}{mix},{apost}"));
             }
         }
     }
@@ -1055,6 +1703,60 @@ fn validate(
                 o.id
             ))
             .hint("fix it with `rustler overlay edit` or remove it with `rustler overlay remove`"));
+        }
+    }
+    for (id, g) in &extras.segment_gain_db {
+        if !(g.is_finite() && (-60.0..=24.0).contains(g)) {
+            return Err(v(format!("segment {id}: volume {g} dB must be between -60 and 24")));
+        }
+    }
+    if !(extras.speech_gain_db.is_finite() && (-60.0..=24.0).contains(&extras.speech_gain_db)) {
+        return Err(v("clip volume must be between -60 and 24 dB".into()));
+    }
+    for s in &extras.sfx {
+        if !(s.at.is_finite() && s.at >= 0.0 && s.volume_db.is_finite() && (-60.0..=12.0).contains(&s.volume_db)) {
+            return Err(v(format!("sfx {}: needs at >= 0 and volume_db in -60..12", s.id))
+                .hint("fix it with `rustler audio remove-sfx` and add it again"));
+        }
+    }
+    for e in &extras.effects {
+        let (lo, hi) = e.kind.amount_range();
+        let a = e.amount_or_default();
+        let ok = e.start.is_finite() && e.end.is_finite() && e.start >= 0.0 && e.end > e.start && a.is_finite();
+        if !ok || !(lo..=hi).contains(&a) {
+            return Err(v(format!("effect {}: needs 0 <= start < end and amount in {lo}..{hi}", e.id))
+                .hint("remove it with `rustler effect remove` and add it again"));
+        }
+    }
+    if let Some(pb) = &extras.progress_bar
+        && (ffmpeg_color(&pb.color).is_none() || !(2..=200).contains(&pb.height))
+    {
+        return Err(v(format!("progress bar: color must be #RRGGBB and height 2..200 (got {} / {})", pb.color, pb.height))
+            .hint("set it again with `rustler overlay progress-bar <clip_id> --enabled true`"));
+    }
+    check_transitions(clip, &extras.transitions)
+}
+
+/// Transitions take frames from both neighbours: every segment must be longer than the
+/// transitions on its two sides (Validation otherwise).
+pub fn check_transitions(clip: &Clip, transitions: &[Transition]) -> rustler_core::Result<()> {
+    let tmap = TransitionMap::new(clip, transitions);
+    let (frames, _) = segment_lengths(clip);
+    for (k, seg) in clip.segments.iter().enumerate() {
+        let tin = if k > 0 { tmap.at_boundary(k - 1).map_or(0, |(_, f)| f) } else { 0 };
+        let tout = tmap.at_boundary(k).map_or(0, |(_, f)| f);
+        if tin + tout > 0 && tin + tout >= frames[k] {
+            return Err(RustlerError::new(
+                ErrorCode::Validation,
+                STAGE,
+                format!(
+                    "segment {} is {} frames long but its transitions overlap {} frames",
+                    seg.id,
+                    frames[k],
+                    tin + tout
+                ),
+            )
+            .hint("shorten the transition with `rustler transition set ... --duration 0.2` or remove it with `rustler transition clear`"));
         }
     }
     Ok(())

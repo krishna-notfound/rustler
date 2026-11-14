@@ -291,24 +291,27 @@ async fn ytdlp_json(ctx: &Ctx, paths: &ToolPaths, project: &Project, args: Vec<O
 
 #[derive(Deserialize, JsonSchema, Debug)]
 pub struct InfoIn {
-    pub url: String,
+    /// Video URL to look up (needs network). Give this or `source_id`.
+    pub url: Option<String>,
+    /// An imported source: reads the saved `analysis/<id>/source_info.json` instead (no network).
+    pub source_id: Option<SourceId>,
 }
 
-#[derive(Serialize, JsonSchema, Debug, Clone)]
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
 pub struct Chapter {
     pub start: f64,
     pub end: f64,
     pub title: String,
 }
 
-#[derive(Serialize, JsonSchema, Debug, Clone)]
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
 pub struct HeatWindow {
     pub start: f64,
     pub end: f64,
     pub value: f64,
 }
 
-#[derive(Serialize, JsonSchema, Debug, Clone)]
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
 pub struct HeatPeak {
     pub start: f64,
     pub end: f64,
@@ -317,14 +320,14 @@ pub struct HeatPeak {
     pub range: String,
 }
 
-#[derive(Serialize, JsonSchema, Debug)]
+#[derive(Serialize, Deserialize, JsonSchema, Debug)]
 pub struct Subtitles {
     pub manual: Vec<String>,
     /// Auto-generated tracks (original-language ones first; machine translations are not listed).
     pub auto: Vec<String>,
 }
 
-#[derive(Serialize, JsonSchema, Debug)]
+#[derive(Serialize, Deserialize, JsonSchema, Debug)]
 pub struct InfoOut {
     pub url: String,
     pub title: String,
@@ -365,13 +368,7 @@ pub fn parse_info(v: &Value, url: &str) -> InfoOut {
                 .collect()
         })
         .unwrap_or_default();
-    let mut ranked = heatmap.clone();
-    ranked.sort_by(|a, b| b.value.partial_cmp(&a.value).unwrap_or(std::cmp::Ordering::Equal));
-    let heatmap_peaks: Vec<HeatPeak> = ranked
-        .into_iter()
-        .take(8)
-        .map(|h| HeatPeak { range: format!("{}-{}", mmss(h.start), mmss(h.end)), start: h.start, end: h.end, value: h.value })
-        .collect();
+    let heatmap_peaks = top_peaks(&heatmap);
     let keys = |k: &str| -> Vec<String> {
         v[k].as_object()
             .map(|o| o.keys().filter(|l| *l != "live_chat").cloned().collect())
@@ -421,14 +418,78 @@ fn round1(x: f64) -> f64 {
     (x * 10.0).round() / 10.0
 }
 
+/// Top 8 heatmap windows by value, highest first.
+fn top_peaks(heatmap: &[HeatWindow]) -> Vec<HeatPeak> {
+    let mut ranked = heatmap.to_vec();
+    ranked.sort_by(|a, b| b.value.partial_cmp(&a.value).unwrap_or(std::cmp::Ordering::Equal));
+    ranked
+        .into_iter()
+        .take(8)
+        .map(|h| HeatPeak { range: format!("{}-{}", mmss(h.start), mmss(h.end)), start: h.start, end: h.end, value: h.value })
+        .collect()
+}
+
+/// Keeps the heatmap windows that overlap `[from, to]` (clipped to it) and moves them by `-shift`
+/// seconds. `shift_heatmap(h, s, e, s)` gives section-local times (0 = the section start);
+/// `shift = 0` keeps original-video times but drops everything outside the section.
+pub fn shift_heatmap(heat: &[HeatWindow], from: f64, to: f64, shift: f64) -> Vec<HeatWindow> {
+    heat.iter()
+        .filter(|h| h.end > from && h.start < to)
+        .map(|h| HeatWindow { start: round1(h.start.max(from) - shift), end: round1(h.end.min(to) - shift), value: h.value })
+        .collect()
+}
+
+/// What `analysis/<src>/source_info.json` holds: the [`InfoOut`] of the video (title, duration, chapters,
+/// uploader, webpage_url, heatmap, peaks, subtitles) plus section bookkeeping.
+///
+/// `heatmap` stays in *original-video* time (restricted to the imported section), because
+/// `highlights.signals` adds the source's `original_offset` itself when it reads it; `heatmap_local`
+/// is the same data shifted by `-original_offset` (0 = the start of the imported media).
+pub fn build_source_info(v: &Value, url: &str, section: Option<TimeRange>) -> Value {
+    let mut info = parse_info(v, url);
+    let offset = section.map_or(0.0, |s| s.start);
+    let mut local = info.heatmap.clone();
+    if let Some(s) = section {
+        info.heatmap = shift_heatmap(&info.heatmap, s.start, s.end, 0.0);
+        local = shift_heatmap(&local, s.start, s.end, s.start);
+        info.heatmap_peaks = top_peaks(&info.heatmap);
+    }
+    info.next = vec![
+        "rustler highlights signals <source-id>   (uses the saved heatmap)".to_string(),
+        "rustler highlights candidates <source-id>".to_string(),
+    ];
+    let mut out = serde_json::to_value(&info).unwrap_or(Value::Null);
+    if let Some(o) = out.as_object_mut() {
+        o.insert("original_offset".into(), json!(offset));
+        o.insert("section".into(), json!(section));
+        o.insert("heatmap_local".into(), json!(local));
+    }
+    out
+}
+
 pub async fn info(ctx: Ctx, input: InfoIn) -> rustler_core::Result<InfoOut> {
     let store = ctx.store()?;
+    if let Some(id) = &input.source_id {
+        let source = load_source_checked(&store, id)?;
+        let rel = Path::new("analysis").join(id.as_str()).join("source_info.json");
+        if !store.resolve(&rel).is_file() {
+            let hint = match &source.origin {
+                SourceOrigin::Url { url, .. } => format!("look it up online with `rustler source info {url}`; sources imported before this feature have no saved info"),
+                SourceOrigin::File { .. } => "only sources imported from a URL have saved video info; this one came from a local file".to_string(),
+            };
+            return Err(RustlerError::new(ErrorCode::NotFound, "source.info", format!("no saved video info for source {id}")).hint(hint));
+        }
+        return store.read_json(&rel);
+    }
+    let Some(url) = input.url.as_deref() else {
+        return Err(validation("source.info", "pass a url or a source_id", "`rustler source info <url>` or `rustler source info --source-id <id>`"));
+    };
     let project = store.load_project()?;
-    require_url(&input.url, "source.info")?;
+    require_url(url, "source.info")?;
     require_network(&project, false, "looking up an online video")?;
     let paths = ToolPaths::from_home(&ctx.home);
-    let v = ytdlp_json(&ctx, &paths, &project, vec![input.url.trim().into()]).await?;
-    Ok(parse_info(&v, input.url.trim()))
+    let v = ytdlp_json(&ctx, &paths, &project, vec![url.trim().into()]).await?;
+    Ok(parse_info(&v, url.trim()))
 }
 
 fn require_url(url: &str, stage: &str) -> rustler_core::Result<()> {
@@ -807,10 +868,8 @@ async fn import_url(
         })
         .await?;
         let media = find_media(&dir)?;
-        let title = std::fs::read_to_string(dir.join("media.info.json"))
-            .ok()
-            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-            .and_then(|v| v["title"].as_str().map(String::from));
+        let info_json = std::fs::read_to_string(dir.join("media.info.json")).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok());
+        let title = info_json.as_ref().and_then(|v| v["title"].as_str().map(String::from));
         let _ = std::fs::remove_file(dir.join("media.info.json"));
         let base = name.map(String::from).or(title).unwrap_or_else(|| "video".to_string());
         let display = match range {
@@ -820,6 +879,16 @@ async fn import_url(
         let origin = SourceOrigin::Url { url: url.to_string(), section: range, original_offset: range.map_or(0.0, |r| r.start) };
         let progress_base = 0.7 + 0.3 * (n as f32 / total as f32);
         let s = finish_import(ctx, store, paths, id.clone(), display, origin, media, warnings, progress_base, total).await?;
+        // Save the video's yt-dlp info (title, chapters, heatmap, ...) for highlights.signals / source.info.
+        match &info_json {
+            Some(v) => {
+                let rel = Path::new("analysis").join(s.id.as_str()).join("source_info.json");
+                if let Err(e) = store.write_json(&rel, &build_source_info(v, url, range)) {
+                    warnings.push(format!("could not save source_info.json: {}", e.message));
+                }
+            }
+            None => warnings.push("yt-dlp wrote no info json: source_info.json (heatmap, chapters) was not saved".to_string()),
+        }
         if let Some(r) = range {
             let want = r.end - r.start;
             if (s.probe.duration - want).abs() > 1.5 {
@@ -1050,10 +1119,13 @@ pub fn register(reg: &mut Registry) {
     ));
     reg.register(typed(
         "source.info",
-        "Scan an online video without downloading: title, chapters, most-replayed heatmap peaks, caption languages",
+        "Scan an online video without downloading: title, chapters, most-replayed heatmap peaks, caption languages. With --source-id: the info saved when that URL source was imported (no network)",
         &["url"],
         Annotations { read_only: true, ..net },
-        vec![Example { description: "Scan first", cli: "rustler source info https://youtu.be/ID" }],
+        vec![
+            Example { description: "Scan first", cli: "rustler source info https://youtu.be/ID" },
+            Example { description: "Saved info of an imported source", cli: "rustler source info --source-id src_X" },
+        ],
         info,
     ));
     reg.register(typed(

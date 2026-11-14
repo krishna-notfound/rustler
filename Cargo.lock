@@ -2272,6 +2272,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -2322,6 +2323,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "unicode-normalization",
+ "zip",
 ]
 
 [[package]]
@@ -2445,6 +2447,7 @@ dependencies = [
  "futures-util",
  "include_dir",
  "reqwest",
+ "rustler-captions",
  "rustler-core",
  "rustler-registry",
  "schemars",

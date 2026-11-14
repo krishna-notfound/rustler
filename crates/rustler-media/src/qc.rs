@@ -349,7 +349,7 @@ pub async fn run_qc_with(
     let cancel = CancellationToken::new();
     let cid = clip.id.to_string();
     let st = probe_streams(paths, render_path, &cancel).await?;
-    let expected_dur = TimeMap::from_segments(&clip.segments).duration();
+    let expected_dur = extras.expected_duration.unwrap_or_else(|| TimeMap::from_segments(&clip.segments).duration());
     let actual_dur = st.format_duration;
     let mut checks: Vec<QcCheck> = Vec::new();
 
@@ -636,6 +636,9 @@ pub struct QcExtras {
     pub overlay_add_text: bool,
     /// True when `extras.json` holds a face-tracked crop path for the clip.
     pub has_crop_path: bool,
+    /// Rendered duration when transitions shorten the clip (overlaps removed); `None` = the
+    /// plain TimeMap duration.
+    pub expected_duration: Option<f64>,
 }
 
 /// Where in the frame a face matters for a clip's layout.

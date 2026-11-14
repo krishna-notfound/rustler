@@ -1,9 +1,9 @@
 ---
 id: audio
 title: "Audio: loudness, music beds, ducking and silence"
-summary: "Loudness targets (-14 LUFS, -2 dBTP), adding a music bed at -18 dB with ducking, avoiding copyrighted music, and handling silence and pauses."
+summary: "Loudness targets (-14 LUFS, -2 dBTP), music bed at -18 dB with ducking, denoise, per-segment volume, sound effects on words, avoiding copyrighted music, and silence."
 order: 8
-tags: [audio, loudness, music, ducking, silence, copyright]
+tags: [audio, loudness, music, ducking, silence, copyright, denoise, sfx, volume]
 ---
 
 # Audio
@@ -35,7 +35,8 @@ Talking clips usually do **not** need music. Add a bed when the clip is slow, em
 or has silent visual stretches, or when the brief asks.
 
 ```
-rustler audio add-music clp_X --path "D:/music/calm-lofi-01.mp3" --volume-db -18 --duck true   # (if available)
+rustler audio add-music clp_X --path "D:/music/calm-lofi-01.mp3" --volume-db -18 --duck true
+rustler audio remove-music clp_X
 ```
 
 | Parameter | Start value | Adjust |
@@ -62,6 +63,24 @@ Rules:
 - Source clips with loud copyrighted music in the background (stream music, a song in a vlog) are
   risky: prefer other moments; if unavoidable, flag it in the report.
 
+### Asset library: SFX and music with licenses
+
+`rustler asset list --kind sfx`, `rustler asset search whoosh --kind sfx` and `rustler asset show <id>`
+(duration, codec) browse the library; every entry shows its `license`, `source_url` and `attribution`.
+`rustler setup` fills it with a curated subset of Kenney's CC0 sound packs (clicks, pops, swipes/whooshes,
+impacts, about 26 files). **No music is bundled**: there is no verifiably CC0, login-free music source,
+so add your own with a license:
+
+```text
+rustler asset add bed.mp3 --kind music --license "CC-BY-4.0" --attribution "Artist - Track" --source-url https://...
+rustler audio add-music <clip_id> asset:music-bed        # `asset:<id>` can replace the file path
+```
+
+`asset add` **refuses** a missing or placeholder license (`unknown`, `n/a`...) and never fetches anything.
+If the license requires attribution, put the credit line in the clip's caption/description.
+`--scope project` (default inside a project) keeps the file with the project; `--scope global` is shared
+by all projects (`~/.rustler/assets`).
+
 ## 4. Silence and pauses
 
 `analyze audio` gives `silences` (below −35 dB for ≥ 0.6 s) in the source. QC flags `long_silence`
@@ -80,13 +99,56 @@ Rules:
 |---|---|
 | No audio track | Render adds a silent track; add a music bed or skip the source for talking content |
 | One channel only / mono | Fine: output is stereo 48 kHz AAC 160 kbps |
-| Heavy noise / echo | Prefer cleaner moments; a denoise command may exist later (`commands list` → `audio.*`) |
+| Heavy noise (hiss, hum, fan) | `rustler audio denoise clp_X` (section 7); echo/reverb is not fixed by it, prefer cleaner moments |
 | Clipping/distortion in the source | Can't be repaired by loudnorm; avoid or accept and flag |
 | Game audio drowns the streamer | Prefer moments where the voice is clear; flag it |
-| Big volume jumps between segments of a montage | Loudnorm evens the whole clip, not each segment; compare segment loudness in `analyze audio` `curve` and avoid joining a whisper to a shout |
+| Big volume jumps between segments of a montage | Loudnorm evens the whole clip, not each segment: balance them with `rustler audio volume clp_X --segment-id seg_Y --db -4` (section 7); avoid joining a whisper to a shout |
 
 ## 6. Sound effects
 
-SFX (whoosh, ding, bass hit) can be added only if an SFX command exists (`audio.sfx`, check
-`commands list`). Use them sparingly: 0-3 per clip, on real beats (reveal, cut to reaction).
-Overuse looks cheap.
+Use them sparingly: 0-3 per clip, on real beats (a reveal, the cut to a reaction, the punchline
+word). Overuse looks cheap. Only use files you are licensed to use (CC0 packs, the user's own).
+
+```
+rustler audio add-sfx clp_X C:/sfx/whoosh.wav --at 2.5                       # edit-timeline seconds
+rustler audio add-sfx clp_X C:/sfx/impact.wav --at-word '{"source_id":"src_Y","word_index":42}' --volume-db -10
+rustler audio list clp_X                                                       # resolved times, problems
+rustler audio remove-sfx clp_X sfx_1
+```
+
+- `--at` is on the **edit timeline** (what `clip show` prints), the same timeline as overlays and
+  effects. Default gain is −6 dB; the range is −60..12.
+- `--at-word` anchors the effect to the start of a transcript word (`transcript get` shows word
+  indices). It is re-resolved at every render, so after `edit trim`/`split`/`remove-words` it still
+  lands on the word; if the word is cut out, the render skips it with a warning and `audio list`
+  shows `problem`.
+- Effects are mixed in after denoise, outside the music ducking sidechain (they never duck the
+  music), and before loudnorm. Placement is sample-exact (`adelay` in samples).
+- Whoosh on a transition: put it a little before the cut, e.g. `--at <cut time - 0.15>`.
+
+## 7. Denoise and volume
+
+```
+rustler audio denoise clp_X                      # medium (default)
+rustler audio denoise clp_X --strength light     # light | medium | strong | off
+rustler audio volume clp_X --segment-id seg_Y --db -4   # one segment quieter (0 resets)
+rustler audio volume clp_X --db 2                # whole dialogue (little effect while loudnorm is on)
+```
+
+- Denoise = 80 Hz high-pass + FFT denoise (`afftdn`). At render a fast audio-only pass measures
+  the dialogue noise floor (10th percentile of 50 ms windows, never closer than 12 dB to the median
+  window) and sets the denoise threshold from it, so it adapts to each clip and to re-cuts.
+  `render run` reports `noise_floor_db` and the `denoise_filter` it used.
+- Measured on this machine: light / medium / strong remove about 12 / 20 / 30 dB of white hiss
+  and 8 / 12 / 19 dB of pink noise under real speech, with the speech level unchanged.
+- Start with `light` or `medium`. `strong` can sound watery on voices — listen to a draft render.
+- Denoise does not remove echo, music or crowd noise; prefer cleaner moments for those.
+- Per-segment volume balances takes before loudnorm sets the overall level; use it when one
+  segment is clearly quieter or louder than its neighbours.
+
+## 8. Transitions change the audio timeline
+
+`transition set` overlaps two segments (`acrossfade` on the audio, `xfade` on the picture), so the
+rendered file is shorter than the edit timeline by the overlap (`transition list` shows both).
+You keep giving times on the edit timeline; the render moves captions, overlays, sound effects and
+effects with the picture. `audio list` shows `rendered_duration` and each effect's `rendered_at`.

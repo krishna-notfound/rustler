@@ -3,7 +3,7 @@
 
 use crate::doctor::{VersionKind, detect_nvidia, tool_version};
 use crate::paths::ToolPaths;
-use crate::{engine_install, ffmpeg_install, fonts, uv_install, ytdlp_install};
+use crate::{assets, engine_install, ffmpeg_install, fonts, uv_install, ytdlp_install};
 use rustler_core::{ErrorCode, RustlerError};
 use rustler_registry::{ProgressEvent, ProgressSink};
 use schemars::JsonSchema;
@@ -29,7 +29,7 @@ pub enum GpuMode {
     None,
 }
 
-/// Default: Lite, Auto, `["small"]`, not forced.
+/// Default: Lite, Auto, `["small"]`, not forced, asset library on.
 #[derive(Serialize, Deserialize, JsonSchema, Clone, PartialEq, Eq, Debug)]
 #[serde(default)]
 pub struct SetupOptions {
@@ -37,6 +37,9 @@ pub struct SetupOptions {
     pub gpu: GpuMode,
     pub whisper_models: Vec<String>,
     pub force: bool,
+    /// Fill the global asset library (`~/.rustler/assets`): built-in styles, fonts, CC0 SFX.
+    /// Skip with `--no-assets`.
+    pub assets: bool,
 }
 
 impl Default for SetupOptions {
@@ -46,6 +49,7 @@ impl Default for SetupOptions {
             gpu: GpuMode::Auto,
             whisper_models: vec!["small".to_string()],
             force: false,
+            assets: true,
         }
     }
 }
@@ -64,6 +68,9 @@ pub struct SetupReport {
     pub skipped: Vec<Component>,
     /// (component, error message)
     pub failed: Vec<(String, String)>,
+    /// Non-fatal notes (e.g. an asset pack that could not be fetched).
+    #[serde(default)]
+    pub notes: Vec<String>,
 }
 
 /// Platforms with prebuilt tool downloads.
@@ -262,6 +269,23 @@ pub async fn setup(
                 report.skipped.push(c);
             }
             Err(f) => report.failed.push(f),
+        }
+    }
+    if opts.assets {
+        emit("filling the asset library (built-in styles, fonts, CC0 SFX)");
+        match assets::install(paths, force, progress).await {
+            Ok(r) => {
+                report.notes.extend(r.warnings.iter().cloned());
+                let c = Component {
+                    name: "assets".into(),
+                    version: format!("{} built-in, {} fonts, {} sfx", r.builtins, r.fonts, r.sfx),
+                    path: assets::assets_root(&paths.home),
+                    sha256: None,
+                };
+                manifest.components.insert(c.name.clone(), c.clone());
+                report.installed.push(c);
+            }
+            Err(e) => report.failed.push(fail("assets", e)),
         }
     }
     manifest.save(paths).map_err(|e| io("write manifest.json", e))?;

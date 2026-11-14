@@ -17,9 +17,9 @@ use crate::clip_cmds::{load_transcript, tracking_crop_width, transcript_rel};
 use crate::extras;
 use crate::project_cmds::{Outcome, log_event, mmss, validation};
 use crate::source_cmds::load_source_checked;
-use rustler_captions::{CaptionWord, write_ass, write_ass_colored};
+use rustler_captions::{CaptionWord, Preset, write_ass_colored_with, write_ass_with};
 use rustler_core::{Clip, ClipId, ErrorCode, ProjectStore, RustlerError, SegmentId, Source, SourceId, TimeMap, Word};
-use rustler_media::compile::CropKey;
+use rustler_media::compile::{CropKey, TransitionMap};
 use rustler_media::facepath::{FaceBox, FaceSample, SmoothParams, crop_keys};
 use rustler_registry::{Annotations, Ctx, Example, Registry, typed};
 use rustler_tools::ToolPaths;
@@ -256,13 +256,17 @@ pub fn word_colors(
         .collect()
 }
 
-/// ASS text for a clip's captions: speaker-coloured when `caption.speaker_colors` is enabled and
-/// the clip's sources have been diarized, else the plain preset look. Problems that make it fall
-/// back to plain captions are appended to `warnings`.
-pub fn write_clip_ass(store: &ProjectStore, clip: &Clip, words: &[CaptionWord], font: &str, warnings: &mut Vec<String>) -> Result<String> {
-    let plain = || write_ass(words, &clip.captions, &clip.canvas, font);
+/// Speaker colour per caption word (words in the clip's edit timeline) when `caption.speaker_colors`
+/// is enabled for the clip; `None` when it is off or no word matched a coloured speaker. Problems
+/// that make the captions fall back to the preset colour are appended to `warnings`.
+pub fn word_colors_for_clip(
+    store: &ProjectStore,
+    clip: &Clip,
+    words: &[CaptionWord],
+    warnings: &mut Vec<String>,
+) -> Result<Option<Vec<Option<String>>>> {
     let cfg: Option<SpeakerColors> = extras::get(store, &clip.id, COLORS_KEY)?;
-    let Some(cfg) = cfg.filter(|c| c.enabled) else { return plain() };
+    let Some(cfg) = cfg.filter(|c| c.enabled) else { return Ok(None) };
     let mut turns: HashMap<SourceId, Vec<SpeakerTurn>> = HashMap::new();
     for seg in &clip.segments {
         if turns.contains_key(&seg.source_id) {
@@ -283,9 +287,47 @@ pub fn write_clip_ass(store: &ProjectStore, clip: &Clip, words: &[CaptionWord], 
         if !turns.is_empty() {
             warnings.push("speaker colours are on but no caption word matched a coloured speaker; rendering with the preset colour".to_string());
         }
-        return plain();
+        return Ok(None);
     }
-    write_ass_colored(words, &colors, &clip.captions, &clip.canvas, font)
+    Ok(Some(colors))
+}
+
+/// Moves caption words (and their colours) onto the rendered timeline through the transitions;
+/// words hidden by a transition are dropped together with their colour.
+pub fn map_words_with_colors(
+    words: Vec<CaptionWord>,
+    colors: Option<Vec<Option<String>>>,
+    tmap: &TransitionMap,
+) -> (Vec<CaptionWord>, Option<Vec<Option<String>>>) {
+    if tmap.is_identity() {
+        return (words, colors);
+    }
+    let Some(colors) = colors else { return (crate::fx_cmds::map_caption_words(words, tmap), None) };
+    let mut out_words = Vec::with_capacity(words.len());
+    let mut out_colors = Vec::with_capacity(words.len());
+    for (w, c) in words.into_iter().zip(colors) {
+        if let Some(m) = crate::fx_cmds::map_caption_words(vec![w], tmap).into_iter().next() {
+            out_words.push(m);
+            out_colors.push(c);
+        }
+    }
+    (out_words, Some(out_colors))
+}
+
+/// ASS text for the captions: speaker-coloured when `colors` is given, else the plain preset look.
+/// `custom` = custom caption presets (`asset_cmds::custom_presets`).
+pub fn write_captions_ass(words: &[CaptionWord], colors: Option<&[Option<String>]>, clip: &Clip, font: &str, custom: &[Preset]) -> Result<String> {
+    match colors {
+        Some(c) => write_ass_colored_with(words, c, &clip.captions, &clip.canvas, font, custom),
+        None => write_ass_with(words, &clip.captions, &clip.canvas, font, custom),
+    }
+}
+
+/// [`word_colors_for_clip`] + [`write_captions_ass`] for words that are already on the edit
+/// timeline and no custom presets (what the tests and simple callers need).
+pub fn write_clip_ass(store: &ProjectStore, clip: &Clip, words: &[CaptionWord], font: &str, warnings: &mut Vec<String>) -> Result<String> {
+    let colors = word_colors_for_clip(store, clip, words, warnings)?;
+    write_captions_ass(words, colors.as_deref(), clip, font, &[])
 }
 
 // ---------------------------------------------------------------------------------------------
