@@ -58,3 +58,12 @@
 - Wave 1 launched in worktrees: T3 core impl, T4 setup/doctor, T6 media basics, T7 captions (4 presets +
   SRT), T8 CLI, T9 render compiler (+music bed, crop sendcmd), MCP server crate, simple web GUI crate.
   Python engine agent still running in main tree.
+- Merged: MCP server (stdio, tools from registry, images to vision agents), captions (4 presets, SRT;
+  switched to static Poppins ExtraBold — libass can't pick weights from variable Montserrat), Python
+  engine (80 tests; CUDA works), core store/timemap/units/layout (40 tests), GUI crate (axum, token, plain
+  JS), CLI front (hand-written parser, 36 tests), media basics (15 tests). `rustler mcp serve` and
+  `rustler gui` wired in main.rs.
+- User added: MCP + CLI must be a full **knowledge book** (MCP prompts + resources + `rustler guide`).
+  Opus writing `knowledge/`; Sonnet building loader + MCP prompts/resources + guide commands.
+- Running: T4 setup/doctor, T9 render compiler, bridge, knowledge content+loader, faces, edit ops,
+  10a/10b commands, T11 QC.
