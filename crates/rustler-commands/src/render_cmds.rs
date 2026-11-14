@@ -4,8 +4,10 @@
 //! a per-render workdir, loads the `extras.json` sidecar (music bed, crop paths), compiles one
 //! ffmpeg invocation and renders it. `render.preview_frame` runs the same graph for one frame.
 
-use crate::clip_cmds::{ClipExtras, caption_words_for_clip, compile_extras, load_extras, log_event};
+use crate::clip_cmds::{ClipExtras, caption_words_for_clip, compile_extras, log_event};
 use crate::see_cmds::find_fonts;
+use crate::{extras, overlay_cmds};
+use rustler_media::RenderReport;
 use chrono::Utc;
 use rustler_captions::write_ass;
 use rustler_core::{
@@ -113,6 +115,7 @@ async fn prepare(
     prefer_gpu: bool,
     workdir: &Path,
     out: &Path,
+    two_pass_loudness: bool,
 ) -> Result<Prepared> {
     std::fs::create_dir_all(workdir).map_err(|e| io_err("create", workdir, e))?;
     let sources = source_media(store, clip)?;
@@ -135,8 +138,17 @@ async fn prepare(
         }
     }
 
-    let extras: ClipExtras = load_extras(store, &clip.id)?;
-    let cx: CompileExtras = compile_extras(&extras, clip);
+    // extras.json through the shared helper: music + crop paths (typed view) and overlays.
+    let map = extras::load(store, &clip.id)?;
+    let typed_extras: ClipExtras = serde_json::from_value(serde_json::Value::Object(map.clone()))
+        .map_err(|e| RustlerError::new(ErrorCode::Internal, "render", format!("extras.json is invalid: {e}")))?;
+    let mut cx: CompileExtras = compile_extras(&typed_extras, clip);
+    cx.overlays = extras::from_map(&map, overlay_cmds::KEY)?.unwrap_or_default();
+    cx.two_pass_loudness = two_pass_loudness;
+    if !cx.overlays.is_empty() && ass.is_none() {
+        // Overlays need the fonts even when there are no captions.
+        stage_fonts(paths, &fonts_dir)?;
+    }
     if let Some(m) = &cx.music {
         if !m.path.is_file() {
             return Err(RustlerError::new(ErrorCode::NotFound, "render", format!("music file is missing: {}", m.path.display()))
@@ -163,7 +175,8 @@ pub(crate) async fn preview_frame_image(ctx: &Ctx, clip_id: &ClipId, out_t: f64)
     let work = dir.join("work");
     let jpg = dir.join(format!("frame_{}ms.jpg", (t * 1000.0).round() as u64));
     let paths = ToolPaths::from_home(&ctx.home);
-    let prepared = prepare(&paths, &store, &clip, RenderQuality::Draft, false, &work, &work.join("preview.mp4")).await?;
+    // Preview frames have no audio pass: two-pass loudness is irrelevant here.
+    let prepared = prepare(&paths, &store, &clip, RenderQuality::Draft, false, &work, &work.join("preview.mp4"), false).await?;
     rustler_media::preview_frame(&paths, &prepared.compiled, t, &jpg).await?;
     Ok(jpg)
 }
@@ -198,6 +211,9 @@ pub struct RenderRunIn {
     pub quality: Option<RenderQuality>,
     /// Use a hardware encoder when one passes a probe (default true).
     pub prefer_gpu: Option<bool>,
+    /// Measure loudness in a fast audio-only pass first so the clip lands on the LUFS target
+    /// (default true; false = single-pass loudnorm).
+    pub two_pass_loudness: Option<bool>,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -210,6 +226,9 @@ pub struct RenderRunOut {
     pub duration: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dry_run: Option<bool>,
+    /// How loudness was normalized (off | single-pass | two-pass) and the measured values.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub loudness: Option<RenderReport>,
     pub next: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
@@ -236,13 +255,18 @@ async fn render_run(ctx: Ctx, i: RenderRunIn) -> Result<RenderRunOut> {
             encoder: enc.name,
             duration,
             dry_run: Some(true),
+            loudness: None,
             next,
             warnings: Vec::new(),
         });
     }
-    let prepared = prepare(&paths, &store, &clip, quality, i.prefer_gpu.unwrap_or(true), &workdir, &out).await?;
+    let two_pass = i.two_pass_loudness.unwrap_or(true);
+    let mut prepared =
+        prepare(&paths, &store, &clip, quality, i.prefer_gpu.unwrap_or(true), &workdir, &out, two_pass).await?;
     let encoder = prepared.encoder.clone();
-    rustler_media::render(&paths, &prepared.compiled, duration, &ctx.cancel, &ctx.progress).await?;
+    let mut report =
+        rustler_media::render_with_report(&paths, &prepared.compiled, duration, &ctx.cancel, &ctx.progress).await?;
+    prepared.warnings.append(&mut report.warnings);
 
     // Re-load: the clip may have been edited while rendering; only the renders list changes here.
     let mut fresh = store.load_clip(&clip.id)?;
@@ -262,7 +286,16 @@ async fn render_run(ctx: Ctx, i: RenderRunIn) -> Result<RenderRunOut> {
         "render.run",
         serde_json::json!({"clip_id": clip.id, "render_id": render_id, "encoder": encoder, "quality": quality}),
     )?;
-    Ok(RenderRunOut { render_id, path: out, encoder, duration, dry_run: None, next, warnings: prepared.warnings })
+    Ok(RenderRunOut {
+        render_id,
+        path: out,
+        encoder,
+        duration,
+        dry_run: None,
+        loudness: Some(report),
+        next,
+        warnings: prepared.warnings,
+    })
 }
 
 // ---------------------------------------------------------------------------------------------
