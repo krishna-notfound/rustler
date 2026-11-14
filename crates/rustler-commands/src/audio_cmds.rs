@@ -183,6 +183,24 @@ pub fn resolve_sfx_time(
     e.at.ok_or_else(|| "sfx has neither at nor at_word".to_string())
 }
 
+/// The stored sound effects; entries that do not parse are skipped with a warning (a broken
+/// entry must not block renders or preview frames).
+fn parse_sfx(map: &serde_json::Map<String, serde_json::Value>, warnings: &mut Vec<String>) -> Vec<SfxEntry> {
+    let Some(serde_json::Value::Array(items)) = map.get(SFX_KEY) else { return Vec::new() };
+    items
+        .iter()
+        .enumerate()
+        .filter_map(|(n, v)| match serde_json::from_value::<SfxEntry>(v.clone()) {
+            Ok(e) => Some(e),
+            Err(err) => {
+                let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("?");
+                warnings.push(format!("sfx entry {n} ({id}) in extras.json is invalid and ignored: {err}"));
+                None
+            }
+        })
+        .collect()
+}
+
 /// Compile-ready gains, denoise and sound effects; warnings for effects that will not play.
 pub(crate) fn apply_to_compile(
     store: &ProjectStore,
@@ -199,7 +217,7 @@ pub(crate) fn apply_to_compile(
             cx.segment_gain_db.insert(seg.id.clone(), *db);
         }
     }
-    let entries: Vec<SfxEntry> = extras::from_map(map, SFX_KEY)?.unwrap_or_default();
+    let entries = parse_sfx(map, &mut warnings);
     if entries.is_empty() {
         return Ok(warnings);
     }
@@ -537,11 +555,11 @@ async fn list(ctx: Ctx, i: ListIn) -> Result<AudioListOut> {
     let typed_extras: ClipExtras = serde_json::from_value(serde_json::Value::Object(map.clone()))
         .map_err(|e| RustlerError::new(ErrorCode::Internal, "audio.list", format!("extras.json is invalid: {e}")))?;
     let fx: AudioFx = extras::from_map(&map, FX_KEY)?.unwrap_or_default();
-    let entries: Vec<SfxEntry> = extras::from_map(&map, SFX_KEY)?.unwrap_or_default();
+    let mut warnings = Vec::new();
+    let entries = parse_sfx(&map, &mut warnings);
     let tm = TimeMap::from_segments(&clip.segments);
     let tmap = TransitionMap::new(&clip, &crate::fx_cmds::load_transitions(&store, &clip.id)?);
     let words = words_for(&store, entries.iter().filter_map(|e| e.at_word.as_ref().map(|a| a.source_id.clone())))?;
-    let mut warnings = Vec::new();
     let segment_volumes = fx
         .segment_volumes
         .iter()
