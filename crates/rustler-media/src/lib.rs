@@ -7,6 +7,7 @@ pub mod compile;
 pub mod encoders;
 pub mod frames;
 pub mod probe;
+mod proc;
 pub mod proxy;
 pub mod qc;
 pub mod render;
