@@ -87,7 +87,7 @@ by all projects (`~/.rustler/assets`).
 (below −45 dB for ≥ 1.5 s) in the render.
 
 - Dead air at the start is a hook killer: the first word should arrive within 0.15 s.
-- Inside a clip, use `edit remove-pauses --min-gap 0.5` (if available) on talking heads; keep
+- Inside a clip, use `edit remove-pauses --min-gap 0.5 --keep 0.25` on talking heads; keep
   pauses after punchlines and before reveals (0.3-0.8 s). Details in `cut-points`.
 - A QC `long_silence` warning with `fix_hint "consider cutting pause at <t>"` → map `<t>` (output
   time) to the segment with `clip show`, then trim/split there.

@@ -132,8 +132,9 @@ Make variants when a strong clip (≥ 85) has a real open question, not by defau
 - Two layouts: `center-crop` vs `blur-fit` when the shot is borderline.
 - Two caption styles for a niche you don't know.
 
-Variants are separate clips (`clip create` again with the same units and a `-v2` name, or a duplicate
-command if available). QC and watch each. Report which you recommend and why.
+`rustler variant create clp_X --caption-styles '[...]' --layouts '[...]' --hooks '[...]'` clones the clip
+per combination; `rustler variant compare --clip-ids '[...]'` composes one labelled grid image (open it) so
+you only render and QC the winner. See `briefs-and-batches`. Report which you recommend and why.
 
 ## 7. Export
 

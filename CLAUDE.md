@@ -91,6 +91,10 @@ When two sources disagree, the higher one wins:
 | Run the CLI | `cargo run -p rustler-cli -- <args>` or `target/debug/rustler.exe <args>` after building |
 | Install local tools and engine | `rustler setup` (writes to `~/.rustler`, i.e. `RUSTLER_HOME`) |
 | Health check | `rustler doctor` (JSON; `ready: true` means the render path can run) |
+| Command list | `rustler commands list` (118 commands) and `rustler commands describe <group.action>` |
+| Knowledge book | `rustler guide list`, `rustler guide show start-here`, `rustler prompt list` (embedded from `knowledge/`; `cargo test -p rustler-knowledge` checks it parses) |
+| Docs check | after changing docs, verify every `rustler <group> <action>` you wrote against `commands list` |
+| JSON args on Windows PowerShell 5.1 | quotes inside JSON flags are stripped: use `--input-json @file.json` |
 | Local GUI | `rustler gui` (or `cargo run -p rustler-cli -- gui`); local page on `127.0.0.1` with a token |
 | MCP server | `rustler mcp serve` (stdio) |
 | Type check | `cargo check --workspace` |
@@ -116,14 +120,14 @@ crates/      Rust workspace (members = crates/*)
   rustler-engine-bridge/ JSON-RPC supervisor and client for the Python engine
   rustler-media/        probe, proxy, frames/tiles, audio analysis, facepath, compile, render, QC
   rustler-captions/     caption presets, ASS writer, chunking
-  rustler-commands/     all registry commands (setup, project, source, analyze, transcript, see, clip, edit, render, qc, guide)
+  rustler-commands/     all 118 registry commands (`*_cmds.rs`: setup, project, source, analyze, understand, transcript, highlights, see, clip, edit, cut, layout, speaker, overlay, fx (transition/effect), audio, asset, brief, variant, render, qc, fix, guide)
   rustler-cli/          `rustler` binary (generic CLI over the registry)
   rustler-mcp/          MCP server over stdio
-  rustler-gui/          simple local web GUI (axum server + static page)
+  rustler-gui/          local web GUI and editor (axum server + static page, 14 JS modules, no build step)
   rustler-knowledge/    loader that embeds knowledge/ into the binary
-engine/      Python worker `rustler_engine` (uv project): faster-whisper, scenes, YuNet faces, translit
+engine/      Python worker `rustler_engine` (uv project): faster-whisper, scenes, YuNet faces, OCR, audio events, speaker diarization, translit
              PROTOCOL.md = the JSON-RPC contract
-knowledge/   agent guides (13) and MCP prompts (8), embedded in the binary
+knowledge/   agent guides (17) and MCP prompts (10), embedded in the binary
 repos/       cloned upstream repos studied in research (gitignored, read-only)
 ```
 
@@ -134,9 +138,12 @@ repos/       cloned upstream repos studied in research (gitignored, read-only)
   FFmpeg/ffprobe (static build with libass) and yt-dlp as subprocesses. Local machine only.
 - **Current phase:** Slice 1 plus the 5-hour extras are built; end-to-end runs passed on 2026-11-15. The live
   record is in `docs/progress-log.md`; per-feature status is in `docs/features/README.md`.
-- **Deferred / out of scope right now:** provider layer (f13, dropped: no AI API calls), highlight helpers (f20),
-  brief and variants (f22), asset library (f23), transitions and hook titles (f18), custom multi-region layouts (f15),
-  Tauri timeline editor (f25–f27), diarization (f29), GPU throughput work (f28).
+- **Built since Slice 1** (all merged; per-feature status in `docs/features/README.md`): layout regions and webcam detection (f15),
+  overlays/hook titles, transitions, effects, progress bar (f18), cut refinement (f19), highlight helpers (f20), understanding v2 (f07b),
+  QC v2 and fix loop (f21), brief/variants/batches (f22), asset library (f23), GUI editor (f25-f27), speakers (f29), project pack/status,
+  audio post (denoise, SFX, two-pass loudnorm). 118 registry commands; `rustler commands list` is the authority.
+- **Deferred / out of scope right now:** provider layer (f13, dropped: no AI API calls), GPU throughput work (f28), Tauri desktop shell,
+  voice-over, sticker/image layers.
 
 ## 9. Do Not
 

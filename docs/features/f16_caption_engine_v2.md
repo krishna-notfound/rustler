@@ -4,7 +4,7 @@
 
 **Scope note:** this file covers only what is built: four data-driven presets rendered to ASS and burned in
 by libass, plus SRT export. The rest of the feature index entry (template schema, layered ASS, metrics,
-face-aware placement, VTT) is not built.
+face-aware placement, VTT) is not built. Custom caption styles (asset-based) and per-speaker colours were added later: see f23 and f29.
 
 ## Purpose
 

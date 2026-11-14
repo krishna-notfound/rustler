@@ -33,20 +33,19 @@ QC times are output times; find the segment whose `out_start ≤ t < out_end`, t
 | `black_frames` fail | `see frame <src> --t <source t>`; move the segment boundary off the black (later start unit / `edit trim`), or fix a region rect pointing at an empty area |
 | `duration` / `av_sync` fail | re-render once; if it repeats, trim the segment end by 0.1-0.2 s (`edit trim --end-delta`) |
 | `streams` / `dimensions` fail | `rustler doctor run`; re-render with `--prefer-gpu false` |
-| `loudness` warn | lower/remove music bed; cut the extreme passage; accept only if it sounds fine and note it |
+| `loudness` warn | `render run` again (two-pass loudnorm); lower/remove music bed (`audio add-music --volume-db -22` / `audio remove-music`), `audio volume`; cut the extreme passage; accept only if it sounds fine and note it |
 | `long_silence` warn | `edit remove-pauses {{clip_id}} --min-gap 0.5` or trim at the hinted time |
 | `frozen_video` warn | if not a slide, cut that stretch (`edit split` + `edit delete-segment`) |
 | `caption_over_face` warn | `clip set-captions {{clip_id}} --position-y <y from the hint>` (or `fix apply --check caption_over_face`) |
 | `face_visible_ratio` / `face_cut_off` warn | `crop track-face {{clip_id}}`; for splits `layout detect-webcam <source> --clip-id {{clip_id}}` |
-| `hook_text_present` warn | add hook text (`overlay add-text` when it exists) or start on speech with `edit trim --start-delta` |
+| `hook_text_present` warn | add hook text (`overlay add-text {{clip_id}} "<hook>" --start 0 --end 2.5`) or start on speech with `edit trim --start-delta` |
 | `duration_for_platform` warn | `edit trim` / `edit refine` to fit the brief's range |
 | face cut off / wrong person | `clip set-layout` with a new `focus_x`, `crop track-face`, or `blur-fit` |
 | captions over face / in UI zone | `clip set-captions {{clip_id}} --position-y <0.66-0.78>` |
-| captions unreadable | `--preset boxed-highlight` |
+| captions unreadable | `clip set-captions {{clip_id}} --style boxed-highlight` |
 | slow first seconds / weak ending | change start/end unit (`cut-points`) |
 
-Commands marked "(if available)" in the guides may not exist yet: check `rustler commands list`. If an
-edit is impossible, recreate the clip with `clip create` using corrected units.
+If an edit is impossible, recreate the clip with `clip create` using corrected units.
 
 ## 3. Apply one fix per problem, then verify cheaply
 - After layout/caption edits: `rustler render preview-frame {{clip_id}} --out-t <problem time>` and

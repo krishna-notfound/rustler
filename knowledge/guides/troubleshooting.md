@@ -121,8 +121,15 @@ rustler analyze transcribe src_A --max-seconds 240      # continues from saved p
   Forward slashes work everywhere.
 - Unicode/Devanagari file names work; if a shell mangles them, pass the path via
   `--input-json @input.json` (file saved as UTF-8).
-- In PowerShell, JSON flags need single quotes outside and double quotes inside:
-  `--layout-params '{"focus_x":0.4}'`. If quoting fights you, use `--input-json @file.json`.
+- **Windows PowerShell 5.1 strips the double quotes inside arguments passed to native programs**, so
+  `--layout-params '{"top":{"x":0.7}}'` reaches Rustler as `{top:{x:0.7}}` and fails validation (exit 2,
+  "invalid input" / "expected struct ..."). Fix it one of two ways: write the JSON to a file and use
+  `--input-json @file.json` (preferred, also for any array or object flag such as `--boxes`,
+  `--caption-styles`, `--at-word`, `--colors`), or escape the inner quotes as `\"`:
+  `--layout-params '{\"focus_x\":0.4}'`. bash, zsh and cmd.exe are unaffected.
+- `detect-webcam` suggests a rect that can include a sliver of gameplay (or overlay border) around the
+  facecam. Always run `render preview-frame` and nudge with `layout edit-region <clip> top --nudge
+  '{"dw":-0.02,"dh":-0.02}'` (same quoting rules).
 - Long paths (> 260 chars) can fail in some tools: keep project dirs short (`C:/clips/ep212`).
 - Antivirus can lock freshly downloaded `.exe` tools during `setup`; rerun `setup run`.
 

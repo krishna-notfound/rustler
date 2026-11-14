@@ -21,14 +21,18 @@ MCP) and MCP prompts.
 | 3 | `workflow-local-file` | Import, understanding pack, read/look, plan, build, report |
 | 4 | `finding-hooks` | What makes a moment work, 0-100 rubric, signals, lengths, counts, red flags |
 | 5 | `cut-points` | Start/end units, weak openers (EN + Hinglish), endings, pauses, montages |
-| 6 | `layouts-and-framing` | center-crop / blur-fit / split-vertical, webcam rect math, face tracking, safe zones |
-| 7 | `captions-and-style` | 4 presets, position_y per layout, words per line, script, readability |
+| 6 | `layouts-and-framing` | center-crop / blur-fit / split-vertical, regions, webcam rect math, face and speaker tracking, safe zones |
+| 7 | `captions-and-style` | 4 presets, position_y per layout, words per line, script, speaker colours, readability |
 | 8 | `audio` | −14 LUFS / −2 dBTP, music bed −18 dB + ducking, copyright, silence |
 | 9 | `quality-checklist` | QC checks and fixes, contact sheet review, fix loop, variants, export |
 | 10 | `hinglish` | Language settings, romanisation, search, captions and titles for Hinglish |
 | 11 | `platform-specs` | Format, durations, lengths that perform, titles/descriptions/hashtags, report template |
 | 12 | `troubleshooting` | Exit codes, setup, revision conflicts, blocked downloads, resumable jobs, Windows |
-| 13 | `cli-reference-conventions` | Grammar, flags, envelope, MCP naming, images, command map |
+| 13 | `cli-reference-conventions` | Grammar, flags, envelope, MCP naming, images, the complete command map (118 commands by area) |
+| 14 | `streamer-clips` | Stream VOD to webcam-top / gameplay-bottom clip: detect-webcam, split, regions, presets, speakers |
+| 15 | `editing-toolkit` | edit.*, hook titles and overlays, transitions, effects, progress bar, polish order, example sequences |
+| 16 | `briefs-and-batches` | brief set/check/description, variants, render/export batch, project status/pack |
+| 17 | `assets` | asset list/search/add with licenses, `asset:<id>`, bundled CC0 SFX, custom caption styles |
 
 ## Prompts (MCP workflows)
 
@@ -36,6 +40,8 @@ MCP) and MCP prompts.
 |---|---|---|
 | `make_viral_clips` | source*, count, platform, style_notes | End-to-end clips from a URL or file |
 | `clip_from_stream` | url*, streamer_layout, count | Stream VOD → split-vertical reaction clips |
+| `streamer_split_clip` | url_or_path*, webcam_corner | ONE webcam-top / gameplay-bottom clip, end to end |
+| `polish_clip` | clip_id* | Hook title, SFX on emphasis, transitions, effects, progress bar, fix loop |
 | `quick_scan_source` | url* | Judge a long video without downloading; list windows |
 | `hinglish_podcast_clips` | source*, count | Hindi-English podcast clips with romanised captions |
 | `batch_from_brief` | brief* | Campaign/client brief → checked batch + compliance report |
@@ -49,8 +55,10 @@ MCP) and MCP prompts.
 
 - Commands are written in CLI form (`rustler clip create …`); the MCP tool is `group_action`
   (`clip_create`).
-- Commands marked "(if available — check `rustler commands list`)" belong to later slices and may
-  not exist in every build.
+- Every command named in these files exists in the registry (118 at the time of writing); verify any
+  command with `rustler commands describe <name>`. `rustler commands list` is the authority.
+- On Windows PowerShell 5.1, JSON inside flags loses its double quotes: use `--input-json @file.json`
+  (see `troubleshooting`).
 - Example hooks, transcripts and numbers marked illustrative are invented for teaching.
 - Selection and pacing heuristics are adapted from MIT-licensed research repos (openshorts, autoclip,
   bridgeclip, opensource-clipping); ideas from other repos are rephrased, not copied.

@@ -10,7 +10,7 @@ Files that ship for this:
 |---|---|
 | `skills/rustler/SKILL.md` | Claude Code / Agent Skills: loaded automatically when the user asks for clips |
 | `skills/rustler/AGENTS.md` | Any other agent: the same essentials in plain markdown, plus MCP config |
-| `knowledge/` | The knowledge book (13 guides, 8 prompts), served by `rustler guide` / `rustler prompt` and by MCP |
+| `knowledge/` | The knowledge book (17 guides, 10 prompts), served by `rustler guide` / `rustler prompt` and by MCP |
 
 ## 1. Put the CLI on PATH
 
@@ -90,16 +90,19 @@ highlights, captions or reframing. It is short on purpose and points to guides f
 
 - **Tools.** Every registry command becomes a tool named `group_action`: `source_info`,
   `source_import`, `analyze_quick`, `transcript_get`, `see_tiles`, `clip_create`, `render_run`,
-  `qc_run`, `export_clip`, and so on (`rustler commands list` shows all). Annotations mark
-  read-only, destructive, network and long-running tools.
-- **Prompts.** Ready workflows: `make_viral_clips`, `clip_from_stream`, `quick_scan_source`,
-  `hinglish_podcast_clips`, `batch_from_brief`, `review_clip`, `fix_qc_failures`, `restyle_clip`.
+  `qc_run`, `export_clip`, and so on: 118 tools (`rustler commands list` shows all; the guide
+  `cli-reference-conventions` groups them by area: project, source, analyze, highlights, clip, edit,
+  layout, crop, caption, overlay, transition, effect, audio, asset, render, qc, fix, export, brief,
+  variant, speaker). Annotations mark read-only, destructive, network and long-running tools.
+- **Prompts.** Ready workflows: `make_viral_clips`, `clip_from_stream`, `streamer_split_clip`,
+  `quick_scan_source`, `hinglish_podcast_clips`, `batch_from_brief`, `polish_clip`, `review_clip`,
+  `fix_qc_failures`, `restyle_clip`.
   On the CLI: `rustler prompt list` / `rustler prompt show <name> --args '{...}'`.
-- **Resources.** `rustler://guides/<id>` (the 13 guides), `rustler://commands`,
+- **Resources.** `rustler://guides/<id>` (the 17 guides), `rustler://commands`,
   `rustler://project/state`.
 - **Images.** `see_frame`, `see_tiles`, `render_preview_frame` and the QC contact sheet come back as
   MCP image content, so a vision-capable agent looks at them directly. Over the CLI the output holds
-  a path to the jpg.
+  a path to the jpg (also for `variant compare`, `qc compare`, `asset show` previews).
 - **Guardrails built in.** Clips are cut from transcript unit ids with `--expect-text` so the agent
   cannot silently pick the wrong words; `export clip` refuses a failed QC; every edit is a revision
   with `history undo`; Rustler never uploads anything.
@@ -138,7 +141,7 @@ agent> rustler see tiles src_01J... --around "nobody tells you this"
 
 agent> rustler clip create --name nobody-tells-you --source-id src_01J... --start-unit 212 \
         --end-unit 219 --expect-text "nobody tells you" --layout center-crop --caption-style bold-karaoke
-{"ok":true,"data":{"clip_id":"clp_01J...","duration":41.3},"warnings":[]}
+{"ok":true,"data":{"id":"clp_01J...","duration":41.3,...},"warnings":[]}
 
 agent> rustler crop track-face clp_01J...
 agent> rustler render preview-frame clp_01J... --out-t 1.0
@@ -170,4 +173,7 @@ agent> Done. Two clips are in ./ep212/exports (one skipped: the second window ha
   `project` on each call.
 - Exit 4 (dependency missing): run `rustler setup run`, then `rustler doctor run`.
 - Network commands refused: the project needs permission (`rustler project set-permissions`).
+- Windows PowerShell 5.1 strips double quotes inside JSON flag values (`--layout-params '{"top":...}'` fails
+  validation): put the JSON in a file and pass `--input-json @file.json`, or escape quotes as `\"`.
+  bash, zsh and cmd are unaffected.
 - More: `rustler guide show troubleshooting`.

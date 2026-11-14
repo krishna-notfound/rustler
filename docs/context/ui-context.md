@@ -1,7 +1,8 @@
 # UI Context
 
-This file describes the simple local web GUI (`crates/rustler-gui`, feature f24). It is not the Tauri editor,
-which is deferred (f25–f27). The page is plain HTML, CSS and JavaScript served by the Rust server; there is no
+This file describes the local web GUI (`crates/rustler-gui`): the shell (f24) and the editor built on it (f25–f27: source/region editor,
+program monitor, multi-track timeline, inspector tabs, render queue; see `docs/features/f25_gui_editor.md`). It is not a Tauri app (deferred).
+The sections below describe the original shell's theme and tokens, which the editor reuses. The page is plain HTML, CSS and JavaScript served by the Rust server; there is no
 framework, no build step and no component library.
 
 ## Theme

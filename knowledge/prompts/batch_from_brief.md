@@ -73,6 +73,10 @@ Then `rustler render batch --all true` (add `--only-missing true` to skip finish
 lists the skipped ones with reasons and fixes. Single clip: `rustler export clip <clip> --name
 <brief-slug>-<nn>-<short-title>` (its report embeds the brief check).
 
+## 5b. Status
+`rustler project status` shows per clip: stale render, QC, brief check, exported. Nothing may stay stale or
+unchecked when you report. Moving the work to another machine: `rustler project pack`.
+
 ## 6. Report
 1. Brief checklist with ✓/✗ per item for the batch.
 2. Per clip: file, source + units, duration, score with part scores, QC, contact-sheet notes,

@@ -9,27 +9,38 @@ Rustler provides the tools (FFmpeg, yt-dlp, local faster-whisper, OpenCV face tr
 - **CLI** `rustler` — the complete surface, JSON in/out, discoverable (`rustler help`, `rustler commands list`).
 - **MCP server** `rustler mcp serve` — every command as a tool, knowledge guides as resources, workflows as prompts,
   frames returned as images to vision agents.
-- **GUI** `rustler gui` — simple local web UI over the same commands.
-- **Knowledge book** `rustler guide list` / `rustler prompt list` — how to edit like a pro.
+- **GUI** `rustler gui` — local web editor (regions, monitor, timeline, inspector) over the same commands.
+- **Knowledge book** `rustler guide list` / `rustler prompt list` — 17 guides and 10 workflows: how to edit like a pro.
 
 ## Quick start
 ```bash
 cargo build --release -p rustler-cli        # Windows: run from PowerShell
-rustler setup                               # FFmpeg, yt-dlp, uv/Python engine, whisper model, fonts → ~/.rustler
-rustler doctor                              # what works (GPU, encoders, engine)
-rustler project create --name ep12 --dir ./ep12
+rustler setup run                           # FFmpeg, yt-dlp, uv/Python engine, whisper model, fonts, built-in assets -> ~/.rustler
+rustler doctor run                          # what works (GPU, encoders, engine); ready=true means you can render
+rustler project create ep12 --dir ./ep12
 cd ep12
-rustler source info <youtube-url>           # title, chapters, most-replayed peaks — no download
+rustler source info <youtube-url>           # title, chapters, most-replayed peaks - no download
 rustler source fetch-transcript <url>       # existing captions, no download
-rustler source import <url> --sections "47:00-49:30"
-rustler analyze quick <source-id>
-rustler transcript search <source-id> --query "..."
-rustler see tiles <source-id> --around "..."
+rustler source import <url> --sections 47:00-49:30      # or a local file: rustler source import "D:/videos/ep12.mp4"
+rustler analyze quick <source-id>           # audio + scenes + transcript + units
+rustler analyze deep <source-id>            # on-screen text, laughter/applause, faces
+rustler highlights candidates <source-id>   # ranked windows with unit ids and a ready clip create line
+rustler transcript search <source-id> "phrase"
+rustler see tiles <source-id> --around "phrase"
 rustler clip create --name hook1 --source-id <id> --start-unit 12 --end-unit 14 --expect-text "first words" --layout blur-fit
+rustler edit refine <clip-id>               # skip weak openers, end on a sentence end
+rustler overlay add-text <clip-id> "Hook in seven words" --start 0 --end 2.5
+rustler render preview-frame <clip-id> --out-t 1.0      # look at it
 rustler render run <clip-id>
 rustler qc run <clip-id>                    # then LOOK at the contact sheet
+rustler fix suggest <clip-id>               # QC report -> exact fix commands
 rustler export clip <clip-id>
+rustler project status                      # what is done, stale or unchecked
 ```
+Streamer clips: `rustler layout detect-webcam <source-id> --clip-id <clip-id>`. Briefs, variants and batches:
+`rustler brief set ...`, `rustler variant create <clip-id> ...`, `rustler render batch --all true`, `rustler export batch --all true`.
+Every command (118): `rustler commands list`. On Windows PowerShell 5.1, pass JSON flag values via `--input-json @file.json`.
+
 Give an agent the skill in `skills/rustler/` and see `docs/agent-integration.md`.
 
 ## Docs

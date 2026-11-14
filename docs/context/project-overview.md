@@ -60,7 +60,10 @@ capability is a command in one registry, reachable from the CLI, the MCP server 
 - Face tracking and crop path (f14)
 - Four caption presets and SRT (f16)
 - Music bed with ducking (f17)
-- Simple local web GUI (f24)
+- Simple local web GUI (f24) and the full editor on top of it (f25–f27)
+- Layout regions, webcam detection (f15); overlays, transitions, effects (f18); cut refinement (f19); highlight helpers (f20)
+- Understanding v2: OCR, audio events, faces (f07b); QC v2 and the fix loop (f21)
+- Brief, variants, batches (f22); asset library (f23); speakers (f29); project pack and status
 
 ## Scope
 
@@ -81,10 +84,8 @@ capability is a command in one registry, reachable from the CLI, the MCP server 
 ### Deferred (decided, not now)
 
 - Provider layer for LLM, vision, STT and TTS endpoints (f13) — dropped by user decision: no AI API integrations
-- Highlight helpers (f20), brief and variants (f22), asset library (f23) — later slices
-- Transitions and hook titles (f18), custom multi-region layouts (f15), cut refinement (f19)
-- Tauri timeline editor, program monitor and caption editor (f25–f27) — the simple web GUI stands in for now
-- Diarization and active-speaker framing (f29), GPU throughput (f28)
+- Tauri desktop shell for the GUI editor (the editor itself is built into the web GUI)
+- GPU throughput and parallel renders (f28)
 
 ## Business Rules
 

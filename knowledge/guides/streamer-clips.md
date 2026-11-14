@@ -51,6 +51,10 @@ rustler clip set-layout clp_X --preset split-vertical --params '{"top":{...webca
 rustler render preview-frame clp_X --out-t 1.0        # LOOK
 ```
 
+The rect can include a **sliver of gameplay or overlay border** around the facecam: always check the
+preview and nudge (`layout edit-region clp_X top --nudge '{"dw":-0.02,"dh":-0.02}'`; on Windows PowerShell 5.1
+quote JSON via `--input-json @file.json`, see `troubleshooting`).
+
 If it fails with "no small, consistent face": the webcam may be hidden in those samples, the face is
 full-screen, or there is no webcam. Sample elsewhere (`--at '[...]'` at times when the streamer is
 on camera) or pick the rect by hand (`layouts-and-framing` steps 1-3).
@@ -122,10 +126,19 @@ Presets live in `<project>/layouts/`. Variants can use them too:
 | Captions on the face | `fix suggest clp_X` → `fix apply clp_X --check caption_over_face` |
 | Dead air between plays | `edit remove-pauses clp_X --keep 0.25`, `edit refine clp_X` |
 
-## 8. Speakers (builds that have them)
+## 8. Two people on screen: speakers
 
-Speaker-aware commands (`analyze speakers`, `speaker rename`, `caption speaker-colors`,
-`crop track-speaker`) are only present in builds whose `rustler commands list` shows them. Check with
-`rustler commands list` before relying on them; when they exist, `commands describe analyze.speakers`
-documents the flags. Without them: follow one face with `crop track-face`, or use `blur-fit` when two
-people matter.
+For collabs, reactions with a guest, or a stream with two cams, use the local diarization commands:
+
+```
+rustler analyze speakers src_X --num-speakers 2        # who speaks when; labels every transcript word S1, S2, ...
+rustler speaker rename src_X S1 Streamer               # display names (summaries); colours are keyed by id
+rustler caption speaker-colors clp_X --enabled true --colors '{"S1":"#7CFF6B","S2":"#5EE0FF"}'
+rustler crop track-speaker clp_X                       # center-crop follows the ACTIVE speaker's face
+```
+
+`crop track-speaker` needs a `center-crop` segment (not the split layout) and tells you per turn which
+face it chose and why; details and limits are in `layouts-and-framing`, caption colours in
+`captions-and-style`. In a webcam split the streamer's face is already on top: speaker colours are
+the useful part there. If the models are missing the command says so (`rustler setup run` refreshes the
+engine); the heuristic fallback can split one speaker into two, so check `analyze speakers` first.

@@ -30,7 +30,12 @@ rustler <group> <action> [positional…] [--key value]… [--input-json <json | 
   exact `usage` line, positional order included.
 - `--input-json '{"clip_id":"clp_X","preset":"blur-fit"}'` or `--input-json @input.json` supplies the
   whole input; explicit flags override its fields. Use it for complex inputs or awkward quoting
-  (PowerShell strips the double quotes inside JSON flags: use `--input-json @file` there).
+  (see the Windows note below).
+
+**Windows PowerShell 5.1:** it strips the double quotes inside arguments passed to native programs, so
+`--layout-params '{"top":...}'` arrives as `{top:...}` and fails validation. Write the JSON to a file and
+use `--input-json @file.json`, or escape the quotes as `\"` (`'{\"focus_x\":0.4}'`). bash, zsh and cmd
+are unaffected.
 
 ## 2. Global flags (anywhere on the line)
 
@@ -107,7 +112,7 @@ Start: `rustler mcp serve` (stdio). Then:
 - **Guides** (this knowledge book) are exposed by the server too (`rustler://guides/<id>`); read
   `start-here` first.
 
-## 7. Command map
+## 7. Command map (all 118 registered commands)
 
 Every registered command, by area. `<x>` = positional, `--x` = flag, `*` = required, `?` = optional.
 `<clip>` = clip id, `<src>` = source id. Only the useful arguments are listed:
@@ -257,9 +262,16 @@ CLI-only helpers (not registry commands): `rustler help`, `rustler commands list
 | `asset.add <path> --kind* --license* {name?, tags?, scope?, source-url?, attribution?}` | copy a file in; unlicensed refused |
 | `asset.remove <id>` | remove (built-ins cannot be removed) |
 
-Speaker commands (diarization, per-speaker caption colours, speaker-follow crop) exist only in builds
-that list `analyze.speakers` in `commands list`; the `streamer-clips` guide says how to use them when
-present.
+### Speakers
+
+| Command | What it does |
+|---|---|
+| `analyze.speakers <src> {num-speakers?, min-speakers?, max-speakers?}` | local diarization: who speaks when; labels transcript words S1, S2…; talk time and turns |
+| `speaker.rename <src> <speaker> <name>` | display name for a speaker id (empty resets) |
+| `caption.speaker_colors <clip> --enabled* {colors?}` | colour captions per speaker (`{"S1":"#FFE000"}`) |
+| `crop.track_speaker <clip> {segment-id?}` | center-crop follows the ACTIVE speaker's face, per turn |
+
+Guides: `captions-and-style` (colours), `layouts-and-framing` (track-speaker), `streamer-clips`.
 
 ## 8. Good habits
 
