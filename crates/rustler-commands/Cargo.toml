@@ -26,6 +26,7 @@ tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
 unicode-normalization = "0.1.26"
+zip.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
