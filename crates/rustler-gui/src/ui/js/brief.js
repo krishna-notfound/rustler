@@ -65,7 +65,7 @@
         h('div', { class: 'row' },
           R.button('Save brief', function () {
             var i; try { i = input(); } catch (e) { R.toast(e.message, 'bad'); return; }
-            return R.run('brief.set', i).then(function (r) { if (r) { R.toast('Brief saved (' + String(r.path).split(/[\\/]/).pop() + ')', 'good'); if (onSaved) onSaved(r); } });
+            return R.run('brief.set', i).then(function (r) { if (r) { R.toast('Brief saved (' + String(r.path).split(/[\\/]/).pop() + ')', 'good'); briefForm(box, onSaved); if (onSaved) onSaved(r); } });
           }, { primary: true, need: ['brief.set'] }),
           d.exists && R.has('brief.clear') ? R.button('Clear brief', function () {
             return R.confirm('Clear brief', 'Delete the project brief (brief.json)?', 'Clear').then(function (ok) {
@@ -96,7 +96,7 @@
   }
   function descView(d) {
     var x = d.description || d;
-    var ta = h('textarea', { rows: 6, class: 'plain desc', readonly: true });
+    var ta = h('textarea', { rows: 9, class: 'plain desc', readonly: true });
     ta.value = x.text || '';
     return h('div', { class: 'descbox' },
       h('div', { class: 'row' }, h('b', null, 'Post text'), h('span', { class: 'muted small' }, (x.platform || '') + ' · ' + (x.chars !== undefined ? x.chars : (x.text || '').length) + ' chars'),

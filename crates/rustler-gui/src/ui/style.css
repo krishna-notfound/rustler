@@ -421,3 +421,8 @@ input.short { width: 90px; } input.num.short { width: 70px; }
 .fxbar .x { right: 9px; z-index: 3; } .fxbar { padding-right: 22px; }
 .transrow select { min-width: 110px; }
 .modal-back { z-index: 1000; }
+.briefform > .field { display: flex; } .briefform > .field textarea { width: 100%; }
+.briefcheck table { table-layout: fixed; width: 100%; }
+.briefcheck th:nth-child(1) { width: 58px; } .briefcheck th:nth-child(2) { width: 130px; } .briefcheck th:nth-child(4) { width: 42%; }
+.briefcheck td { overflow: hidden; } .briefcheck td .clirow code { font-size: 11px; }
+.ed-inspector .briefcheck th:nth-child(2) { width: 92px; } .ed-inspector .briefcheck th:nth-child(4) { width: 34%; } .ed-inspector .briefcheck .clirow { flex-direction: column; align-items: stretch; }

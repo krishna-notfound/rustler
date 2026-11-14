@@ -346,7 +346,9 @@
   };
 
   // ------------------------------------------------------------ Variants
+  var vKeep = {};
   P.variants = function (el, E) {
+    var keep = vKeep[E.clipId] = vKeep[E.clipId] || {};
     var cs = sec('Create variants (variant.create)');
     el.appendChild(cs);
     var styleBox = h('div', { class: 'checks' }, h('span', { class: 'muted small' }, 'loading...'));
@@ -387,7 +389,8 @@
     el.appendChild(ls);
     var listBox = h('div');
     ls.appendChild(listBox);
-    var res = h('div');
+    // results survive tab redraws (batch QC re-saves clips, live sync then reloads the editor)
+    var res = keep.res || (keep.res = h('div'));
     el.appendChild(res);
     function baseId() { return (E.extras && E.extras.variant_of) || E.clipId; }
     var current = [];
@@ -395,16 +398,17 @@
       if (!R.has('variant.list')) return;
       R.run('variant.list', { clip_id: E.clipId }, true).then(function (d) {
         R.clear(listBox);
-        current = d ? [{ clip_id: d.base, name: 'base', caption_style: '', layout: null, hook: null, renders: null, base: true }].concat(d.variants || []) : [];
+        current = d ? [{ clip_id: d.base, name: 'base', caption_style: d && d.base === E.clipId ? E.clip.captions.preset : '', layout: d && d.base === E.clipId && E.clip.segments[0] ? E.clip.segments[0].layout.preset : null, hook: null, renders: d && d.base === E.clipId ? E.clip.renders.length : null, base: true }].concat(d.variants || []) : [];
         if (!d || !(d.variants || []).length) { listBox.appendChild(h('div', { class: 'muted small' }, 'No variants yet.')); return; }
-        listBox.appendChild(h('table', { class: 'tbl compact vtable' }, h('thead', null, h('tr', null, h('th', null, h('input', { type: 'checkbox', checked: true, onchange: function (e) { Array.prototype.forEach.call(listBox.querySelectorAll('tbody input'), function (c) { c.checked = e.target.checked; }); } })),
-          h('th', null, 'clip'), h('th', null, 'style'), h('th', null, 'layout'), h('th', null, 'hook'), h('th', null, 'renders'), h('th', null, ''))),
+        var hasHook = current.some(function (v) { return v.hook; });
+        listBox.appendChild(h('div', { class: 'tablewrap' }, h('table', { class: 'tbl compact vtable' }, h('thead', null, h('tr', null, h('th', null, h('input', { type: 'checkbox', checked: true, onchange: function (e) { Array.prototype.forEach.call(listBox.querySelectorAll('tbody input'), function (c) { c.checked = e.target.checked; }); } })),
+          h('th', null, 'clip'), h('th', null, 'style'), h('th', null, 'layout'), hasHook ? h('th', null, 'hook') : null, h('th', { title: 'renders' }, 'r'), h('th', null, ''))),
           h('tbody', null, current.map(function (v) {
             return h('tr', { class: v.clip_id === E.clipId ? 'sel' : '' }, h('td', null, h('input', { type: 'checkbox', checked: true, value: v.clip_id })),
               h('td', { class: 'small' }, h('b', null, v.base ? 'base' : v.name)), h('td', { class: 'small' }, v.caption_style || ''), h('td', { class: 'small' }, v.layout || ''),
-              h('td', { class: 'small ell' }, v.hook || ''), h('td', { class: 'mono small' }, v.renders === null ? '' : String(v.renders)),
-              h('td', null, v.clip_id !== E.clipId ? h('button', { class: 'small ghost', type: 'button', onclick: function () { R.go('editor', v.clip_id); } }, 'open') : h('span', { class: 'muted small' }, 'here')));
-          }))));
+              hasHook ? h('td', { class: 'small ell' }, v.hook || '') : null, h('td', { class: 'mono small' }, v.renders === null ? '' : String(v.renders)),
+              h('td', null, v.clip_id !== E.clipId ? h('button', { class: 'small ghost', type: 'button', onclick: function () { R.go('editor', v.clip_id); } }, 'open') : h('span', { class: 'muted small', title: 'open now' }, '•')));
+          })))));
       });
     }
     function sel() { return Array.prototype.filter.call(listBox.querySelectorAll('tbody input'), function (c) { return c.checked; }).map(function (c) { return c.value; }); }
@@ -446,7 +450,18 @@
       R.button('Export selected (export.batch)', function () {
         var ids = sel();
         if (!ids.length) { R.toast('Select clips', 'bad'); return; }
-        return R.run('export.batch', { clip_ids: ids }).then(function (d) { if (d) R.clear(res).appendChild(exportView(d)); });
+        R.clear(res).appendChild(h('div', { class: 'muted small batchprog' }, 'export.batch: QC + brief check + export...'));
+        return R.jobs.start('export.batch', { clip_ids: ids }).then(function (jid) {
+          if (!jid) return;
+          var off = R.jobs.on(function (list) {
+            var j = list.filter(function (x) { return x.id === jid; })[0];
+            if (!j || j.status === 'running') { var b = res.querySelector('.batchprog'); var p = j && j.progress; if (b && p) b.textContent = 'export.batch: ' + (p.stage || '') + ' ' + (p.message || ''); return; }
+            off();
+            R.clear(res);
+            if (j.status === 'ok') res.appendChild(exportView(j.result.data)); else res.appendChild(h('div', { class: 'err small' }, R.errText('export.batch', j.result)));
+            E.reload('quiet');
+          });
+        });
       }, { small: true, need: ['export.batch'] })));
     function batchView(d) {
       var b = sec('render.batch: ' + d.rendered + ' rendered · ' + d.skipped + ' skipped · ' + d.failed + ' failed (' + d.encoder + ', ' + d.parallel + ' at once)');
