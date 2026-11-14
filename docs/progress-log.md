@@ -190,3 +190,12 @@ Give Claude Code the skill: copy `skills\rustler` to `%USERPROFILE%\.claude\skil
 - Wiring: clip.create / clip.set_captions / variant.create accept custom styles (asset_cmds::check_caption_style); caption.list_styles includes custom ones; render stages library fonts and uses write_ass_with; audio.add_music accepts `asset:<id>` (asset_cmds::resolve_asset_path). audio.add_sfx (other agent) should call the same helper.
 - Tests: tests/asset.rs 7 passed + 1 ignored network test passed (26 SFX downloaded, license + sha256 verified, ogg duration via ffprobe). Previews viewed: font specimen, custom caption style (box colour visible), render.preview_frame with the custom style.
 - Not done: no music (no verifiably CC0 login-free source found); GUI asset browser; layout assets are only the 3 built-ins (project layouts stay in `<project>/layouts`).
+- Merged C2 asset library: asset.list/search/show/add(license required)/remove, caption.create_style +
+  caption.styles (custom styles render), setup registers fonts/built-in styles/layouts + 26 Kenney CC0 SFX
+  (license text verified). No CC0 music source found without login — users add their own with a license.
+  audio.add_sfx / add_music accept `asset:<id>`. Registry: **114 commands**.
+- Fixed: progress-log had cp1252 bytes from PowerShell Add-Content → re-encoded UTF-8 (use bash heredocs
+  for docs from now on).
+- Running (integration): GUI integration pass (assets page, audio/effects/brief/variants/project panels
+  verified against real commands) [Opus]; docs/knowledge/skill refresh for the full command set [Sonnet];
+  C4 speakers [Sonnet].
