@@ -3,6 +3,7 @@
 pub mod analyze_cmds;
 pub mod clip_cmds;
 pub mod guide_cmds;
+pub mod edit_cmds;
 pub mod project_cmds;
 pub mod qc_cmds;
 pub mod render_cmds;
@@ -23,6 +24,7 @@ pub fn register_all(reg: &mut Registry) {
     see_cmds::register(reg);
     clip_cmds::register(reg);
     guide_cmds::register(reg);
+    edit_cmds::register(reg);
     render_cmds::register(reg);
     qc_cmds::register(reg);
 }

@@ -35,9 +35,9 @@ renders, checks quality, fixes problems, and delivers finished short-form clips.
     first) → Integrate → Agent testing → Optimize. No big implementation before specs approved.
 
 ## Process instructions from the user (chat)
-- Repos cloned to `repos/`; one analysis agent per repo; results in `findings/`.
+- Repos cloned to `repos/`; one analysis agent per repo; results in `docs/research/`.
 - Use `rea` for findings (see `docs/tooling-notes.md` for its status and scope).
-- Use `/superpowers:brainstorming` to turn findings into the `features/` folder, then
+- Use `/superpowers:brainstorming` to turn findings into the `docs/features/` folder, then
   `/superpowers:writing-plans` for implementation plans.
 - Model tiering: Opus for high-complexity work, Sonnet for medium, Haiku for minor/mechanical tasks.
 - Keep everything documented in `docs/` so work never gets lost between sessions.

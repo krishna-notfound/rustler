@@ -3,13 +3,13 @@
 ## Approach
 
 Build incrementally with a spec-driven workflow. Context files define what to build and how;
-`features/` files define each unit of work; `progress-tracker.md` defines current state.
+`docs/features/` files define each unit of work; `progress-tracker.md` defines current state.
 Implement against these specs — do not infer or invent behavior.
 
 ## Order of Work
 
 1. Brainstorm and decide (record decisions in `progress-tracker.md` → Architecture Decisions).
-2. Write the feature file `features/fNN_<name>.md` **before any code** for that feature.
+2. Write the feature file `docs/features/fNN_<name>.md` **before any code** for that feature.
 3. Write the plan/tasks. 4. Implement. 5. Verify. 6. Update docs and tracker.
 
 ## Scoping Rules

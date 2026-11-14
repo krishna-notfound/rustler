@@ -7,17 +7,17 @@
 - **License correction (verified by reading LICENSE files):** supoclip = **AGPL-3.0**, ViralCutter =
   **GPL-3.0**, hypit = **modified Apache-2.0** (no multi-tenant/SaaS or commercial redistribution
   without a commercial license), openshorts `cloud/` has its own separate LICENSE. My first quick scan
-  wrongly said MIT (it matched "mit" inside "permitted"). Details: `findings/00-license-and-dependency-inventory.md`.
+  wrongly said MIT (it matched "mit" inside "permitted"). Details: `docs/research/00-license-and-dependency-inventory.md`.
   Consequence: copy code only from MIT repos; from AGPL/GPL/modified-Apache repos, study ideas and
   reimplement independently (unless the user decides the whole product is GPL/AGPL and personal-use).
   ultralytics (YOLO) is AGPL-3.0 — avoid as a dependency, or isolate it.
 - Wrote `docs/research-methodology.md` (shared evaluation template, categories A–I).
-- Started 7 per-repo analysis agents + 1 license/dependency inventory agent → `findings/`.
+- Started 7 per-repo analysis agents + 1 license/dependency inventory agent → `docs/research/`.
 - rea MCP fails: Node 24.21.0 too old (needs >= 24.22.1). See `tooling-notes.md`.
 
-- All 7 per-repo reports + license inventory landed in `findings/`. Cross-repo comparison matrix
-  being written by an Opus agent → `findings/00-comparison-matrix.md`.
-- Comparison matrix done: `findings/00-comparison-matrix.md` (scores, best source per capability,
+- All 7 per-repo reports + license inventory landed in `docs/research/`. Cross-repo comparison matrix
+  being written by an Opus agent → `docs/research/00-comparison-matrix.md`.
+- Comparison matrix done: `docs/research/00-comparison-matrix.md` (scores, best source per capability,
   key choices, gaps, asset shortlist, draft feature list f01–f20). Claude's note: pull frame
   viewing/contact sheets (draft f05) into the first slice — "agent sees the video" is a core ask.
 - Brainstorming decisions recorded in `docs/00-vision-and-requirements.md` (confirmed section).
@@ -26,7 +26,7 @@
   editor with multi-region layouts (e.g. webcam top / gameplay bottom); everything the GUI can do,
   the agent can do ("agent and software are one").
 - Design doc drafted: `docs/superpowers/specs/2026-11-15-rustler-design.md`; feature index f01–f29 in
-  `features/README.md`. Builder check (Opus reviewer) running.
+  `docs/features/README.md`. Builder check (Opus reviewer) running.
 - Rust: rustup had no toolchain → installed stable (rustc 1.100.0). Linking failed: MSVC C++ build
   tools missing → installing VS 2022 Build Tools (VCTools workload) via winget.
 
@@ -58,3 +58,23 @@
 - Wave 1 launched in worktrees: T3 core impl, T4 setup/doctor, T6 media basics, T7 captions (4 presets +
   SRT), T8 CLI, T9 render compiler (+music bed, crop sendcmd), MCP server crate, simple web GUI crate.
   Python engine agent still running in main tree.
+- Merged: MCP server (stdio, tools from registry, images to vision agents), captions (4 presets, SRT;
+  switched to static Poppins ExtraBold — libass can't pick weights from variable Montserrat), Python
+  engine (80 tests; CUDA works), core store/timemap/units/layout (40 tests), GUI crate (axum, token, plain
+  JS), CLI front (hand-written parser, 36 tests), media basics (15 tests). `rustler mcp serve` and
+  `rustler gui` wired in main.rs.
+- User added: MCP + CLI must be a full **knowledge book** (MCP prompts + resources + `rustler guide`).
+  Opus writing `knowledge/`; Sonnet building loader + MCP prompts/resources + guide commands.
+- Running: T4 setup/doctor, T9 render compiler, bridge, knowledge content+loader, faces, edit ops,
+  10a/10b commands, T11 QC.
+- User rule (2026-11-15): **all documentation lives in `docs/` and is kept updated after every merge.**
+  Planned move (after the knowledge-content agent finishes, since it reads `docs/research/` right now):
+  `docs/research/` → `docs/research/`, `docs/features/` → `docs/features/`, `context/` → `docs/context/`; update all
+  path references + CLAUDE.md. `knowledge/` stays at repo root (it's product content embedded in the binary,
+  not project docs) but is indexed from `docs/README.md`.
+- Merged engine bridge (Rust<->Python JSON-RPC; 11 tests vs real engine; process-tree kill on cancel).
+- Knowledge book committed (`knowledge/`: 13 guides, 8 MCP prompts).
+- **Docs consolidated into `docs/`**: `findings/`→`docs/research/`, `features/`→`docs/features/`,
+  `context/`→`docs/context/`; all path references updated; `docs/README.md` rewritten as the index.
+- Merged face tracking: engine faces.track (YuNet, MIT model, auto-download) + Rust facepath::crop_keys (median+One-Euro+dead zone+speed cap, ported from autoclip MIT). 85 py + 13 rust tests. TODO: unify CropKey with render compiler's type; crop.track_face command still to wire.
+- Merged face tracking: engine faces.track (YuNet, MIT model, auto-download) + Rust facepath::crop_keys (median+One-Euro+dead zone+speed cap, ported from autoclip MIT). 85 py + 13 rust tests. TODO: unify CropKey with render compiler type; wire crop.track_face command.

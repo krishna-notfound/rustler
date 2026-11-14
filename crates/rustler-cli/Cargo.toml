@@ -15,13 +15,15 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
-clap.workspace = true
 rustler-commands.workspace = true
 rustler-core.workspace = true
+rustler-gui = { version = "0.1.0", path = "../rustler-gui" }
+rustler-mcp = { version = "0.1.0", path = "../rustler-mcp" }
 rustler-registry.workspace = true
 rustler-tools.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+strsim.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
@@ -29,5 +31,6 @@ tracing-subscriber.workspace = true
 
 [dev-dependencies]
 assert_cmd.workspace = true
+schemars.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true

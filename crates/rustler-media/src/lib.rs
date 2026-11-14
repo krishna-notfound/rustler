@@ -5,8 +5,10 @@
 pub mod audio_analysis;
 pub mod compile;
 pub mod encoders;
+pub mod facepath;
 pub mod frames;
 pub mod probe;
+mod proc;
 pub mod proxy;
 pub mod qc;
 pub mod render;
