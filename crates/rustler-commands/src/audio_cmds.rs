@@ -405,10 +405,12 @@ fn sfx_view(e: SfxEntry, tm: &TimeMap, tmap: &TransitionMap, words: &HashMap<Sou
     SfxView { rendered_at: resolved_at.map(|t| tmap.map_time(t)), resolved_at, problem, sfx: e }
 }
 
-async fn add_sfx(ctx: Ctx, i: AddSfxIn) -> Result<SfxOut> {
+async fn add_sfx(ctx: Ctx, mut i: AddSfxIn) -> Result<SfxOut> {
     const STAGE: &str = "audio.add_sfx";
     let store = ctx.store()?;
     let clip = store.load_clip(&i.clip_id)?;
+    // `asset:<id>` picks a sound from the asset library (`rustler asset list --kind sfx`).
+    i.file = crate::asset_cmds::resolve_asset_path(&store, &ctx.home, &i.file.to_string_lossy())?;
     if !i.file.is_file() {
         return Err(RustlerError::new(ErrorCode::NotFound, STAGE, format!("no such file: {}", i.file.display()))
             .hint("pass an existing local audio file (wav/mp3/m4a/ogg/flac)"));

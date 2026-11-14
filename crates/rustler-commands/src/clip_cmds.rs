@@ -8,7 +8,7 @@
 //! frozen `Clip` has no field for).
 
 use chrono::Utc;
-use rustler_captions::{CaptionWord, PresetInfo, list_presets, write_srt};
+use rustler_captions::{CaptionWord, PresetInfo, write_srt};
 use rustler_core::layout::{self, LayoutParams};
 use rustler_core::units::{build_units, find_quote};
 use rustler_core::{
@@ -375,6 +375,7 @@ fn make_layout(
     layout::preset(preset, source.probe.width, source.probe.height, canvas, params)
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn check_caption_preset(stage: &str, name: &str) -> Result<()> {
     if rustler_captions::PRESETS.contains(&name) {
         Ok(())
@@ -433,7 +434,7 @@ async fn clip_create(ctx: Ctx, i: ClipCreateIn) -> Result<ClipView> {
 
     let mut captions = CaptionTrack { script: project.settings.caption_script, ..Default::default() };
     if let Some(style) = &i.caption_style {
-        check_caption_preset("clip.create", style)?;
+        crate::asset_cmds::check_caption_style(&ctx, "clip.create", style)?;
         captions.preset = style.clone();
     }
     let mut warnings = Vec::new();
@@ -614,7 +615,7 @@ pub struct SetCaptionsIn {
 async fn clip_set_captions(ctx: Ctx, i: SetCaptionsIn) -> Result<ClipView> {
     mutate_clip(&ctx, &i.clip_id, i.base_revision, "clip.set_captions", |_, clip| {
         if let Some(style) = &i.style {
-            check_caption_preset("clip.set_captions", style)?;
+            crate::asset_cmds::check_caption_style(&ctx, "clip.set_captions", style)?;
             clip.captions.preset = style.clone();
         }
         if let Some(y) = i.position_y {
@@ -752,8 +753,8 @@ pub struct ListStylesOut {
     pub styles: Vec<PresetInfo>,
 }
 
-async fn caption_list_styles(_ctx: Ctx, _i: EmptyIn) -> Result<ListStylesOut> {
-    Ok(ListStylesOut { styles: list_presets() })
+async fn caption_list_styles(ctx: Ctx, _i: EmptyIn) -> Result<ListStylesOut> {
+    Ok(ListStylesOut { styles: crate::asset_cmds::preset_infos(&ctx.home, ctx.project_dir.as_deref()) })
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -837,7 +838,7 @@ async fn layout_list_presets(_ctx: Ctx, _i: EmptyIn) -> Result<LayoutPresetsOut>
 #[derive(Deserialize, JsonSchema)]
 pub struct AddMusicIn {
     pub clip_id: ClipId,
-    /// Local audio file (mp3/wav/m4a/...). Looped to the clip length.
+    /// Local audio file (mp3/wav/m4a/...) or `asset:<id>` from the asset library. Looped to the clip length.
     pub path: PathBuf,
     /// Music gain before mixing (default -18).
     pub volume_db: Option<f64>,
@@ -863,11 +864,13 @@ fn save_extras(store: &ProjectStore, id: &ClipId, extras: &ClipExtras) -> Result
 async fn audio_add_music(ctx: Ctx, i: AddMusicIn) -> Result<MusicOut> {
     let store = ctx.store()?;
     let clip = store.load_clip(&i.clip_id)?;
-    if !i.path.is_file() {
-        return Err(RustlerError::new(ErrorCode::NotFound, "audio.add_music", format!("no such file: {}", i.path.display()))
-            .hint("pass an existing local audio file"));
+    // `asset:<id>` resolves to a library file (see asset.search --kind music).
+    let src = crate::asset_cmds::resolve_asset_path(&store, &ctx.home, &i.path.to_string_lossy())?;
+    if !src.is_file() {
+        return Err(RustlerError::new(ErrorCode::NotFound, "audio.add_music", format!("no such file: {}", src.display()))
+            .hint("pass an existing local audio file or asset:<id> (see `rustler asset search --kind music`)"));
     }
-    let path = std::path::absolute(&i.path).unwrap_or_else(|_| i.path.clone());
+    let path = std::path::absolute(&src).unwrap_or_else(|_| src.clone());
     let mut bed = MusicBed::new(path);
     if let Some(v) = i.volume_db {
         if !(-60.0..=6.0).contains(&v) {

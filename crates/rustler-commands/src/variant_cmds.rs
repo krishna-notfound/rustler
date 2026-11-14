@@ -172,10 +172,7 @@ async fn variant_create(ctx: Ctx, i: VariantCreateIn) -> Result<VariantCreateOut
         return Err(validation(STAGE, format!("{count} combinations is more than the limit of {MAX_VARIANTS}")).hint("pick fewer styles/layouts/hooks"));
     }
     for s in &styles {
-        if !rustler_captions::PRESETS.contains(&s.as_str()) {
-            return Err(validation(STAGE, format!("unknown caption style '{s}'"))
-                .hint(format!("available styles: {}", rustler_captions::PRESETS.join(", "))));
-        }
+        crate::asset_cmds::check_caption_style(&ctx, STAGE, s)?;
     }
     for h in &hooks {
         overlay_cmds::check_text(STAGE, h)?;

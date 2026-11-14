@@ -31,3 +31,14 @@ family's `OFL.txt` (not bundled in this repository):
 
 ## Fonts (SIL Open Font License 1.1, fetched from google/fonts at setup with OFL.txt)
 Anton, Poppins (ExtraBold, Bold), Noto Sans Devanagari.
+
+## Sound effects (CC0, fetched at setup into `~/.rustler/assets/sfx/`)
+`rustler setup` (skip with `--no-assets`) downloads two packs by Kenney (www.kenney.nl) and keeps a curated
+subset of 26 files. Both packs ship a `License.txt` that states "Creative Commons Zero, CC0"
+(http://creativecommons.org/publicdomain/zero/1.0/); setup refuses to register a pack whose License.txt
+does not say so. Credit to Kenney is appreciated but not required. Each file has a manifest entry
+(`license: CC0-1.0`, `source_url`, `sha256`) in `~/.rustler/assets/manifest.json`.
+- Interface Sounds 1.0 - https://kenney.nl/assets/interface-sounds
+- Impact Sounds 1.0 - https://kenney.nl/assets/impact-sounds
+
+No music is bundled or fetched; user-added assets carry the license the user declares via `asset add --license`.

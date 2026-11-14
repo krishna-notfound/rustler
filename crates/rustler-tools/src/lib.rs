@@ -2,6 +2,7 @@
 //! subprocess helper. Task 4 implements the bodies.
 
 pub(crate) mod archive;
+pub mod assets;
 pub mod doctor;
 pub mod download;
 pub mod engine_install;

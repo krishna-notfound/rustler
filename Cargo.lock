@@ -2272,6 +2272,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -2446,6 +2447,7 @@ dependencies = [
  "futures-util",
  "include_dir",
  "reqwest",
+ "rustler-captions",
  "rustler-core",
  "rustler-registry",
  "schemars",

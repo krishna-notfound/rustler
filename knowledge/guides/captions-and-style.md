@@ -44,6 +44,26 @@ Exact fonts/colours come from the preset data; read `caption list-styles` output
 If the brief names a caption style, match it as closely as these presets allow and say so in the
 report if none fits.
 
+### Custom styles (asset library)
+
+`rustler caption styles` lists the four built-ins **plus** saved custom styles (scope `project` or
+`global`). Make one when the brief wants a look no preset gives:
+
+```text
+rustler caption create-style neon-pop --base hormozi-pop --active-color #00FFFF --outline-width 8
+rustler caption create-style yellow-box --base boxed-highlight --box-color #FFD400 --primary #000000 --outline #FFFFFF
+rustler asset show style-neon-pop      # renders the style on a gray 1080x1920 frame; LOOK at the PNG
+rustler clip set-captions <clip_id> --style neon-pop
+```
+
+Options: `--base` (any built-in or custom style), `--font-family` (must be an installed or asset font, otherwise
+a warning says libass will substitute), `--size-factor` (0.02-0.15 of canvas width), `--primary`, `--outline`,
+`--outline-width`, `--shadow`, `--uppercase`, `--active-kind recolor|box|pop`, `--active-color`, `--box-color`,
+`--scope project|global`. Colours are `#RRGGBB`. A custom style is used by name everywhere a built-in is
+(`clip.create --caption-style`, `clip.set-captions`, `variant create`, `render`); built-in names cannot be
+overwritten. Fonts: add one with `rustler asset add Font.ttf --kind font --license OFL-1.1`
+(only ttf/otf; the library's fonts are staged for every render). `rustler asset search <words>` finds assets.
+
 Decision rules:
 
 1. Brief specifies a style → follow it.
