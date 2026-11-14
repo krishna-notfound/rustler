@@ -203,7 +203,10 @@ async fn qc_warns_on_silence_and_late_hook() {
     assert!(hint(&r, "long_silence").contains("rustler edit remove-pauses clp_"));
     assert_eq!(status(&r, "hook_window"), QcStatus::Warn);
     assert!(hint(&r, "hook_window").contains("rustler edit trim clp_00000000000000000000000001 --start-delta 0.5"));
-    assert!(verdict(&r).starts_with("PASS with 2 warning(s)"), "{}", verdict(&r));
+    assert!(verdict(&r).starts_with("PASS with "), "{}", verdict(&r));
+    for n in ["long_silence", "hook_window"] {
+        assert!(names_with(&r, QcStatus::Warn).contains(&n.to_string()), "{n}");
+    }
 }
 
 #[tokio::test]
@@ -258,4 +261,60 @@ async fn qc_missing_render_file_is_not_found() {
     let e = run_qc(&t, &clip, &render, &dir.path().join("nope.mp4"), &font, dir.path()).await.unwrap_err();
     assert_eq!(e.code, ErrorCode::NotFound);
     assert!(e.hint.unwrap().contains("rustler render run"));
+}
+
+// ---- QC v2 -----------------------------------------------------------------------------
+
+#[tokio::test]
+async fn v2_checks_degrade_without_engine_data() {
+    let Some(t) = support::tools() else { return };
+    let Some(font) = support::font() else { return };
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("good.mp4");
+    make_good(&t, &f, 6);
+    let (clip, render) = clip_for(6.0, true, 0.70); // center-crop + captions on
+    let r = run_qc(&t, &clip, &render, &f, &font, &dir.path().join("qc")).await.unwrap();
+    assert!(r.passed, "a missing engine must never fail QC: {}", verdict(&r));
+    for name in ["caption_over_face", "face_visible_ratio", "face_cut_off"] {
+        assert_eq!(status(&r, name), QcStatus::Warn, "{name}");
+        let c = r.checks.iter().find(|c| c.name == name).unwrap();
+        assert_eq!(c.value, serde_json::json!({"skipped": "engine unavailable"}), "{name}");
+        assert!(c.fix_hint.is_some(), "{name} needs a fix_hint");
+    }
+    // no overlay, no transcript words: the hook has no text
+    assert_eq!(status(&r, "hook_text_present"), QcStatus::Warn);
+    assert!(hint(&r, "hook_text_present").contains("clp_00000000000000000000000001"));
+    assert_eq!(status(&r, "duration_for_platform"), QcStatus::Pass);
+}
+
+#[tokio::test]
+async fn v2_checks_use_the_extras_passed_in() {
+    use rustler_media::facepath::{FaceBox, FaceSample};
+    use rustler_media::qc::{QcBrief, QcExtras, run_qc_with};
+    let Some(t) = support::tools() else { return };
+    let Some(font) = support::font() else { return };
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("good.mp4");
+    make_good(&t, &f, 6);
+    let (clip, render) = clip_for(6.0, true, 0.70);
+    // a face sitting where the captions are, in every sample
+    let face = FaceBox { x: 0.3, y: 0.62, w: 0.4, h: 0.2, score: 0.9 };
+    let samples: Vec<FaceSample> = (0..12).map(|i| FaceSample { t: f64::from(i) * 0.5, faces: vec![face] }).collect();
+    let extras = QcExtras {
+        faces: Some(samples),
+        overlay_starts: vec![0.5],
+        brief: Some(QcBrief { platform: None, min_s: None, max_s: Some(4.0) }),
+        ..QcExtras::default()
+    };
+    let r = run_qc_with(&t, &clip, &render, &f, &font, &dir.path().join("qc"), &extras).await.unwrap();
+    assert!(r.passed, "{}", verdict(&r));
+    assert_eq!(status(&r, "caption_over_face"), QcStatus::Warn);
+    assert!(hint(&r, "caption_over_face").contains("rustler clip set-captions clp_00000000000000000000000001 --position-y 0.56"));
+    assert_eq!(status(&r, "face_visible_ratio"), QcStatus::Pass);
+    assert_eq!(status(&r, "face_cut_off"), QcStatus::Pass);
+    assert_eq!(status(&r, "hook_text_present"), QcStatus::Pass);
+    assert_eq!(status(&r, "duration_for_platform"), QcStatus::Warn);
+    assert!(hint(&r, "duration_for_platform").contains("rustler edit trim clp_00000000000000000000000001 --end-delta -2"));
+    // contact sheet stays the last check
+    assert_eq!(r.checks.last().unwrap().name, "contact_sheet");
 }

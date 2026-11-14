@@ -45,7 +45,8 @@ Completion rate drives distribution: a viewer finishing a 20 s clip beats a view
 clip at 15 s. Let the moment decide the length; the table is a sanity check.
 
 Campaign briefs often fix a range (e.g. "30-60 s", "min 15 s"). Respect it exactly; QC duration is
-precise, the reviewer's is too.
+precise, the reviewer's is too. Store the range with `rustler brief set --min-duration 30 --max-duration 60`
+and `rustler brief check <clip>` tests every clip against it (including transition overlap).
 
 ## 4. Safe areas
 
