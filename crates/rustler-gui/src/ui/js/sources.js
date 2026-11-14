@@ -230,6 +230,7 @@
       if (u && Array.isArray(u.understanding)) top.appendChild(h('ul', { class: 'ulist' }, u.understanding.map(function (l) { return h('li', null, l); })));
       else top.appendChild(h('div', { class: 'muted small' }, R.has('analyze.deep') ? 'No understanding pack yet: run analyze.deep below.' : 'No understanding pack yet.'));
     });
+    if (R.has('analyze.speakers')) el.appendChild(speakersCard(id));
     var grid = h('div', { class: 'ugrid' });
     el.appendChild(grid);
     cmds.forEach(function (c) {
@@ -254,6 +255,57 @@
         h('div', { class: 'muted small' }, spec.summary || ''), out));
     });
   }
+  // Speakers (analyze.speakers / speaker.rename): talk time per speaker from speakers.json.
+  var SPK_COLORS = ['#FFE000', '#5EE0FF', '#FF7AB6', '#7CFF8A', '#FFA24D', '#B18CFF'];
+  function speakersCard(id) {
+    var box = h('div', { class: 'card inner spkcard' });
+    var body = h('div');
+    var n = h('input', { type: 'number', min: 1, max: 12, class: 'num short', placeholder: 'auto', title: 'number of speakers when known' });
+    box.appendChild(h('div', { class: 'row' }, h('h3', null, 'Speakers'), h('span', { class: 'muted small' }, 'local diarization (sherpa-onnx)'), h('span', { class: 'grow' }),
+      h('span', { class: 'muted small' }, 'speakers'), n,
+      R.button('Analyze speakers', function () {
+        var input = { source_id: id };
+        if (n.value) input.num_speakers = Number(n.value);
+        return R.jobs.start('analyze.speakers', input).then(function (jid) {
+          if (!jid) return;
+          R.clear(body).appendChild(h('div', { class: 'muted small' }, 'diarizing...'));
+          waitJob(jid, function () { load(); });
+          var off = R.jobs.on(function (list) { var j = list.filter(function (x) { return x.id === jid; })[0]; if (j && j.status === 'error') { off(); R.clear(body).appendChild(h('div', { class: 'err small' }, R.errText('analyze.speakers', j.result))); } else if (j && j.status !== 'running') off(); });
+          R.onLeave(off);
+        });
+      }, { small: true, primary: true })));
+    box.appendChild(body);
+    function load() {
+      return R.getJson(R.optUrl('analysis/' + id + '/speakers.json')).then(function (f) {
+        R.clear(body);
+        if (!f || !Array.isArray(f.segments)) { body.appendChild(h('div', { class: 'muted small' }, 'Not analyzed yet. Run "Analyze speakers" to see who talks when and how much.')); return; }
+        var tot = {}, turns = {}, labels = f.labels || {};
+        f.segments.forEach(function (t) { tot[t.speaker] = (tot[t.speaker] || 0) + Math.max(0, t.end - t.start); turns[t.speaker] = (turns[t.speaker] || 0) + 1; });
+        var ids = Object.keys(tot).sort(function (a, b) { return tot[b] - tot[a]; });
+        var all = ids.reduce(function (s, k) { return s + tot[k]; }, 0) || 1;
+        body.appendChild(h('div', { class: 'muted small' }, f.num_speakers + ' speaker(s) · ' + f.segments.length + ' turns · model ' + (f.model || '')));
+        // who-speaks-when strip
+        var strip = h('div', { class: 'spkstrip', title: 'who speaks when' });
+        f.segments.forEach(function (t) {
+          strip.appendChild(h('i', { style: { left: (t.start / f.duration * 100) + '%', width: Math.max(0.2, (t.end - t.start) / f.duration * 100) + '%', background: SPK_COLORS[ids.indexOf(t.speaker) % SPK_COLORS.length] }, title: (labels[t.speaker] || t.speaker) + ' ' + R.fmt(t.start) + '–' + R.fmt(t.end) }));
+        });
+        body.appendChild(strip);
+        ids.forEach(function (k, i) {
+          var name = h('input', { type: 'text', value: labels[k] || '', placeholder: k, class: 'short' });
+          body.appendChild(h('div', { class: 'spkrow', 'data-speaker': k },
+            h('span', { class: 'swatch', style: { background: SPK_COLORS[i % SPK_COLORS.length] } }), h('b', { class: 'mono' }, k), name,
+            h('div', { class: 'spkbar' }, h('i', { style: { width: (tot[k] / all * 100) + '%', background: SPK_COLORS[i % SPK_COLORS.length] } })),
+            h('span', { class: 'mono small' }, R.fmt(tot[k]) + ' · ' + Math.round(tot[k] / all * 100) + '%'), h('span', { class: 'muted small' }, turns[k] + ' turns'),
+            R.has('speaker.rename') ? R.button('Rename', function () {
+              return R.run('speaker.rename', { source_id: id, speaker: k, name: name.value.trim() }).then(function (d) { if (d) { R.toast(k + ' → ' + (d.name || k), 'good'); load(); } });
+            }, { small: true }) : null));
+        });
+      });
+    }
+    load();
+    return box;
+  }
+
   // Compact summary: scalar fields as chips, arrays as counts + first rows table.
   function summary(d) {
     var box = h('div');

@@ -133,7 +133,7 @@
       h('div', { class: 'ainfo' },
         h('div', { class: 'aname', title: a.name }, a.name || a.id),
         h('div', { class: 'row tight' }, R.badge(KIND_LABEL[a.kind] || a.kind, 'kind'), R.badge(a.scope, a.scope === 'built-in' ? 'none' : a.scope === 'global' ? 'info' : 'pass'),
-          h('span', { class: 'small lic', title: (a.attribution || '') + (a.license_url ? '\n' + a.license_url : '') }, a.license || 'no license')),
+          a.license === 'built-in' ? null : h('span', { class: 'small lic ell', title: (a.attribution || '') + (a.license_url ? '\n' + a.license_url : '') }, a.license || 'no license')),
         tags.length ? h('div', { class: 'atags' }, tags.map(function (t) { return h('span', { class: 'tag' }, t); })) : null,
         h('div', { class: 'mono tiny muted', title: 'use as asset:' + a.id }, a.id)),
       acts);
@@ -255,6 +255,7 @@
           R.toast('Added ' + (a.id || 'asset') + ' (' + (a.scope || input.scope) + ')', 'good');
           (d.warnings || []).forEach(function (w) { R.toast(w); });
           f.path.value = ''; f.name.value = ''; f.tags.value = '';
+          box.hidden = true;
           st.kind = a.kind || st.kind; R.store('rustler.assets.kind', st.kind);
           if (st.reload) st.reload();
         });

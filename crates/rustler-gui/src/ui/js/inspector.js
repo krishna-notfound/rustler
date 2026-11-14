@@ -1,5 +1,6 @@
 // Inspector side panel: Clip, Layout, Captions, Overlays, Audio, Effects, QC, Render, Brief,
-// Variants, History. Tabs whose commands are not registered are hidden (feature detection).
+// Variants, History. Audio/Effects/QC/Variants live in panels.js, Brief in brief.js.
+// Tabs whose commands are not registered are hidden (feature detection).
 (function () {
   'use strict';
   var R = window.R, h = R.h;
@@ -23,12 +24,12 @@
       { id: 'layout', label: 'Layout', render: layoutTab },
       { id: 'captions', label: 'Captions', render: captionsTab, need: ['caption.set', 'clip.set_captions'] },
       { id: 'overlays', label: 'Overlays', render: overlaysTab, need: R.cmdsWithPrefix('overlay.') },
-      { id: 'audio', label: 'Audio', render: audioTab, need: ['audio.add_music', 'audio.remove_music'].concat(R.cmdsWithPrefix('audio.')) },
-      { id: 'effects', label: 'Effects', render: effectsTab, need: R.cmdsWithPrefix('effect.').concat(R.cmdsWithPrefix('transition.')) },
-      { id: 'qc', label: 'QC', render: qcTab, need: ['qc.run'] },
+      { id: 'audio', label: 'Audio', render: function (el) { R.panels.audio(el, E); }, need: ['audio.add_music', 'audio.remove_music'].concat(R.cmdsWithPrefix('audio.')) },
+      { id: 'effects', label: 'Effects', render: function (el) { R.panels.effects(el, E); }, need: R.cmdsWithPrefix('effect.').concat(R.cmdsWithPrefix('transition.')) },
+      { id: 'qc', label: 'QC', render: function (el) { R.panels.qc(el, E); }, need: ['qc.run'] },
       { id: 'render', label: 'Render', render: renderTab, need: ['render.run'] },
-      { id: 'brief', label: 'Brief', render: briefTab, need: R.cmdsWithPrefix('brief.') },
-      { id: 'variants', label: 'Variants', render: variantsTab, need: R.cmdsWithPrefix('variant.') },
+      { id: 'brief', label: 'Brief', render: function (el) { R.briefPanel(el, E.clipId, E.mutate); }, need: R.cmdsWithPrefix('brief.') },
+      { id: 'variants', label: 'Variants', render: function (el) { R.panels.variants(el, E); }, need: R.cmdsWithPrefix('variant.') },
       { id: 'history', label: 'History', render: historyTab, need: ['history.list'] }
     ].filter(function (t) { return !t.need || R.hasAny(t.need); });
     tabs = R.tabs(items, 'inspector', 'insp');
@@ -155,7 +156,25 @@
     ps.appendChild(h('div', { class: 'row' },
       R.button('Detect webcam', function () { return R.regions.detectWebcam(); }, { small: true, need: ['layout.detect_webcam'] }),
       R.button('Streamer split (draw 2 boxes)', function () { return R.regions.streamerSplit(); }, { small: true, need: ['layout.from_frame_boxes'] }),
-      R.button('+ Region', function () { return R.regions.addRegion(); }, { small: true, need: ['layout.add_region'] })));
+      R.button('+ Region', function () { return R.regions.addRegion(); }, { small: true, need: ['layout.add_region'] }),
+      R.has('crop.track_speaker') ? R.button('Track active speaker', function () {
+        return R.jobs.start('crop.track_speaker', { clip_id: E.clipId }).then(function (jid) {
+          if (!jid) return;
+          R.toast('Tracking the active speaker...');
+          var id = E.clipId;
+          var off = R.jobs.on(function (list) {
+            var j = list.filter(function (x) { return x.id === jid; })[0];
+            if (!j || j.status === 'running') return;
+            off();
+            if (j.status === 'ok' && j.result && j.result.data) {
+              var d = j.result.data;
+              (d.warnings || []).forEach(function (w) { R.toast(w); });
+              R.toast('Crop follows the active speaker in ' + (d.segments || []).length + ' segment(s)', 'good');
+            }
+            if (E && E.clipId === id) E.reload('mutate');
+          });
+        });
+      }, { small: true, title: 'crop.track_speaker: center-crop follows whoever is talking (needs analyze.speakers)' }) : null));
 
     // regions
     var rs = sec('Regions (back to front)');
@@ -247,11 +266,19 @@
     el.appendChild(grid);
     el.appendChild(prev);
     drawExact(prev);
-    R.loadStyles().then(function (styles) {
+    (R.has('caption.styles') ? R.loadStyleDefs() : R.loadStyles()).then(function (styles) {
       R.clear(grid);
       styles.forEach(function (st) {
-        var card = h('button', { type: 'button', class: 'stylecard' + (st.name === cap.preset ? ' sel' : ''), title: st.description || st.name },
-          h('span', { class: 'sname s-' + st.name }, sample(st.name)), h('span', { class: 'small' }, st.name));
+        var custom = st.built_in === false;
+        var nm = h('span', { class: 'sname s-' + st.name }, sample(st.name));
+        if (custom) {
+          nm.style.color = st.primary || '#fff';
+          nm.style.fontFamily = /anton/i.test(st.font_family || '') ? R.fonts.anton : R.fonts.poppins;
+          nm.textContent = st.uppercase ? 'ASK' : 'Ask';
+          nm.appendChild(h('span', { style: { color: st.active_colour } }, st.uppercase ? ' NOT' : ' not'));
+        }
+        var card = h('button', { type: 'button', class: 'stylecard' + (st.name === cap.preset ? ' sel' : '') + (custom ? ' custom' : ''), title: (st.description || st.name) + (custom ? ' (custom, ' + st.scope + ')' : '') },
+          nm, h('span', { class: 'small' }, st.name), custom ? h('span', { class: 'cbadge' }, st.scope) : null);
         card.addEventListener('click', function () {
           styleSel.value = st.name;
           Array.prototype.forEach.call(grid.children, function (c) { c.classList.remove('sel'); });
@@ -261,11 +288,48 @@
         grid.appendChild(card);
       });
     });
+    if (R.has('caption.create_style')) {
+      el.appendChild(h('div', { class: 'row' }, h('span', { class: 'muted small grow' }, 'Custom styles are saved to the asset library and work everywhere a style name does.'),
+        R.button('+ New style…', function () {
+          R.modal('New caption style (caption.create_style)', R.styleCreator({ base: cap.preset, editor: E, onSaved: function () { R.loadStyleDefs(); } }));
+        }, { small: true, primary: true })));
+    }
+    if (R.has('caption.speaker_colors')) el.appendChild(speakerColors());
     var cs = sec('Caption chunks (from caption.export_srt)');
     cueBox = h('div', { class: 'cues' });
     cs.appendChild(cueBox);
     el.appendChild(cs);
     drawCueList();
+  }
+  // Speaker-coloured captions (caption.speaker_colors; needs analyze.speakers on the source).
+  function speakerColors() {
+    var box = sec('Speaker colours');
+    var cur = (E.extras && E.extras.speaker_colors) || { enabled: false, colors: {} };
+    var on = h('input', { type: 'checkbox', checked: !!cur.enabled });
+    var pickers = h('div', { class: 'row' });
+    var DEF = ['#FFE000', '#5EE0FF', '#FF7AB6', '#7CFF8A', '#FFA24D', '#B18CFF'];
+    var sids = {};
+    E.clip.segments.forEach(function (sg) { sids[sg.source_id] = 1; });
+    var ids = {}, names = {};
+    Promise.all(Object.keys(sids).map(function (sid) { return R.getJson(R.optUrl('analysis/' + sid + '/speakers.json')); })).then(function (files) {
+      files.forEach(function (f) { if (f && f.segments) { f.segments.forEach(function (t) { ids[t.speaker] = 1; }); Object.keys(f.labels || {}).forEach(function (k) { names[k] = f.labels[k]; }); } });
+      var list = Object.keys(ids).sort();
+      if (!list.length) { pickers.appendChild(h('span', { class: 'muted small' }, 'No speaker analysis for this clip’s source yet (Sources → Understand → Analyze speakers).')); return; }
+      list.forEach(function (k, i) {
+        var c = h('input', { type: 'color', value: String((cur.colors || {})[k] || DEF[i % DEF.length]).toLowerCase(), 'data-speaker': k });
+        pickers.appendChild(h('label', { class: 'small chk' }, c, ' ' + (names[k] ? names[k] + ' (' + k + ')' : k)));
+      });
+    });
+    box.appendChild(h('div', { class: 'row' }, h('label', { class: 'chk' }, on, ' Colour captions by speaker'), h('span', { class: 'grow' }),
+      R.button('Apply', function () {
+        var colors = {};
+        Array.prototype.forEach.call(pickers.querySelectorAll('input[type=color]'), function (c) { colors[c.getAttribute('data-speaker')] = c.value.toUpperCase(); });
+        var input = { enabled: on.checked };
+        if (Object.keys(colors).length) input.colors = colors;
+        return E.mutate('caption.speaker_colors', input, { toast: on.checked ? 'Speaker colours on' : 'Speaker colours off' });
+      }, { small: true, primary: true })));
+    box.appendChild(pickers);
+    return box;
   }
   function sample(name) { return /pop|bold|hormozi/.test(name) ? 'ASK NOT' : 'Ask not'; }
   function drawCueList() {
@@ -351,95 +415,6 @@
     });
   }
 
-  function audioTab(el) {
-    var mu = E.extras && E.extras.music;
-    var ms = sec('Music bed');
-    el.appendChild(ms);
-    if (mu) {
-      ms.appendChild(h('div', { class: 'kv' }, h('span', null, 'File'), h('b', { class: 'mono small' }, String(mu.path).split(/[\\/]/).pop()),
-        h('span', null, 'Volume'), h('b', null, mu.volume_db + ' dB'), h('span', null, 'Ducking'), h('b', null, mu.duck ? 'on' : 'off'),
-        h('span', null, 'Fades'), h('b', null, mu.fade_in + ' s in / ' + mu.fade_out + ' s out')));
-      ms.appendChild(h('div', { class: 'row' }, R.button('Remove music', function () { return E.mutate('audio.remove_music', {}, { toast: 'Music removed' }); }, { small: true, need: ['audio.remove_music'] })));
-    }
-    if (R.has('audio.add_music')) {
-      var f = R.schemaForm('audio.add_music', { fixed: { clip_id: E.clipId }, initial: mu ? { path: mu.path, volume_db: mu.volume_db, duck: mu.duck, fade_in: mu.fade_in, fade_out: mu.fade_out } : {},
-        submit: mu ? 'Update music' : 'Add music', compact: true, run: function (c, input) { return E.mutate(c, input, { toast: 'Music set' }); } });
-      ms.appendChild(f.el);
-      if (R.has('asset.list')) ms.appendChild(assetPicker('music', function (p) { var inp = f.el.querySelector('input[type=text]'); if (inp) inp.value = p; }));
-    }
-    var other = R.cmdsWithPrefix('audio.').filter(function (c) { return c !== 'audio.add_music' && c !== 'audio.remove_music'; });
-    if (other.length) {
-      el.appendChild(sec('Audio effects and SFX'));
-      genericPanel(el, other, 'audio.list', { listTitle: 'Audio items' });
-    }
-  }
-  function assetPicker(kind, onPick) {
-    var box = h('div', { class: 'assets' }, h('span', { class: 'muted small' }, 'loading ' + kind + ' assets...'));
-    R.run('asset.list', R.hasProp('asset.list', 'kind') ? { kind: kind } : {}, true).then(function (d) {
-      R.clear(box);
-      var items = R.listOf(d, 'assets', 'items').filter(function (a) { return !a.kind || a.kind === kind; });
-      if (!items.length) { box.appendChild(h('span', { class: 'muted small' }, 'no ' + kind + ' assets in the library')); return; }
-      box.appendChild(h('span', { class: 'muted small' }, 'library: '));
-      items.slice(0, 30).forEach(function (a) {
-        var p = a.path || a.file || a.id;
-        box.appendChild(h('button', { class: 'small pill', type: 'button', title: (a.license || '') + ' ' + (a.tags || []).join(' '), onclick: function () { onPick(p, a); } }, a.name || String(p).split(/[\\/]/).pop()));
-      });
-    });
-    return box;
-  }
-
-  function effectsTab(el) {
-    var cmds = R.cmdsWithPrefix('transition.').concat(R.cmdsWithPrefix('effect.'));
-    if (!cmds.length) { el.appendChild(R.na('effect.add', 'transition.set')); return; }
-    el.appendChild(h('div', { class: 'muted small' }, 'Segments: ' + E.timeline.map(function (m, i) { return (i + 1) + '=' + m.segment_id; }).join('  ')));
-    genericPanel(el, cmds, R.has('effect.list') ? 'effect.list' : null, { listTitle: 'Effects', listKey: 'effects' });
-  }
-
-  // ------------------------------------------------------------ QC
-  function qcTab(el) {
-    var out = h('div');
-    el.appendChild(h('div', { class: 'row' },
-      R.button('Run QC on latest render', function () {
-        if (!E.clip.renders.length) { R.toast('Render the clip first (Render tab)', 'bad'); return; }
-        return R.run('qc.run', { clip_id: E.clipId, allow_fail: true }).then(function (r) { if (r) { R.clear(out); R.renderQc(out, r); fixes(out); } });
-      }, { primary: true, small: true }),
-      R.has('fix.suggest') ? R.button('Suggest fixes', function () { R.clear(out); return fixes(out); }, { small: true }) : null));
-    el.appendChild(out);
-    var last = E.clip.renders[E.clip.renders.length - 1];
-    if (last && last.qc) R.getJson(R.optUrl(last.qc)).then(function (rep) { if (rep && !out.firstChild) { out.appendChild(h('div', { class: 'muted small' }, 'Saved QC of ' + last.id)); R.renderQc(out, rep); } });
-  }
-  function fixes(out) {
-    if (!R.has('fix.suggest')) return Promise.resolve();
-    return R.run('fix.suggest', { clip_id: E.clipId }, true).then(function (d) {
-      if (!d) return;
-      var items = R.listOf(d, 'fixes', 'suggestions', 'commands', 'items');
-      var box = sec('Suggested fixes');
-      out.appendChild(box);
-      if (d.verdict) box.appendChild(h('div', { class: 'small ' + (d.passed ? 'st-pass' : 'st-warn') }, d.verdict));
-      if (!items.length) { box.appendChild(h('span', { class: 'muted small' }, 'No fixes suggested.')); return; }
-      var hasApply = R.has('fix.apply');
-      if (hasApply && items.some(function (f) { return f.auto_safe; })) {
-        box.appendChild(h('div', { class: 'row' }, R.button('Apply all safe fixes', function () { return E.mutate('fix.apply', { all_safe: true }, { toast: 'Safe fixes applied' }); }, { small: true, primary: true })));
-      }
-      items.forEach(function (f) {
-        if (f && f.check && Array.isArray(f.commands)) {
-          box.appendChild(h('div', { class: 'fixrow' },
-            h('div', { class: 'grow' },
-              h('div', null, h('b', null, f.check), ' ', h('span', { class: 'badge ' + (f.severity === 'high' ? 'human st-fail' : 'system') }, f.severity || '')),
-              h('div', { class: 'small' }, f.why || ''),
-              f.commands.map(function (c) { return h('div', { class: 'mono small muted', title: 'CLI equivalent' }, c); })),
-            hasApply && f.auto_safe ? R.button('Apply', function () { return E.mutate('fix.apply', { check: f.check }, { toast: 'Fix applied: ' + f.check }); }, { small: true, primary: true }) : null));
-          return;
-        }
-        var cmd = typeof f === 'string' ? null : (f.command || f.name);
-        var input = typeof f === 'string' ? null : (f.input || f.args || null);
-        var cli = typeof f === 'string' ? f : (f.cli || f.why || f.reason || '');
-        box.appendChild(h('div', { class: 'fixrow' }, h('div', { class: 'grow' }, cmd ? h('b', { class: 'mono' }, cmd) : null, h('div', { class: 'muted small mono' }, R.short(cli || input, 200))),
-          cmd && input && R.has(cmd) ? R.button('Run', function () { return E.mutate(cmd, input, { toast: cmd + ' applied' }); }, { small: true, primary: true }) : null));
-      });
-    });
-  }
-
   // ------------------------------------------------------------ Render queue
   var offJobs = null;
   function renderTab(el) {
@@ -492,27 +467,6 @@
   }
 
   // ------------------------------------------------------------ Brief / Variants / History
-  function briefTab(el) {
-    var cmds = R.cmdsWithPrefix('brief.');
-    if (R.has('brief.show')) {
-      var box = sec('Project brief');
-      el.appendChild(box);
-      R.run('brief.show', {}, true).then(function (d) { box.appendChild(d ? R.resultView(d) : h('span', { class: 'muted small' }, 'No brief set.')); });
-    }
-    if (R.has('brief.check')) {
-      var out = h('div');
-      el.appendChild(h('div', { class: 'row' }, R.button('Check this clip against the brief', function () {
-        return R.run('brief.check', R.hasProp('brief.check', 'clip_id') ? { clip_id: E.clipId } : {}).then(function (d) { if (d) R.clear(out).appendChild(R.resultView(d)); });
-      }, { small: true, primary: true })));
-      el.appendChild(out);
-    }
-    genericPanel(el, cmds.filter(function (c) { return c !== 'brief.show' && c !== 'brief.check'; }), null, {});
-  }
-  function variantsTab(el) {
-    var out = h('div');
-    genericPanel(el, R.cmdsWithPrefix('variant.'), R.has('variant.list') ? 'variant.list' : null, { open: ['variant.create'], onResult: function (c, d) { R.clear(out).appendChild(R.resultView(d)); } });
-    el.appendChild(out);
-  }
   function historyTab(el) {
     R.run('history.list', { clip_id: E.clipId }, true).then(function (d) {
       if (!d) { el.appendChild(h('span', { class: 'muted small' }, 'no history')); return; }
