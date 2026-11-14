@@ -1,67 +1,85 @@
 # UI Context
 
+This file describes the simple local web GUI (`crates/rustler-gui`, feature f24). It is not the Tauri editor,
+which is deferred (f25–f27). The page is plain HTML, CSS and JavaScript served by the Rust server; there is no
+framework, no build step and no component library.
+
 ## Theme
 
-{{Light only / dark only / both. One sentence describing the visual language.}}
+Dark only. A quiet, dense tool look: dark panels, one blue accent, muted secondary text.
 
-All colors are CSS custom properties defined in `{{globals.css}}` and mapped to Tailwind tokens.
-Components use tokens only — no hardcoded hex values and no raw palette classes (e.g. `zinc-*`).
+All colors are CSS custom properties defined on `:root` in `crates/rustler-gui/src/ui/style.css`. There is no
+light theme and no dark-mode switch.
 
 | Role | CSS Variable | Value |
 | ---- | ------------ | ----- |
-| Page background | `--{{...}}` | `{{#hex}}` |
-| Surface | `--{{...}}` | `{{#hex}}` |
-| Primary text | `--{{...}}` | `{{#hex}}` |
-| Muted text | `--{{...}}` | `{{#hex}}` |
-| Border | `--{{...}}` | `{{#hex}}` |
-| Brand | `--{{...}}` | `{{#hex}}` |
-| Accent | `--{{...}}` | `{{#hex}}` |
-| Error / Success / Warning | `--{{...}}` | `{{#hex}}` |
+| Page background | `--bg` | `#0f1115` |
+| Surface (cards, nav) | `--panel` | `#171a21` |
+| Raised surface (buttons, chips, toasts) | `--panel2` | `#1e222b` |
+| Border | `--line` | `#2a2f3a` |
+| Primary text | `--text` | `#e6e8ee` |
+| Muted text | `--muted` | `#8b93a3` |
+| Accent (links, busy indicator, toast edge) | `--accent` | `#5b8cff` |
+| Accent, pressed or darker | `--accent2` | `#3d6ae0` |
+| Pass | `--pass` | `#3fb950` |
+| Warning | `--warn` | `#d29922` |
+| Fail | `--fail` | `#f85149` |
 
-Tailwind utility names for the tokens: `{{bg-..., text-..., border-...}}`.
+Components reference these variables only (`var(--...)`). Raw hex values belong in the `:root` block.
 
 ## Typography
 
 | Role | Font | CSS Variable |
 | ---- | ---- | ------------ |
-| UI text | {{font}} | `{{--font-...}}` |
-| Mono | {{font}} | `{{--font-...}}` |
+| UI text | Browser default sans-serif (no web font is loaded) | none (inherits) |
+| Mono (paths, times, JSON, unit ids) | `ui-monospace, SFMono-Regular, Consolas, Menlo, monospace` | `--mono` |
 
-Scale: {{headings / body / caption sizes and weights}}
+Scale (as set in `style.css`): page title `h1` 20px; section `h2` 15px; sub-label `h3` 13px uppercase with muted
+color; body 14px by browser default; small text 11–12px (chips, notes, mono labels); brand 18px bold.
 
 ## Spacing, Radius, Shadow
 
-| Context | Class / Value |
+| Context | Value in `style.css` |
 | ------- | ------------- |
-| Inline / small | {{rounded-xl}} |
-| Cards | {{rounded-2xl}} |
-| Modals | {{rounded-3xl}} |
-| Shadow | {{soft shadow definition}} |
+| Nav links, buttons, inputs, `pre`, toasts | `border-radius: 6px` |
+| Cards, `details` blocks | `border-radius: 10px` (cards), `8px` (details, video) |
+| Chips and badges | `border-radius: 99px` |
+| Shadow | none defined |
 
 ## Component Library
 
-{{shadcn/ui or other}}. Components live in `{{components/ui/}}` and are **protected** — do not edit
-them; compose or wrap them in app-level components.
+None. Components are plain elements built by `app.js` (helper `h()` creates elements). Styling is in `style.css`.
 
 ## Layout Patterns
 
-- {{Shell per area: public, app, admin ...}}
-- {{Navigation pattern, mobile behaviour}}
-- Breakpoints: {{values}}
+- One shell: left nav (`#nav`, `#navlinks`, `#navfoot`), top bar (`#topbar`, project chip `#projchip`, busy
+  indicator `#busy`), main view (`#view`), toast stack (`#toasts`).
+- Views in the nav: Project, Sources, Clips, Renders, Activity, Commands.
+- Breakpoint: one `@media (max-width: 800px)` rule in `style.css`; the exact layout change is defined there.
 
 ## Required UI States
 
-Every data-driven view implements: loading skeleton, empty state, error state, success feedback,
-and confirmation for destructive actions.
+- Empty state: `.na` block (dashed border, muted italic text) for views with no data.
+- Errors: toast with the command name, the error message and the hint (`app.js` `toast(..., 'bad')`).
+- Warnings: toast with `warning:` prefix.
+- Busy: `#busy` shows while a command runs.
+- Loading skeleton: not built. Destructive-action confirmation in the GUI: not verified; the CLI requires `--yes`.
+
+Rule for this page: every button calls a registry command through `POST /api/run`; no button may show a result
+without calling the command.
 
 ## Accessibility
 
-- {{Keyboard navigation, focus rings, contrast target, label requirements}}
+- Not audited. Known gap: no documented focus-ring or contrast check.
+- Controls are native `button`, `input`, `select`, `textarea`, so keyboard focus works by default.
 
 ## Icons
 
-{{Icon library and sizing rules.}}
+None. Text labels only.
 
 ## Content / Copy Rules
 
-- {{Tone, headline, terminology, anything the UI must say verbatim}}
+- Use the command vocabulary: project, source, clip, render, QC, export, unit.
+- Show command names in mono where they appear (for example `render.run`).
+- Reloading with a `#view` hash opens that view (commit d77e638; not yet re-checked in a browser).
+- Demo data: `crates/rustler-gui/examples/demo.rs` is a development example; the page itself reads project data through the server.

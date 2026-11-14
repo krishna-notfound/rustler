@@ -1,27 +1,34 @@
-<!-- BEGIN:framework-agent-rules -->
+# Agent Context (non-Claude agents)
 
-# Framework version warning
-
-{{FRAMEWORK_NAME}} {{FRAMEWORK_VERSION}} may have breaking changes — APIs, conventions, and file
-structure may differ from your training data. Before writing code, read the relevant guide in
-`{{FRAMEWORK_DOCS_PATH}}` (for Next.js: `node_modules/next/dist/docs/`). Heed deprecation notices.
-Delete this block if the project has no fast-moving framework.
-
-<!-- END:framework-agent-rules -->
+Rustler is driven by an agent through the `rustler` CLI (`rustler commands list` for discovery) or the MCP
+server (`rustler mcp serve`). This file is the read order for any agent working on the Rustler repo itself.
+Claude Code reads `CLAUDE.md` at the repo root instead.
 
 ## Application Building Context
 
 Read the following files in order before implementing or making any architectural decision:
 
-1. `docs/context/project-overview.md` — product definition, goals, features, and scope
-2. `docs/context/architecture-context.md` — system structure, boundaries, storage model, and invariants
-3. `docs/context/ui-context.md` — theme, colors, typography, layout, and component conventions
-4. `docs/context/code-standards.md` — implementation rules and conventions
-5. `docs/context/ai-workflow-rules.md` — development workflow, scoping rules, and delivery approach
-6. `docs/context/progress-tracker.md` — current phase, completed work, open questions, and next steps
-7. `docs/features/README.md`, then only the `docs/features/fNN_*.md` file(s) for the current task
+1. `docs/README.md` — documentation index and repository layout
+2. `docs/progress-log.md` — what is built and tested (the current truth)
+3. `docs/00-vision-and-requirements.md` — the user's vision and confirmed decisions
+4. `docs/superpowers/specs/2026-11-15-rustler-design.md` — approved design
+5. `docs/superpowers/plans/2026-11-15-slice1-first-real-clip.md` — plan; read the "5-HOUR SCOPE" section last
+6. `docs/features/README.md`, then only the `docs/features/fNN_*.md` file(s) for the current task
+7. `docs/context/project-overview.md` — product definition, goals, scope
+8. `docs/context/architecture-context.md` — crates, data model, invariants
+9. `docs/context/ui-context.md` — the simple web GUI
+10. `docs/context/code-standards.md` — implementation rules and definition of done
+11. `docs/context/ai-workflow-rules.md` — workflow, scoping, parallel work
+12. `docs/context/progress-tracker.md` — pointer to the progress log, open questions, deferred work
 
-Update `docs/context/progress-tracker.md` after each meaningful implementation change.
+Update `docs/progress-log.md` (dated entry) and the feature file's *Status Log* after each meaningful change.
 
-If implementation changes the architecture, scope, or standards documented in the context files,
-update the relevant file before continuing.
+If implementation changes the architecture, scope or standards documented in `docs/context/`, update the relevant
+file before continuing.
+
+## Rules that apply to every agent
+
+- No AI API calls. Rustler runs local tools only.
+- Never invent command names, flags or file paths; check `rustler commands list` and the crates.
+- Never publish or upload output.
+- Build with `cargo build --workspace` from PowerShell on Windows; test with `cargo test --workspace`.
