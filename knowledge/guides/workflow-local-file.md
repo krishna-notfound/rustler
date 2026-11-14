@@ -57,6 +57,30 @@ Sanity-check the transcript before trusting it:
 - Words per second below ~1.0 on dense talk → transcription is missing speech; try a bigger model.
 - Hindi/English mix → read `hinglish` first.
 
+### Beyond speech: `analyze deep`
+
+```
+rustler analyze deep src_ep12            # on-screen text + audio events + face timeline, one summary
+rustler analyze ocr src_ep12 --every 2   # parts on their own: analyze ocr | events | faces
+rustler analyze events src_ep12
+rustler analyze faces src_ep12 --fps 1
+```
+
+Read `understanding` in the result first (plain sentences), then the parts:
+
+- `ocr.burned_in_captions: true` (a *burned-in captions band at y≈0.8*): the source already has subtitles.
+  Do not add a second caption on that band; move Rustler captions up (`clip set-captions <clip> --position-y 0.2`)
+  or disable them. A *timecode-counter* region is just a ticking number, not captions.
+- `events.top_moments`: strongest laughter, applause and cheering, each joined with the transcript unit
+  said just before. Look at them with `see tiles` and consider them for hooks and endings. If
+  `events.model` is `heuristic`, laughter and cheering cannot be detected.
+- `faces.suggestion`: `center-crop`, `blur-fit` or `split-vertical` with the reason, and `track_face` when the
+  speaker moves (then run `crop track-face`). `face_time_pct` under about 20 means no face tracking.
+
+Results are saved as `analysis/<source>/ocr.json`, `events.json`, `faces.json`, `understanding.json`. Each part that
+cannot run (silent video, audio-only file, missing model) becomes a warning; the others still run.
+The OCR model reads Latin and Chinese text, not Devanagari.
+
 ## Step 3: read and look
 
 ```

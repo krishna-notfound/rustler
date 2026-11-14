@@ -59,7 +59,7 @@ Work in this order. Each step has its own guide.
 
 | Step | What you do | Main commands | Guide |
 |---|---|---|---|
-| 1 Understand | Scan the source cheaply, then build the understanding pack for chosen windows | `source info`, `source fetch-transcript`, `source import`, `analyze quick`, `transcript get/search` | `workflow-youtube-longform`, `workflow-local-file` |
+| 1 Understand | Scan the source cheaply, then build the understanding pack for chosen windows | `source info`, `source fetch-transcript`, `source import`, `analyze quick`, `analyze deep`, `transcript get/search` | `workflow-youtube-longform`, `workflow-local-file` |
 | 2 Plan | Pick moments, score them harshly, choose start/end units | `transcript get`, `see tiles --around`, `see frame` | `finding-hooks`, `cut-points` |
 | 3 Edit | Create the clip from unit ids, set layout, captions, audio | `clip create`, `clip set-layout`, `crop track-face`, `clip set-captions`, `edit *`, `audio add-music` | `layouts-and-framing`, `captions-and-style`, `audio` |
 | 4 Preview | Check single frames before spending a full render | `render preview-frame` | `quality-checklist` |
@@ -68,16 +68,28 @@ Work in this order. Each step has its own guide.
 | 7 Fix | Map every failure to an edit, re-render, re-check | `edit *`, `clip set-*`, `history undo` | `quality-checklist` |
 | 8 Export | Copy the passing render + report to `exports/` | `export clip` | `platform-specs` |
 
+Speech is only part of a video. `analyze deep` adds what the transcript cannot tell you (all local, no AI API):
+
+- **on-screen text** (`analyze ocr`): unique texts with first/last seen and screen regions. If it reports
+  *burned-in captions band at y≈0.8*, the source already has subtitles: move Rustler captions to the top
+  (`clip set-captions --position-y 0.2`) or turn them off, never stack a second caption on the same band.
+- **audio events** (`analyze events`): laughter, applause, cheering, music, speech, silence; the top
+  reaction moments come joined with the line that was said, which makes them good clip candidates.
+  `model: heuristic` means the classifier model was unavailable and laughter cannot be detected.
+- **faces** (`analyze faces`): share of time with a face, typical face count and a layout suggestion
+  (center-crop, blur-fit or split-vertical; `track_face: true` means also run `crop track-face`).
+
 Minimal happy path (local file):
 
 ```
 rustler source import "D:/videos/ep212.mp4"
 rustler analyze quick src_01j...                   # audio peaks + scenes + transcript + units
+rustler analyze deep src_01j...                    # on-screen text + audio events + faces (beyond speech)
 rustler transcript get src_01j... --start 600 --end 900
 rustler see tiles src_01j... --around "nobody tells you this"
 rustler clip create --name "nobody-tells-you" --source-id src_01j... \
     --start-unit 212 --end-unit 219 --expect-text "nobody tells you" --layout center-crop
-rustler crop track-face clp_01j...                 # (if available) face-follow the crop
+rustler crop track-face clp_01j...                 # face-follow the crop (analyze deep says when it helps)
 rustler render run clp_01j...
 rustler qc run clp_01j...                          # exit 7 = failed; then OPEN the contact sheet
 rustler export clip clp_01j... --name "nobody-tells-you"

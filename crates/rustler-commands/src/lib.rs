@@ -11,6 +11,7 @@ pub mod see_cmds;
 pub mod setup_cmds;
 pub mod source_cmds;
 pub mod transcript_cmds;
+pub mod understand_cmds;
 
 use rustler_registry::Registry;
 
@@ -21,6 +22,7 @@ pub fn register_all(reg: &mut Registry) {
     source_cmds::register(reg);
     analyze_cmds::register(reg);
     transcript_cmds::register(reg);
+    understand_cmds::register(reg);
     see_cmds::register(reg);
     clip_cmds::register(reg);
     guide_cmds::register(reg);
