@@ -2,13 +2,16 @@
 //!
 //! Hand-rolled JSON-RPC 2.0 subset (newline-delimited): `initialize`,
 //! `notifications/initialized`, `notifications/cancelled`, `ping`, `tools/list`,
-//! `tools/call` and outgoing `notifications/progress`. The official `rmcp` SDK was
+//! `tools/call`, `prompts/list`, `prompts/get`, `resources/list`, `resources/read`,
+//! `resources/templates/list` (guides, command reference, project state; see
+//! `knowledge.rs`) and outgoing `notifications/progress`. The official `rmcp` SDK was
 //! not used: we need per-call progress/cancel wiring into `Ctx` and image content
 //! synthesized from command output, which is less code by hand than through an SDK.
 //!
 //! stdout carries only protocol messages; diagnostics go to stderr via `tracing`.
 
 mod images;
+mod knowledge;
 
 use rustler_core::{ErrorCode, RustlerError};
 use rustler_registry::{Ctx, ProgressEvent, ProgressSink, Registry};
@@ -25,6 +28,9 @@ pub const SUPPORTED_PROTOCOL_VERSIONS: &[&str] =
     &["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 
 pub const HELP_TOOL: &str = "rustler_help";
+
+/// Server `instructions` returned from `initialize`.
+pub const INSTRUCTIONS: &str = "Rustler is an agent-driven short-form video editor: local tools to import a video, transcribe it, look at frames, cut 9:16 clips by transcript unit ids, render them with captions and loudness normalisation, and QC the result. You do the thinking; Rustler makes no AI calls. Read resource rustler://guides/start-here first; use prompts (prompts/list) for full step-by-step workflows; call the rustler_help tool for the command chain and the list of guides and prompts.";
 
 const START_HERE: &[&str] = &[
     "doctor",
@@ -206,7 +212,7 @@ fn tool_def(tool: &str, spec: &rustler_registry::CommandSpec) -> Value {
 fn help_tool_def() -> Value {
     json!({
         "name": HELP_TOOL,
-        "description": "Start here. Explains the Rustler workflow, the recommended command chain, and how to discover/describe every other tool.",
+        "description": "Start here. Explains the Rustler workflow, the recommended command chain, how to discover/describe every other tool, and lists the knowledge-book guides (resources) and workflow prompts.",
         "inputSchema": {"type": "object", "properties": {}},
         "annotations": {
             "readOnlyHint": true,
@@ -231,7 +237,19 @@ fn help_output(server: &Server) -> Value {
             .unwrap_or("");
         commands.push(json!({"tool": t["name"], "summary": summary}));
     }
+    let guides: Vec<Value> = rustler_knowledge::guides()
+        .into_iter()
+        .map(|g| json!({"id": g.id, "title": g.title, "uri": format!("{}{}", knowledge::GUIDE_URI_PREFIX, g.id)}))
+        .collect();
+    let prompts: Vec<Value> = rustler_knowledge::prompts()
+        .into_iter()
+        .map(|p| json!({"name": p.name, "description": p.description}))
+        .collect();
     json!({
+        "read_first": format!("{}start-here", knowledge::GUIDE_URI_PREFIX),
+        "guides": guides,
+        "prompts": prompts,
+        "knowledge": "Guides are MCP resources (resources/list, resources/read rustler://guides/<id>; also tool guide_show). Workflow prompts are MCP prompts (prompts/list, prompts/get; also tool prompt_show). rustler://commands is the full command reference as JSON; rustler://project/state is the current project (when a project dir is set).",
         "start_here": START_HERE,
         "chain": "doctor -> setup -> project_create -> source_import -> analyze_quick -> transcript_get -> see_tiles (LOOK at the returned images) -> clip_create (choose transcript unit ids, not timestamps) -> render_run -> qc_run (LOOK at the contact sheet before calling it done)",
         "discover": "tools/list returns every tool with its inputSchema, outputSchema and CLI examples. Tool names are command names with '.' replaced by '_' (source.import -> source_import).",
@@ -256,6 +274,13 @@ fn rpc_result(id: &Value, result: Value) -> String {
 fn rpc_error(id: &Value, code: i64, message: impl Into<String>) -> String {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message.into()}})
         .to_string()
+}
+
+fn rpc_reply(id: &Value, r: Result<Value, knowledge::RpcErr>) -> String {
+    match r {
+        Ok(v) => rpc_result(id, v),
+        Err((code, msg)) => rpc_error(id, code, msg),
+    }
 }
 
 fn handle_line(server: &Arc<Server>, line: &str, tx: &UnboundedSender<String>) {
@@ -318,14 +343,36 @@ fn handle_message(server: &Arc<Server>, msg: Value, tx: &UnboundedSender<String>
                 &id,
                 json!({
                     "protocolVersion": version,
-                    "capabilities": {"tools": {"listChanged": false}},
+                    "capabilities": {
+                        "tools": {"listChanged": false},
+                        "prompts": {"listChanged": false},
+                        "resources": {"subscribe": false, "listChanged": false}
+                    },
                     "serverInfo": {"name": "rustler", "version": env!("CARGO_PKG_VERSION")},
-                    "instructions": "Rustler: agent-driven short-form video editing. Call the `rustler_help` tool first."
+                    "instructions": INSTRUCTIONS
                 }),
             ));
         }
         "ping" => {
             let _ = tx.send(rpc_result(&id, json!({})));
+        }
+        "prompts/list" => {
+            let _ = tx.send(rpc_result(&id, knowledge::prompts_list()));
+        }
+        "prompts/get" => {
+            let _ = tx.send(rpc_reply(&id, knowledge::prompts_get(&params)));
+        }
+        "resources/list" => {
+            let dir = server.base_ctx.project_dir.as_deref();
+            let _ = tx.send(rpc_result(&id, knowledge::resources_list(dir)));
+        }
+        "resources/templates/list" => {
+            let _ = tx.send(rpc_result(&id, knowledge::resource_templates_list()));
+        }
+        "resources/read" => {
+            let dir = server.base_ctx.project_dir.as_deref();
+            let r = knowledge::resources_read(&params, &server.registry, dir);
+            let _ = tx.send(rpc_reply(&id, r));
         }
         "tools/list" => {
             let _ = tx.send(rpc_result(&id, json!({"tools": server.tools})));
