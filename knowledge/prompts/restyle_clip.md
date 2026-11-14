@@ -41,7 +41,7 @@ preset), apply the closest preset and say exactly what differs.
 
 ## 3. Apply and preview
 ```
-rustler clip set-captions {{clip_id}} --preset <preset> --position-y <y> --max-words-per-line <n>
+rustler clip set-captions {{clip_id}} --style <preset> --position-y <y> --max-words-per-line <n>
 rustler clip set-layout {{clip_id}} --preset <preset> [--params '{…}']
 rustler render preview-frame {{clip_id}} --out-t 1.0
 rustler render preview-frame {{clip_id}} --out-t <a moment where the face is lowest/largest>

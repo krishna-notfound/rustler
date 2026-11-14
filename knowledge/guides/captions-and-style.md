@@ -16,7 +16,7 @@ so they stay in sync after every re-cut.
 
 ```
 rustler caption list-styles                         # (if available) presets with their look
-rustler clip set-captions clp_X --preset bold-karaoke --position-y 0.70 --max-words-per-line 3 --script latin
+rustler clip set-captions clp_X --style bold-karaoke --position-y 0.70 --max-words-per-line 3 --script latin
 rustler clip set-captions clp_X --enabled false     # turn off (e.g. music-only clip)
 ```
 

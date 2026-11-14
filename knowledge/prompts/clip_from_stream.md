@@ -55,7 +55,7 @@ laughter, chat interactions, wild statements. Read `workflow-youtube-longform`,
 rustler clip create --name <slug> --source-id <src> --start-unit <a> --end-unit <b> \
   --expect-text "<opening words>" --layout split-vertical \
   --layout-params '{"top":{…},"bottom":{…},"split":<s>}'
-rustler clip set-captions <clip> --preset bold-karaoke --position-y <split + 0.06> --max-words-per-line 2
+rustler clip set-captions <clip> --style bold-karaoke --position-y <split + 0.06> --max-words-per-line 2
 rustler render preview-frame <clip> --out-t 1.0
 ```
 Check the preview: face fills the top, no overlay border, no duplicate webcam, gameplay readable,

@@ -78,7 +78,7 @@ Dead air kills retention. Tighten after creating the clip:
 
 ```
 rustler edit remove-pauses clp_X --min-gap 0.5        # (if available) splits segments at word gaps ≥ 0.5 s
-rustler edit remove-fillers clp_X                     # (if available) um/uh/hmm etc.
+rustler edit remove-words clp_X                       # default list: um uh umm uhh hmm erm
 rustler clip show clp_X                               # check the new segments and total duration
 ```
 

@@ -106,12 +106,12 @@ Core (Slice 1):
 | analyze | `analyze.quick`, `analyze.transcribe {source_id, model?, language?, device?}`, `analyze.scenes`, `analyze.audio` |
 | transcript | `transcript.get {source_id, start?, end?}`, `transcript.search {source_id, query, limit?}` |
 | see | `see.frame {source_id, t, width?}`, `see.tiles {source_id, start?, end?, around?, window?, count?}`, `see.preview {source_id, start, end}` (≤ 60 s) |
-| clip | `clip.create {name, source_id, start_unit?, end_unit?, start?, end?, expect_text?, layout?, layout_params?, captions?}`, `clip.add_segment`, `clip.set_layout {clip_id, segment_id?, preset, params?}`, `clip.set_captions {clip_id, enabled?, preset?, position_y?, max_words_per_line?, script?}`, `clip.show`, `clip.list` |
+| clip | `clip.create {name, source_id, start_unit?, end_unit?, start?, end?, expect_text?, layout?, layout_params?, captions?}`, `clip.add_segment`, `clip.set_layout {clip_id, segment_id?, preset, params?}`, `clip.set_captions {clip_id, enabled?, style?, position_y?, max_words_per_line?, script?}`, `clip.show`, `clip.list` |
 | render | `render.run {clip_id, quality?: final\|draft, prefer_gpu?}`, `render.preview_frame {clip_id, out_t}` |
 | qc/export | `qc.run {clip_id, render_id?}`, `export.clip {clip_id, render_id?, name?}` |
 
 Extras (if available — check `rustler commands list`): `edit.trim`, `edit.split`,
-`edit.delete_segment`, `edit.remove_pauses`, `edit.remove_fillers`, `history.undo`,
+`edit.delete_segment`, `edit.remove_pauses`, `edit.remove_words`, `history.undo`,
 `crop.track_face`, `caption.list_styles`, `audio.add_music`, `mcp serve`, `gui`; later:
 `see.contact_sheet`, `highlights.signals`, `overlay.*`, `qc.review`, brief/variant commands.
 

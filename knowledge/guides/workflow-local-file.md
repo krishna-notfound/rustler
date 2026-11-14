@@ -95,7 +95,7 @@ Example plan (illustrative):
 rustler clip create --name "nobody-tells-you" --source-id src_ep12 \
     --start-unit 212 --end-unit 219 --expect-text "nobody tells you" --layout center-crop
 rustler crop track-face clp_X                        # (if available) faces move → follow them
-rustler clip set-captions clp_X --preset bold-karaoke --position-y 0.70
+rustler clip set-captions clp_X --style bold-karaoke --position-y 0.70
 rustler edit remove-pauses clp_X --min-gap 0.5       # (if available) tighten dead air
 rustler render preview-frame clp_X --out-t 1.0       # look: face framed? captions clear?
 rustler render run clp_X

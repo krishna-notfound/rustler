@@ -55,7 +55,7 @@ Never upload or post anything.
 ## 4. Frame and style (`layouts-and-framing`, `captions-and-style`, `audio`)
 - Look at a `see frame` first. Talking head → `center-crop` (+ `crop track-face` if available);
   webcam + gameplay → `split-vertical` with measured rects; slides/text/wide → `blur-fit`.
-- `clip set-captions <clip> --preset <preset> --position-y <y>` (default bold-karaoke, 0.70).
+- `clip set-captions <clip> --style <preset> --position-y <y>` (default bold-karaoke, 0.70).
 - Optional: `edit remove-pauses` for talking heads; music only if it helps and is licensed.
 - `render preview-frame <clip> --out-t 1.0` and at the end; look and adjust before the full render.
 
