@@ -2282,6 +2282,8 @@ dependencies = [
  "assert_cmd",
  "rustler-commands",
  "rustler-core",
+ "rustler-gui",
+ "rustler-mcp",
  "rustler-registry",
  "rustler-tools",
  "schemars",
