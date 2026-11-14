@@ -169,7 +169,21 @@ def _scenes(params, progress):
 def _models_fetch(params, progress):
     from . import transcribe
 
-    return transcribe.fetch_models(params, progress)
+    out: Dict[str, Any] = {"fetched": []}
+    if "whisper" in params or not params.get("yunet"):
+        out["fetched"] = transcribe.fetch_models(params, progress)["fetched"]
+    if params.get("yunet"):
+        from . import faces
+
+        out["yunet_path"] = faces.fetch_yunet(progress)
+        out["fetched"].append("yunet")
+    return out
+
+
+def _faces_track(params, progress):
+    from . import faces
+
+    return faces.track(params, progress)
 
 
 def default_methods() -> Dict[str, Handler]:
@@ -180,4 +194,5 @@ def default_methods() -> Dict[str, Handler]:
         "scenes.detect": _scenes,
         "translit.to_latin": _translit,
         "models.fetch": _models_fetch,
+        "faces.track": _faces_track,
     }

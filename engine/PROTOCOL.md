@@ -41,4 +41,22 @@ Line-delimited JSON-RPC 2.0 over the worker's stdin/stdout. Start with
 - `translit.to_latin {"texts": [..]}` -> `{"texts": [..]}`  (Devanagari -> Hinglish Latin; other
   text is returned unchanged. Rules are documented in `rustler_engine/translit.py`.)
 - `models.fetch {"whisper": ["small"]}` -> `{"fetched": [..]}`  (downloads faster-whisper models
-  into the HF cache; progress `stage: "models.fetch"`).
+  into the HF cache; progress `stage: "models.fetch"`). Also accepts `{"yunet": true}`: downloads
+  the YuNet face model (MIT, opencv_zoo) to `$RUSTLER_HOME/models/yunet/face_detection_yunet_2023mar.onnx`
+  (default `~/.rustler`) and returns `{"fetched": [.., "yunet"], "yunet_path": "..."}`; `whisper`
+  may be omitted when only `yunet` is requested.
+- `faces.track {"video_path", "start": 0.0, "end": null|float, "fps": 4.0, "model_path": null|string}`
+  -> `{"width": int, "height": int, "samples": [{"t": float, "faces": [{"x","y","w","h","score"}]}]}`
+  - Samples are taken at `start + i/fps` for `i` in `0 .. floor((end-start)*fps)-1`; `t` is **source
+    time in seconds** (not clip-relative). `end` defaults to the video duration. `fps` in (0, 60].
+    A sample whose frame cannot be read (past the end of the stream) ends the list early.
+  - Boxes are normalized 0..1 of the full frame (`x`,`y` = top-left), clamped to the frame, and
+    `faces` is sorted by area descending (empty list = no face). `width`/`height` are the source
+    frame size.
+  - Detector: OpenCV `cv2.FaceDetectorYN` + YuNet ONNX, score threshold 0.6, NMS 0.3, frames
+    downscaled to at most 640 px wide before detection. Seeking uses `CAP_PROP_POS_MSEC`.
+  - `model_path` overrides the model; otherwise the default path above is used and the model is
+    downloaded on first use (error kind `media` if the download fails, `validation` if an explicit
+    `model_path` is missing).
+  - Progress: `stage: "faces.track"`, `pct` = samples done / total * 100 (about every 8 samples);
+    `stage: "models.fetch"` notifications while the model downloads.

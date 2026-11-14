@@ -5,6 +5,7 @@
 pub mod audio_analysis;
 pub mod compile;
 pub mod encoders;
+pub mod facepath;
 pub mod frames;
 pub mod probe;
 mod proc;
