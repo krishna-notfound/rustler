@@ -168,7 +168,7 @@
     srcStage.appendChild(mediaBox);
     host.appendChild(srcStage);
     bar = h('div', { class: 'srcbar' });
-    host.appendChild(bar);
+    srcStage.appendChild(bar);   // overlays the stage: no layout shift while drawing
     host.appendChild(h('div', { class: 'ptools' },
       R.button('+ Region', addRegion, { small: true, need: ['layout.add_region'], title: 'add a region (full source frame into the top half)' }),
       R.button('Detect webcam', detectWebcam, { small: true, need: ['layout.detect_webcam'], title: 'find a facecam box in the stream frame' }),

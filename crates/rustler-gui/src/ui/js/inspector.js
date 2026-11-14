@@ -246,6 +246,7 @@
     el.appendChild(sec('Style'));
     el.appendChild(grid);
     el.appendChild(prev);
+    drawExact(prev);
     R.loadStyles().then(function (styles) {
       R.clear(grid);
       styles.forEach(function (st) {
@@ -275,11 +276,19 @@
       cueBox.appendChild(h('div', { class: 'cuerow', onclick: function () { R.monitor.seek(c.start + 0.001); } }, h('span', { class: 'mono small muted' }, R.tc(c.start, E.fps)), h('span', null, c.text)));
     });
   }
-  function exactInto(box) {
-    return R.run('render.preview_frame', { clip_id: E.clipId, out_t: R.round(E.t, 3) }).then(function (d) {
+  // The tab re-renders after every save, so the last exact frame is kept and redrawn.
+  var lastExact = null;
+  function drawExact(box) {
+    if (!box || !lastExact || lastExact.clip !== E.clipId) return;
+    R.clear(box).appendChild(h('div', { class: 'muted small' }, 'Exact frame at ' + R.tc(lastExact.t, E.fps) + ' · ' + lastExact.style + ' (libass, the real renderer)'));
+    box.appendChild(h('img', { class: 'shot portrait', src: R.fileUrl(lastExact.image) + '&v=' + lastExact.v, alt: 'exact frame' }));
+  }
+  function exactInto() {
+    var t = R.round(E.t, 3);
+    return R.run('render.preview_frame', { clip_id: E.clipId, out_t: t }).then(function (d) {
       if (!d) return;
-      R.clear(box).appendChild(h('div', { class: 'muted small' }, 'Exact frame at ' + R.tc(E.t, E.fps) + ' (libass, the real renderer)'));
-      box.appendChild(h('img', { class: 'shot portrait', src: R.fileUrl(d.image) + '&v=' + Date.now(), alt: 'exact frame' }));
+      lastExact = { clip: E.clipId, t: t, image: d.image, v: Date.now(), style: E.clip.captions.preset };
+      drawExact(host.querySelector('.capprev'));
     });
   }
 
@@ -449,7 +458,7 @@
       rs.appendChild(h('div', { class: 'renderrow' + (i === 0 ? ' sel' : ''), onclick: function (e) {
         Array.prototype.forEach.call(rs.querySelectorAll('.renderrow'), function (x) { x.classList.remove('sel'); });
         e.currentTarget.classList.add('sel'); show(r);
-      } }, h('b', { class: 'mono small' }, r.id), h('span', { class: 'small' }, r.quality), h('span', { class: 'muted small' }, String(r.created_at || '').replace('T', ' ').slice(0, 19)),
+      } }, h('b', { class: 'mono small' }, r.id), h('span', { class: 'small' }, r.quality), h('span', { class: 'muted small' }, String(r.created_at || '').replace('T', ' ').slice(5, 16)),
         h('span', { class: r.qc ? 'st-pass small' : 'muted small' }, r.qc ? 'QC' : '')));
     });
     rs.appendChild(player);

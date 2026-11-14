@@ -273,6 +273,17 @@
     return R.run('source.list', {}, true).then(function (d) { return R.listOf(d, 'sources'); });
   };
 
+  // Renderer fonts for the live canvas preview (served from ~/.rustler/fonts by /api/font).
+  R.fonts = { anton: 'Anton, Impact, sans-serif', poppins: '"Poppins XB", "Segoe UI", Arial, sans-serif' };
+  R.loadFonts = function () {
+    if (!window.FontFace || !document.fonts) return Promise.resolve();
+    var list = [['Anton', 'anton', '400'], ['Poppins XB', 'poppins-extrabold', '800']];
+    return Promise.all(list.map(function (f) {
+      var ff = new FontFace(f[0], 'url(' + R.apiUrl('/api/font/' + f[1]) + ')', { weight: f[2] });
+      return ff.load().then(function (x) { document.fonts.add(x); }).catch(function () { /* not installed: fallback fonts */ });
+    }));
+  };
+
   // ------------------------------------------------------------ router
   R.views = {};   // id -> {label, nav, render(el, arg)}
   R.NAV = ['project', 'sources', 'clips', 'editor', 'renders', 'activity', 'commands'];

@@ -15,6 +15,10 @@
     var sk = pick(o, START_KEYS), ek = pick(o, END_KEYS);
     if (sk && ek) return { start: o[sk], end: o[ek] };
     if (sk && typeof o.duration === 'number') return { start: o[sk], end: o[sk] + o.duration };
+    var st = R.E && R.E();
+    if (sk && st) return { start: o[sk], end: st.duration };            // open-ended: until the clip end
+    if (!sk && ek && st) return { start: 0, end: o[ek] };
+    if (!sk && !ek && st && ('start' in o || 'end' in o)) return { start: 0, end: st.duration };
     return null;
   };
   R.overlayId = function (o) { return o.id || o.overlay_id || o.name; };
@@ -113,8 +117,12 @@
 
   // ------------------------------------------------------------ word snapping
   // Words of the clip in output time: [{t0, t1, text}]
+  var owCache = { key: '', list: [] };
   function outWords() {
+    var key = E.clipId + '@' + E.rev + '@' + Object.keys(E.words).map(function (k) { return E.words[k].length; }).join(',');
+    if (owCache.key === key) return owCache.list;
     var out = [];
+    owCache = { key: key, list: out };
     E.timeline.forEach(function (m) {
       (E.words[m.source_id] || []).forEach(function (w) {
         if (w.end <= m.src_start || w.start >= m.src_end) return;

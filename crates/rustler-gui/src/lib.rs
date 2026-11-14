@@ -153,6 +153,7 @@ pub async fn start(
         .route("/api/jobs/cancel", post(jobs_cancel))
         .route("/api/frame", get(frame))
         .route("/api/clip_state", get(clip_state))
+        .route("/api/font/{name}", get(font))
         .route("/api/file", get(file))
         .route("/api/events", get(events))
         .layer(middleware::from_fn_with_state(state.clone(), guard))
@@ -481,6 +482,30 @@ async fn frame(State(st): State<Arc<AppState>>, Query(q): Query<HashMap<String, 
             None => plain(StatusCode::INTERNAL_SERVER_ERROR, "see.frame returned no image"),
         },
         Err(e) => plain(StatusCode::UNPROCESSABLE_ENTITY, &format!("see.frame: {}", e.message)),
+    }
+}
+
+/// Caption/overlay fonts installed by `rustler setup` (`<home>/fonts/...`), so the live canvas
+/// preview draws with the renderer's fonts. Fixed allowlist: name -> relative file.
+const FONTS: &[(&str, &str)] = &[
+    ("anton", "fonts/Anton/Anton-Regular.ttf"),
+    ("poppins-extrabold", "fonts/Poppins/Poppins-ExtraBold.ttf"),
+    ("poppins-bold", "fonts/Poppins/Poppins-Bold.ttf"),
+    ("noto-devanagari", "fonts/NotoSansDevanagari/NotoSansDevanagari[wdth,wght].ttf"),
+];
+
+/// Names served by `GET /api/font/{name}`.
+pub fn font_names() -> Vec<&'static str> {
+    FONTS.iter().map(|(n, _)| *n).collect()
+}
+
+async fn font(State(st): State<Arc<AppState>>, axum::extract::Path(name): axum::extract::Path<String>) -> Response {
+    let Some((_, rel)) = FONTS.iter().find(|(n, _)| *n == name) else {
+        return plain(StatusCode::NOT_FOUND, "unknown font");
+    };
+    match tokio::fs::read(st.base.home.join(rel)).await {
+        Ok(bytes) => ([(header::CONTENT_TYPE, "font/ttf")], bytes).into_response(),
+        Err(_) => plain(StatusCode::NOT_FOUND, "font not installed (run `rustler setup`)"),
     }
 }
 

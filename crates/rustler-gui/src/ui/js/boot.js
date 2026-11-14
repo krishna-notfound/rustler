@@ -11,6 +11,7 @@
     var saved = R.store('rustler.project');
     if (saved) S.project = saved;
     R.buildNav();
+    R.loadFonts().then(function () { if (R.monitor && R.monitor.draw) R.monitor.draw(); });
     R.getJson('/api/commands?t=' + encodeURIComponent(R.T)).then(function (list) {
       (Array.isArray(list) ? list : []).forEach(function (c) { S.cmds[c.name] = c; });
       return R.refreshProject(true);

@@ -194,8 +194,8 @@
         var su = firstDef(c, ['start_unit', 'unit_start', 'start_unit_id']);
         var eu = firstDef(c, ['end_unit', 'unit_end', 'end_unit_id']);
         var st = firstDef(c, ['start', 'src_start']), en = firstDef(c, ['end', 'src_end']);
-        var reasons = c.reasons || c.why || c.signals || [];
-        var text = c.text || c.preview || c.title || '';
+        var reasons = c.reasons || c.why || [];
+        var text = c.text || c.preview || c.title || (c.opening_text ? c.opening_text + (c.closing_text && c.closing_text !== c.opening_text ? '  …  ' + c.closing_text : '') : '');
         var body = { name: 'Highlight ' + (i + 1), source_id: id };
         if (su !== undefined && eu !== undefined) { body.start_unit = su; body.end_unit = eu; }
         else if (st !== undefined && en !== undefined) { body.start = st; body.end = en; }

@@ -236,29 +236,57 @@
     var cue = null;
     for (var i = 0; i < E.captions.length; i++) { var c = E.captions[i]; if (E.t >= c.start && E.t < c.end) { cue = c; break; } }
     if (!cue) return;
-    var size = Math.round(H * 0.042);
+    // Mirrors rustler-captions presets (font, size = canvas width x factor, outline, active word).
+    var P = PRESETS[cap.preset] || PRESETS['clean-white'];
+    var k = W / E.clip.canvas.width;
+    var size = E.clip.canvas.width * P.size * k / 1.4;   // ASS size ~ line height; CSS px = em
     ctx.save();
-    ctx.font = '800 ' + size + 'px "Segoe UI", Arial, sans-serif';
-    ctx.textAlign = 'center';
+    ctx.font = (P.font === 'anton' ? '400 ' : '800 ') + Math.round(size) + 'px ' + R.fonts[P.font];
+    ctx.textAlign = 'left';
     ctx.textBaseline = 'alphabetic';
-    var text = /pop|bold|hormozi/.test(cap.preset || '') ? cue.text.toUpperCase() : cue.text;
-    var lines = wrap(text, W * 0.86);
-    var y = (cap.position_y === undefined ? 0.7 : cap.position_y) * H - (lines.length - 1) * size * 1.15;
+    var words = cue.text.split(/\s+/).filter(Boolean).map(function (w) { return P.upper ? w.toUpperCase() : w; });
+    var active = activeWordIndex(cue, words.length);
+    var space = ctx.measureText(' ').width;
+    // lines of words wrapped to 90% width
+    var lines = [], cur = [], curW = 0;
+    words.forEach(function (w, i) {
+      var ww = ctx.measureText(w).width;
+      if (cur.length && curW + space + ww > W * 0.9) { lines.push({ ws: cur, w: curW }); cur = []; curW = 0; }
+      curW += (cur.length ? space : 0) + ww; cur.push({ t: w, w: ww, i: i });
+    });
+    if (cur.length) lines.push({ ws: cur, w: curW });
+    var lh = size * 1.2;
+    var y = (cap.position_y === undefined ? 0.7 : cap.position_y) * H - (lines.length - 1) * lh;
     lines.forEach(function (ln, j) {
-      var yy = y + j * size * 1.15;
-      if (/box/.test(cap.preset || '')) {
-        var w = ctx.measureText(ln).width;
-        ctx.fillStyle = 'rgba(0,0,0,.7)';
-        ctx.fillRect(W / 2 - w / 2 - size * 0.3, yy - size * 0.95, w + size * 0.6, size * 1.25);
-      }
-      ctx.lineWidth = Math.max(2, size / 7);
-      ctx.strokeStyle = 'rgba(0,0,0,.9)';
-      ctx.lineJoin = 'round';
-      ctx.strokeText(ln, W / 2, yy);
-      ctx.fillStyle = '#fff';
-      ctx.fillText(ln, W / 2, yy);
+      var x = W / 2 - ln.w / 2, yy = y + j * lh;
+      ln.ws.forEach(function (w) {
+        var on = w.i === active;
+        if (on && P.active === 'box') {
+          var pad = 12 * k;
+          ctx.fillStyle = P.color;
+          ctx.fillRect(x - pad, yy - size * 0.95, w.w + 2 * pad, size * 1.25);
+        }
+        if (P.outline) { ctx.lineWidth = P.outline * k * 2; ctx.strokeStyle = '#000'; ctx.lineJoin = 'round'; ctx.strokeText(w.t, x, yy); }
+        ctx.fillStyle = on && P.active !== 'box' ? P.color : '#fff';
+        if (on && P.active === 'pop') { ctx.save(); ctx.translate(x + w.w / 2, yy); ctx.scale(1.08, 1.08); ctx.fillText(w.t, -w.w / 2, 0); ctx.restore(); }
+        else ctx.fillText(w.t, x, yy);
+        x += w.w + space;
+      });
     });
     ctx.restore();
+  }
+  var PRESETS = {
+    'bold-karaoke': { font: 'anton', size: 0.072, upper: true, outline: 6, active: 'recolor', color: '#FFE000' },
+    'clean-white': { font: 'poppins', size: 0.060, upper: false, outline: 4, active: 'recolor', color: '#FFD700' },
+    'boxed-highlight': { font: 'poppins', size: 0.058, upper: false, outline: 3, active: 'box', color: '#7B2CFF' },
+    'hormozi-pop': { font: 'anton', size: 0.076, upper: true, outline: 6, active: 'pop', color: '#2BFF5E' }
+  };
+  // Index (within the cue) of the word being spoken, from the transcript words in output time.
+  function activeWordIndex(cue, n) {
+    if (!R.timeline || !R.timeline.outWords) return -1;
+    var ws = R.timeline.outWords().filter(function (w) { return w.t0 >= cue.start - 0.02 && w.t0 < cue.end - 0.01; });
+    for (var i = 0; i < ws.length && i < n; i++) if (E.t >= ws[i].t0 && (i === ws.length - 1 || E.t < ws[i + 1].t0)) return i;
+    return -1;
   }
   function wrap(text, maxW) {
     var words = text.split(/\s+/), lines = [], cur = '';
@@ -277,11 +305,34 @@
       if (!tm || E.t < tm.start || E.t >= tm.end) return;
       var text = o.text || o.title || '';
       if (!text) return;
+      var L = o.layout;
+      if (L && Array.isArray(L.lines) && L.font_size) {
+        // overlay.list gives the renderer's own text layout in canvas pixels: mirror it.
+        var k = W / E.clip.canvas.width;
+        var fs = L.font_size * k, pad = (L.padding || 0) * k, lh = (L.bottom - L.top - 2 * (L.padding || 0)) * k / Math.max(1, L.lines.length);
+        ctx.save();
+        fs = fs / 1.4;   // ASS size ~ line height; CSS px = em
+        ctx.font = '800 ' + Math.round(fs) + 'px ' + R.fonts.poppins;
+        // never wider than the renderer's measured box
+        var widest = Math.max.apply(null, L.lines.map(function (ln) { return ctx.measureText(ln).width; }));
+        var avail = (L.width - 2 * (L.padding || 0)) * k;
+        if (widest > avail) { fs = fs * avail / widest; ctx.font = '800 ' + Math.round(fs) + 'px ' + R.fonts.poppins; }
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        if (o.box) { ctx.fillStyle = 'rgba(0,0,0,.82)'; ctx.fillRect(W / 2 - (L.width * k) / 2, L.top * k, L.width * k, (L.bottom - L.top) * k); }
+        L.lines.forEach(function (ln, j) {
+          var yy = L.top * k + pad + lh * (j + 0.5);
+          if (!o.box) { ctx.lineWidth = Math.max(2, fs / 8); ctx.strokeStyle = '#000'; ctx.strokeText(ln, W / 2, yy); }
+          ctx.fillStyle = '#fff';
+          ctx.fillText(ln, W / 2, yy);
+        });
+        ctx.restore();
+        return;
+      }
       var size = Math.round(H * (o.font_size ? o.font_size / 1920 : 0.045));
       ctx.save();
       ctx.font = '800 ' + size + 'px "Segoe UI", Arial, sans-serif';
       ctx.textAlign = 'center';
-      var y = (typeof o.y === 'number' ? o.y : (/lower|bottom/.test(String(o.kind || o.style || o.position || '')) ? 0.8 : 0.13)) * H;
+      var y = (typeof o.position_y === 'number' ? o.position_y : typeof o.y === 'number' ? o.y : (/lower|bottom/.test(String(o.kind || o.style || o.position || '')) ? 0.8 : 0.13)) * H;
       var lines = wrap(text, W * 0.84);
       lines.forEach(function (ln, j) {
         var w = ctx.measureText(ln).width, yy = y + j * size * 1.2;

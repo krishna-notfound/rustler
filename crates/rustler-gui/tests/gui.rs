@@ -36,6 +36,8 @@ async fn setup() -> Env {
     .unwrap();
     std::fs::write(outside.path().join("secret.txt"), "secret").unwrap();
     std::fs::write(proj.path().join("frame_src_a.jpg"), b"\xFF\xD8fakejpeg").unwrap();
+    std::fs::create_dir_all(home.path().join("fonts").join("Anton")).unwrap();
+    std::fs::write(home.path().join("fonts").join("Anton").join("Anton-Regular.ttf"), b"ttfbytes").unwrap();
     std::fs::create_dir_all(proj.path().join("clips").join("clp_1")).unwrap();
     std::fs::write(
         proj.path().join("clips").join("clp_1").join("clip.json"),
@@ -342,6 +344,23 @@ async fn frame_route_serves_see_frame_jpeg() {
     for q in ["source_id=..%2Fx&at=1", "source_id=src_a&at=-1", "source_id=src_a&at=abc", "at=1"] {
         let r = c.get(format!("{}/api/frame?{q}&t={t}", e.base)).send().await.unwrap();
         assert_eq!(r.status(), 400, "{q}");
+    }
+}
+
+#[tokio::test]
+async fn font_route_serves_only_allowlisted_installed_fonts() {
+    let e = setup().await;
+    let t = &e.gui.token;
+    let c = reqwest::Client::new();
+    assert!(rustler_gui::font_names().contains(&"anton"));
+    let r = c.get(format!("{}/api/font/anton?t={t}", e.base)).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    assert_eq!(r.headers()["content-type"], "font/ttf");
+    assert_eq!(r.bytes().await.unwrap().as_ref(), b"ttfbytes");
+    // allowlisted but not installed -> 404; unknown name / traversal -> 404
+    for n in ["poppins-extrabold", "nope", "..%2F..%2Fsecret"] {
+        let r = c.get(format!("{}/api/font/{n}?t={t}", e.base)).send().await.unwrap();
+        assert_eq!(r.status(), 404, "{n}");
     }
 }
 
