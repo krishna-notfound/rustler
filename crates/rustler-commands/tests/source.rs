@@ -43,7 +43,7 @@ async fn project_create_show_and_dry_run() {
     let reg = registry();
     let dir = tempfile::tempdir().unwrap();
     let target = dir.path().join("p1");
-    let ctx = rustler_registry::Ctx::new(None, home());
+    let ctx = rustler_registry::Ctx::new(None, dir.path().join("home"));
 
     let mut dry = ctx.clone();
     dry.dry_run = true;
@@ -57,7 +57,7 @@ async fn project_create_show_and_dry_run() {
     let e = expect_code(run(&reg, "project.create", &ctx, json!({"name": "Demo", "dir": target})).await, ErrorCode::Validation);
     assert!(e.hint.is_some());
 
-    let pctx = rustler_registry::Ctx::new(Some(target.clone()), home());
+    let pctx = rustler_registry::Ctx::new(Some(target.clone()), dir.path().join("home"));
     let v = ok(&reg, "project.show", &pctx, json!({})).await;
     assert_eq!(v["counts"]["sources"], 0);
     assert!(v["next"][0].as_str().unwrap().contains("source import"));
@@ -172,7 +172,10 @@ async fn import_local_creates_proxy_and_wav() {
     assert_eq!(list["sources"][0]["id"], id);
     let shown = ok(&reg, "source.show", &ctx, json!({"source_id": id})).await;
     assert_eq!(shown["analysis"]["transcript"], false);
-    let proj = ok(&reg, "project.show", &ctx, json!({})).await;
+    // (own home: project.show records the project in the recent-projects registry)
+    let mut reg_ctx = ctx.clone();
+    reg_ctx.home = dir.path().join("home");
+    let proj = ok(&reg, "project.show", &reg_ctx, json!({})).await;
     assert_eq!(proj["counts"]["sources"], 1);
     // custom name
     let v = ok(&reg, "source.import", &ctx, json!({"input": f, "name": "Named"})).await;
@@ -245,4 +248,198 @@ async fn live_info_and_fetch_transcript() {
     let id = t["pending_id"].as_str().unwrap();
     let got = ok(&reg, "transcript.get", &ctx, json!({"source_id": id, "limit": 5})).await;
     assert!(got["returned"].as_u64().unwrap() > 0);
+}
+
+// ---------------------------------------------------------------------------------------
+// source_info.json: shifting / filtering of the yt-dlp info (no network)
+// ---------------------------------------------------------------------------------------
+
+use rustler_commands::source_cmds::{HeatWindow, build_source_info, shift_heatmap};
+use rustler_core::{
+    TimeRange,
+    model::{CaptionScript, WordTiming},
+};
+
+/// What yt-dlp `-J` / `--write-info-json` gives for a 100 s video: heatmap in 10 s windows.
+fn fake_ytdlp_info() -> serde_json::Value {
+    let heat: Vec<_> = (0..10)
+        .map(|i| json!({"start_time": i as f64 * 10.0, "end_time": (i + 1) as f64 * 10.0, "value": (i as f64 + 1.0) / 10.0}))
+        .collect();
+    json!({
+        "title": "A talk", "duration": 100.0, "uploader": "Some Channel",
+        "webpage_url": "https://www.youtube.com/watch?v=abc",
+        "chapters": [{"start_time": 0.0, "end_time": 50.0, "title": "Intro"}, {"start_time": 50.0, "end_time": 100.0, "title": "Main"}],
+        "heatmap": heat,
+        "subtitles": {"en": []}, "automatic_captions": {"en": [], "hi": []},
+    })
+}
+
+#[test]
+fn heatmap_shift_keeps_only_points_inside_the_section() {
+    let h = |s: f64, e: f64, v: f64| HeatWindow { start: s, end: e, value: v };
+    let heat = vec![h(0.0, 10.0, 0.2), h(10.0, 20.0, 0.9), h(20.0, 30.0, 0.5), h(30.0, 40.0, 0.1)];
+    // section 15..32: the first window is outside; the others are clipped to the section
+    let local = shift_heatmap(&heat, 15.0, 32.0, 15.0);
+    let got: Vec<(f64, f64, f64)> = local.iter().map(|w| (w.start, w.end, w.value)).collect();
+    assert_eq!(got, vec![(0.0, 5.0, 0.9), (5.0, 15.0, 0.5), (15.0, 17.0, 0.1)]);
+    // no shift: original-video times, still only the section
+    let orig = shift_heatmap(&heat, 15.0, 32.0, 0.0);
+    assert_eq!((orig[0].start, orig[0].end), (15.0, 20.0));
+    assert_eq!((orig[2].start, orig[2].end), (30.0, 32.0));
+    // a section outside every window leaves nothing; touching edges do not count
+    assert!(shift_heatmap(&heat, 40.0, 50.0, 40.0).is_empty());
+    assert_eq!(shift_heatmap(&heat, 20.0, 30.0, 0.0).len(), 1);
+}
+
+#[test]
+fn source_info_for_a_section_and_for_the_whole_video() {
+    let v = fake_ytdlp_info();
+    let url = "https://youtu.be/abc";
+
+    let whole = build_source_info(&v, url, None);
+    assert_eq!(whole["title"], "A talk");
+    assert_eq!(whole["uploader"], "Some Channel");
+    assert_eq!(whole["url"], "https://www.youtube.com/watch?v=abc", "webpage_url");
+    assert_eq!(whole["duration"], 100.0);
+    assert_eq!(whole["chapters"].as_array().unwrap().len(), 2);
+    assert_eq!(whole["heatmap"].as_array().unwrap().len(), 10);
+    assert_eq!(whole["heatmap"], whole["heatmap_local"]);
+    assert_eq!(whole["original_offset"], 0.0);
+    assert!(whole["section"].is_null());
+
+    let sec = build_source_info(&v, url, Some(TimeRange { start: 25.0, end: 47.0 }));
+    assert_eq!(sec["original_offset"], 25.0);
+    assert_eq!(sec["section"], json!({"start": 25.0, "end": 47.0}));
+    // original-video time (what highlights.signals expects), clipped to the section
+    let orig: Vec<(f64, f64)> =
+        sec["heatmap"].as_array().unwrap().iter().map(|w| (w["start"].as_f64().unwrap(), w["end"].as_f64().unwrap())).collect();
+    assert_eq!(orig, vec![(25.0, 30.0), (30.0, 40.0), (40.0, 47.0)]);
+    // shifted by -original_offset: 0 is the start of the imported section
+    let local: Vec<(f64, f64, f64)> = sec["heatmap_local"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| (w["start"].as_f64().unwrap(), w["end"].as_f64().unwrap(), w["value"].as_f64().unwrap()))
+        .collect();
+    assert_eq!(local, vec![(0.0, 5.0, 0.3), (5.0, 15.0, 0.4), (15.0, 22.0, 0.5)]);
+    // peaks come from the section only (best is 40-47, value 0.5)
+    assert_eq!(sec["heatmap_peaks"][0]["value"], 0.5);
+    assert_eq!(sec["heatmap_peaks"].as_array().unwrap().len(), 3);
+    // video-level fields are kept
+    assert_eq!(sec["title"], "A talk");
+    assert_eq!(sec["chapters"].as_array().unwrap().len(), 2);
+
+    // a video without a heatmap gives empty lists, not an error
+    let none = build_source_info(&json!({"title": "x", "duration": 5.0}), url, None);
+    assert_eq!(none["heatmap"], json!([]));
+}
+
+/// Synthetic URL-section source (no media needed): source.json, transcript and units.
+fn url_section_source(store: &ProjectStore, offset: f64, len: f64) -> rustler_core::SourceId {
+    use rustler_core::{MediaProbe, Source, SourceId, SourceOrigin, Transcript, Word};
+    let id = SourceId::new();
+    let section = TimeRange { start: offset, end: offset + len };
+    let source = Source {
+        id: id.clone(),
+        name: "talk [section]".into(),
+        origin: SourceOrigin::Url { url: "https://youtu.be/abc".into(), section: Some(section), original_offset: offset },
+        media_path: std::path::PathBuf::from("sources").join(id.as_str()).join("media.mp4"),
+        probe: MediaProbe { duration: len, has_video: true, has_audio: true, width: 320, height: 240, fps: 25.0, ..Default::default() },
+        proxy: None,
+        audio_wav: None,
+        imported_at: chrono::Utc::now(),
+    };
+    store.save_source(&source).unwrap();
+    let words: Vec<Word> = (0..40)
+        .map(|i| Word {
+            i,
+            text: if i % 8 == 7 { "word.".into() } else { "word".into() },
+            start: i as f64 * 0.5,
+            end: i as f64 * 0.5 + 0.4,
+            conf: None,
+            speaker: None,
+        })
+        .collect();
+    let units = rustler_core::units::build_units(&words);
+    let t = Transcript {
+        schema: "rustler.transcript@1".into(),
+        source_id: id.clone(),
+        language: "en".into(),
+        engine: "test".into(),
+        script: CaptionScript::Latin,
+        words,
+        word_timing: WordTiming::Exact,
+    };
+    let rel = std::path::Path::new("analysis").join(id.as_str());
+    store.write_json(&rel.join("transcript.json"), &t).unwrap();
+    store.write_json(&rel.join("units.json"), &units).unwrap();
+    id
+}
+
+#[tokio::test]
+async fn saved_source_info_feeds_highlights_signals_and_source_info_by_id() {
+    let reg = registry();
+    let (_dir, ctx) = project();
+    let store = ProjectStore::open(ctx.project_dir.as_ref().unwrap()).unwrap();
+    // a 20 s section starting at 25 s of the 100 s video
+    let id = url_section_source(&store, 25.0, 20.0);
+    let rel = std::path::Path::new("analysis").join(id.as_str()).join("source_info.json");
+
+    // no saved info yet: heatmap is null, and source.info by id explains how to get it
+    let v = ok(&reg, "highlights.signals", &ctx, json!({"source_id": id.as_str(), "window": 10})).await;
+    assert!(v["rows"][0]["heatmap"].is_null(), "{v}");
+    let e = expect_code(run(&reg, "source.info", &ctx, json!({"source_id": id.as_str()})).await, ErrorCode::NotFound);
+    assert!(e.hint.unwrap().contains("source info https://youtu.be/abc"));
+    expect_code(run(&reg, "source.info", &ctx, json!({})).await, ErrorCode::Validation);
+
+    store.write_json(&rel, &build_source_info(&fake_ytdlp_info(), "https://youtu.be/abc", Some(TimeRange { start: 25.0, end: 45.0 }))).unwrap();
+
+    // section 0-10 s = video 25-35 s: 25-30 at 0.3 and 30-35 at 0.4 -> 0.35
+    let v = ok(&reg, "highlights.signals", &ctx, json!({"source_id": id.as_str(), "window": 10})).await;
+    let rows = v["rows"].as_array().unwrap();
+    let h0 = rows[0]["heatmap"].as_f64().expect("heatmap is non-null once source_info.json is saved");
+    assert!((h0 - 0.35).abs() < 1e-9, "{h0}");
+    let h1 = rows[1]["heatmap"].as_f64().unwrap();
+    assert!((h1 - 0.45).abs() < 1e-9, "video 35-45 s: 0.4 and 0.5 -> {h1}");
+
+    // source.info by id returns the saved video info without network (even with the network forbidden)
+    let mut p = store.load_project().unwrap();
+    let rev = p.revision;
+    p.permissions.network = false;
+    store.save_project(&mut p, rev).unwrap();
+    let i = ok(&reg, "source.info", &ctx, json!({"source_id": id.as_str()})).await;
+    assert_eq!(i["title"], "A talk");
+    assert_eq!(i["uploader"], "Some Channel");
+    assert_eq!(i["heatmap"].as_array().unwrap().len(), 3);
+}
+
+/// Live: import a short section of a public captioned video, then `highlights signals` shows a heatmap.
+/// Needs network, yt-dlp, ffmpeg and the engine (transcription). Run with `--ignored`.
+#[tokio::test]
+#[ignore]
+async fn live_section_import_saves_source_info_and_highlights_shows_heatmap() {
+    if !have_ytdlp() || !have_media_tools() || !have_engine() {
+        return;
+    }
+    let reg = registry();
+    let (_dir, ctx) = project();
+    let url = std::env::var("RUSTLER_LIVE_URL").unwrap_or_else(|_| "https://www.youtube.com/watch?v=dQw4w9WgXcQ".to_string());
+    let sections = std::env::var("RUSTLER_LIVE_SECTION").unwrap_or_else(|_| "0:40-1:10".to_string());
+    let v = ok(&reg, "source.import", &ctx, json!({"input": url, "sections": sections})).await;
+    eprintln!("IMPORT warnings={}", v["warnings"]);
+    let id = v["sources"][0]["id"].as_str().unwrap().to_string();
+    let info_path = ctx.project_dir.clone().unwrap().join("analysis").join(&id).join("source_info.json");
+    assert!(info_path.is_file(), "source_info.json was not written: warnings {}", v["warnings"]);
+    let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&info_path).unwrap()).unwrap();
+    eprintln!("SAVED title={} offset={} heatmap={} local={}", saved["title"], saved["original_offset"], saved["heatmap"], saved["heatmap_local"]);
+    assert!(!saved["title"].as_str().unwrap().is_empty());
+    assert!(saved["original_offset"].as_f64().unwrap() > 0.0);
+    let by_id = ok(&reg, "source.info", &ctx, json!({"source_id": id})).await;
+    assert_eq!(by_id["title"], saved["title"]);
+
+    ok(&reg, "analyze.quick", &ctx, json!({"source_id": id})).await;
+    let sig = ok(&reg, "highlights.signals", &ctx, json!({"source_id": id, "window": 10})).await;
+    let rows = sig["rows"].as_array().unwrap();
+    eprintln!("SIGNALS heatmap per window: {:?}", rows.iter().map(|r| r["heatmap"].clone()).collect::<Vec<_>>());
+    assert!(rows.iter().any(|r| !r["heatmap"].is_null()), "highlights.signals shows no heatmap: {sig}");
 }

@@ -9,3 +9,4 @@ engine/.venv/
 .venv/
 .claude/worktrees/
 .playwright-mcp/
+target-*/

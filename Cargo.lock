@@ -2322,6 +2322,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "unicode-normalization",
+ "zip",
 ]
 
 [[package]]
