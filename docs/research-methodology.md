@@ -1,7 +1,7 @@
 # Research Methodology — Repository Evaluation
 
 Every repo in `repos/` is evaluated with the same method so findings are comparable.
-One findings file per repo: `findings/<repo>.md`. Cross-repo synthesis: `findings/00-comparison-matrix.md`.
+One findings file per repo: `docs/research/<repo>.md`. Cross-repo synthesis: `docs/research/00-comparison-matrix.md`.
 
 ## Rules
 - Read source code, not just READMEs. Every claim cites `repos/<repo>/<path>:<line>`.

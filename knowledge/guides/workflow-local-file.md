@@ -1,0 +1,120 @@
+---
+id: workflow-local-file
+title: "Workflow: clipping a local video file"
+summary: "Import a file from disk, build the understanding pack (audio, scenes, transcript, frames), pick moments and deliver checked clips."
+order: 3
+tags: [workflow, local, import, analyze]
+---
+
+# Workflow: local video file
+
+Use this for files the user gives you (recordings, downloads they already have, phone footage) and as
+the fallback when URL import is blocked.
+
+## Step 1: import
+
+```
+rustler project create --name "client-call-clips" --dir ./client-call-clips
+rustler source import "D:/footage/My Podcast (ep 12) – final.mp4" --name ep12
+```
+
+- The media stays where it is; Rustler records the absolute path and makes a 540p proxy and a 16 kHz
+  wav inside `sources/<id>/`. Do not move or rename the original afterwards.
+- If `permissions.fs_roots` is set and the file is outside it, import fails with `validation`. Ask
+  the user to allow the folder; do not copy files around to dodge it.
+- Read the returned `probe`: `duration`, `width`×`height` (display size after rotation), `fps`,
+  `has_video`, `has_audio`.
+
+| Probe says | Meaning for you |
+|---|---|
+| `has_video: false` | Audio-only (podcast mp3). `clip create` refuses it; ask for the video or skip. |
+| `has_audio: false` | Silent footage: no transcript, pick moments visually (`see tiles`, scenes). Render adds a silent track. |
+| height > width | Already vertical (phone). Use `center-crop` with focus 0.5 or `blur-fit` only if it is not 9:16. |
+| 4K / 60 fps | Fine. Output is always 1080×1920 @ 30 fps. Analysis runs on the proxy. |
+
+## Step 2: understanding pack
+
+```
+rustler analyze quick src_ep12
+```
+
+This runs `analyze audio` (1 s loudness curve, top peaks, silences), `analyze scenes` (shot cuts) and
+`analyze transcribe` (word timings + sentence units). The summary returns `duration`, `words`,
+`units`, `scenes`, the top 10 loudness `peaks` and total silence.
+
+Run the parts separately when you need control:
+
+```
+rustler analyze transcribe src_ep12 --model small --language auto --max-seconds 300   # rerun until complete
+rustler analyze scenes src_ep12
+rustler analyze audio src_ep12
+```
+
+Sanity-check the transcript before trusting it:
+
+- `words` near 0 on a talking video → wrong language or music-heavy audio. Retry with `--language en`
+  or `--language hi`, or a bigger `--model medium`.
+- Words per second below ~1.0 on dense talk → transcription is missing speech; try a bigger model.
+- Hindi/English mix → read `hinglish` first.
+
+## Step 3: read and look
+
+```
+rustler transcript get src_ep12 --start 0 --end 600          # numbered units for the first 10 min
+rustler transcript search src_ep12 --query "biggest mistake"
+rustler see tiles src_ep12 --start 1830 --end 1870 --count 12
+rustler see tiles src_ep12 --around "biggest mistake" --window 20
+rustler see frame src_ep12 --t 1844.2 --width 960
+rustler see preview src_ep12 --start 1838 --end 1862          # ≤ 60 s low-res clip, if you can watch video
+```
+
+Read the whole transcript in chunks of 10-15 min for sources under ~90 min. For longer files, start
+from the loudness `peaks` and scene-dense regions, then read ±3 min around each.
+
+Tiles are your eyes: each tile is labelled with its timestamp and the words spoken there. From one
+grid you learn the shot type (talking head, two-shot, screen share, gameplay + webcam), where faces
+are, whether there is burned-in text, and whether the reaction matches the words.
+
+## Step 4: plan clips
+
+For each candidate write one line: `units #a-#b · opening words · payoff · score · layout`. Use the
+rubric in `finding-hooks` and the boundary rules in `cut-points`. Keep candidates ≥ 70, drop the
+rest. Remove overlaps and repeats.
+
+Example plan (illustrative):
+
+```
+1. #212-#219 "nobody tells you this about..." → payoff: the $40k lesson · 86 · center-crop + track-face
+2. #455-#470 "I got fired on my birthday"     → payoff: boss's text message · 81 · center-crop
+3. #702-#709 "here's the exact script"        → payoff: the 3 lines   · 72 · blur-fit (slide on screen)
+```
+
+## Step 5: build, render, watch
+
+```
+rustler clip create --name "nobody-tells-you" --source-id src_ep12 \
+    --start-unit 212 --end-unit 219 --expect-text "nobody tells you" --layout center-crop
+rustler crop track-face clp_X                        # (if available) faces move → follow them
+rustler clip set-captions clp_X --preset bold-karaoke --position-y 0.70
+rustler edit remove-pauses clp_X --min-gap 0.5       # (if available) tighten dead air
+rustler render preview-frame clp_X --out-t 1.0       # look: face framed? captions clear?
+rustler render run clp_X
+rustler qc run clp_X                                 # then open qc contact sheet
+rustler export clip clp_X --name "nobody-tells-you"
+```
+
+Draft first when you are unsure: `render run clp_X --quality draft` is much faster; render `final`
+only for the version you will export.
+
+## Step 6: report
+
+For every exported clip report: clip name, source + unit range, duration, layout, caption style, QC
+result, what you checked on the contact sheet, a suggested title/description/hashtags (see
+`platform-specs`), and any doubt (e.g. "speaker's face is half cut at 0:12").
+
+## Silent or music-only footage
+
+No speech means no units. Pick by eye: `analyze scenes`, then `see tiles` over scene ranges; choose
+action, reveals, transformations, fails. Cut on scene changes, never mid-motion. Create with
+`--start/--end` using times from scene boundaries or tile labels only. Captions are disabled
+automatically; add a hook text overlay only if an overlay command exists (`commands list`).

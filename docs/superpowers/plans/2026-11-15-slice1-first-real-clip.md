@@ -8,7 +8,7 @@
 
 **Tech Stack:** Rust (edition 2024, rustc ≥ 1.85; installed 1.100), clap 4, tokio, serde/serde_json, schemars, thiserror/anyhow, tracing, reqwest (rustls), image/imageproc/ab_glyph, include_dir, ulid, chrono, sha2, zip/tar/xz2, strsim. Python 3.11 via uv: faster-whisper, scenedetect + opencv-python-headless, indic-transliteration, pytest. FFmpeg (BtbN static GPL build), yt-dlp release binary.
 
-**Spec:** `docs/superpowers/specs/2026-11-15-rustler-design.md` (approved 2026-11-15). Research refs: `findings/00-comparison-matrix.md` §2–§3.
+**Spec:** `docs/superpowers/specs/2026-11-15-rustler-design.md` (approved 2026-11-15). Research refs: `docs/research/00-comparison-matrix.md` §2–§3.
 
 ## Global Constraints
 
@@ -477,12 +477,12 @@ Checks (name → rule → status):
 
 ### Task 12: End-to-end test + docs  *(Opus for e2e; Haiku for docs/feature files)*
 
-**Files:** `crates/rustler-cli/tests/e2e_slice1.rs`, `skills/rustler/SKILL.md` (Slice-1 minimal version), `features/f01…f09_*.md`, `docs/progress-log.md`, `features/README.md` statuses.
+**Files:** `crates/rustler-cli/tests/e2e_slice1.rs`, `skills/rustler/SKILL.md` (Slice-1 minimal version), `docs/features/f01…f09_*.md`, `docs/progress-log.md`, `docs/features/README.md` statuses.
 
 - [ ] **Step 1: e2e test** (`#[ignore]`, run explicitly; needs tools): in a tmp project — `project create` → generate a 60 s fixture video whose audio is `jfk.wav` looped ×5 over `testsrc2` 1920×1080 → `source import` → `analyze quick` → `transcript search --query "fellow Americans"` → `clip create --start-unit <hit> --end-unit <hit+1> --expect-text "<first 3 words of that unit>" --layout blur-fit` → `render run` → `qc run` (exit 0) → `export clip`. Assert each envelope `ok:true`, exported mp4 1080×1920, report has `qc.passed=true`, `events.ndjson` has ≥ 6 lines with actor "agent".
 - [ ] **Step 2:** Run `cargo test -p rustler-cli --test e2e_slice1 -- --ignored` → PASS (record real output summary in progress log).
 - [ ] **Step 3:** Manual check on this laptop: `rustler doctor` shows NVENC ok; repeat the e2e render with NVENC; watch the exported clip; look at the QC contact sheet. Record findings.
-- [ ] **Step 4:** Haiku agent: write `features/f01…f09_*.md` from this plan using `features/_feature-template.md` (owned files, interfaces, acceptance = the tests above, status Built/Verified per real results) and a minimal `skills/rustler/SKILL.md` (discovery-first, the start-here chain, "look at the QC contact sheet before done", unit-ids-not-timestamps, never auto-publish). Update `features/README.md` statuses and `docs/progress-log.md`.
+- [ ] **Step 4:** Haiku agent: write `docs/features/f01…f09_*.md` from this plan using `docs/features/_feature-template.md` (owned files, interfaces, acceptance = the tests above, status Built/Verified per real results) and a minimal `skills/rustler/SKILL.md` (discovery-first, the start-here chain, "look at the QC contact sheet before done", unit-ids-not-timestamps, never auto-publish). Update `docs/features/README.md` statuses and `docs/progress-log.md`.
 - [ ] **Step 5:** Commit `test: slice-1 e2e + docs`.
 
 ---
