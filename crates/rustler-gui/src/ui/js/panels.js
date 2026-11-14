@@ -186,7 +186,7 @@
       el.appendChild(es);
       (E.effects || []).forEach(function (f) {
         es.appendChild(h('div', { class: 'fxrow' + (E.selFx === f.id ? ' sel' : ''), 'data-fx': f.id },
-          h('span', { class: 'fxk k-' + f.kind }, f.kind), h('span', { class: 'mono small' }, R.tc(f.start, E.fps) + '–' + R.tc(f.end, E.fps)),
+          h('span', { class: 'fxk k-' + f.kind }, f.kind), h('span', { class: 'mono small' }, R.fmt(f.start) + '–' + R.fmt(f.end)),
           f.kind !== 'flash' ? h('span', { class: 'muted small' }, '× ' + R.round(f.amount_used, 3)) : null,
           f.rendered_start === null ? h('span', { class: 'small st-warn' }, 'outside the clip') : null,
           h('span', { class: 'grow' }),
@@ -198,7 +198,7 @@
       var kind = R.select(EFFECTS, 'punch-in');
       var s0 = num(R.round(r.start, 2), 0.01, 0), s1 = num(R.round(r.end, 2), 0.01, 0);
       var amt = num('', 0.01, 0, 2);
-      amt.placeholder = 'default';
+      amt.placeholder = 'auto';
       E.onRange = function (rr) { s0.value = R.round(rr.start, 2); s1.value = R.round(rr.end, 2); };
       es.appendChild(h('div', { class: 'row addfx' }, R.field('Kind', kind), R.field('Start', s0), R.field('End', s1), R.field('Amount', amt),
         R.button('+ Add effect', function () {
@@ -232,10 +232,10 @@
     var dur = num(cur ? cur.duration : 0.3, 0.05, 0.05, 2);
     var m = E.tlById(segId);
     return h('div', { class: 'transrow', 'data-after': segId },
-      h('span', { class: 'small' }, h('b', null, (i + 1) + ' → ' + (i + 2)), ' ', h('span', { class: 'muted mono' }, m ? '@' + R.tc(m.out_end, E.fps) : '')),
+      h('span', { class: 'small' }, h('b', null, 'Seg ' + (i + 1) + ' → ' + (i + 2)), ' ', h('span', { class: 'muted mono' }, m ? 'cut at ' + R.fmt(m.out_end) : ''),
+        cur && cur.overlap ? h('span', { class: 'muted', title: cur.frames + ' frames' }, ' · ' + cur.kind + ', ' + R.round(cur.overlap, 3) + ' s overlap') : (cur ? null : h('span', { class: 'muted' }, ' · hard cut')),
+        cur && cur.problem ? h('span', { class: 'st-warn', title: cur.problem }, ' · ' + cur.problem) : null),
       kind, dur, h('span', { class: 'muted small' }, 's'),
-      cur && cur.overlap ? h('span', { class: 'muted small', title: 'frames: ' + cur.frames }, R.round(cur.overlap, 3) + ' s overlap') : null,
-      cur && cur.problem ? h('span', { class: 'small st-warn', title: cur.problem }, '!') : null,
       h('span', { class: 'grow' }),
       R.button(cur ? 'Update' : 'Set', function () {
         return E.mutate('transition.set', { after_segment_id: segId, kind: kind.value, duration: Number(dur.value) || 0.3 }, { toast: 'Transition ' + kind.value + ' after segment ' + (i + 1) }).then(function (d) { if (d && done) done(); });
@@ -244,23 +244,28 @@
   };
 
   // ------------------------------------------------------------ QC
+  // QC commands re-save clip.json (revision +1): reload quietly so live sync does not redraw the tab,
+  // and keep the last results per clip so they survive tab switches.
+  var qcKeep = {};
   P.qc = function (el, E) {
-    var out = h('div');
+    var keep = qcKeep[E.clipId] = qcKeep[E.clipId] || {};
+    function quiet(p) { return p.then(function (d) { return E.reload('quiet').then(function () { return d; }); }); }
+    var out = keep.out || (keep.out = h('div'));
     var renders = E.clip.renders || [];
     el.appendChild(h('div', { class: 'row' },
       R.button('Run QC on latest render', function () {
         if (!renders.length) { R.toast('Render the clip first (Render tab)', 'bad'); return; }
-        return R.run('qc.run', { clip_id: E.clipId, allow_fail: true }).then(function (r) { if (r) { R.clear(out); R.renderQc(out, r); fixes(out); } });
+        return quiet(R.run('qc.run', { clip_id: E.clipId, allow_fail: true })).then(function (r) { if (r) { R.clear(out); R.renderQc(out, r); fixes(out); } });
       }, { primary: true, small: true, need: ['qc.run'] }),
       R.has('fix.suggest') ? R.button('Suggest fixes', function () { R.clear(out); return fixes(out); }, { small: true }) : null,
       R.has('fix.apply') ? R.button('Apply auto-safe fixes', function () { return applyFixes(); }, { small: true, title: 'fix.apply: safe, non-creative fixes, then re-render + re-QC' }) : null));
     var rr = h('label', { class: 'chk small' }, h('input', { type: 'checkbox', checked: true }), ' re-render + re-QC after fixing');
     if (R.has('fix.apply')) el.appendChild(h('div', { class: 'row' }, rr));
-    var fixOut = h('div');
+    var fixOut = keep.fixOut || (keep.fixOut = h('div'));
     el.appendChild(fixOut);
     el.appendChild(out);
     var last = renders[renders.length - 1];
-    if (last && last.qc) R.getJson(R.optUrl(last.qc)).then(function (rep) { if (rep && !out.firstChild) { out.appendChild(h('div', { class: 'muted small' }, 'Saved QC of ' + last.id)); R.renderQc(out, rep); } });
+    if (last && last.qc && !out.firstChild) R.getJson(R.optUrl(last.qc)).then(function (rep) { if (rep && !out.firstChild) { out.appendChild(h('div', { class: 'muted small' }, 'Saved QC of ' + last.id)); R.renderQc(out, rep); } });
 
     function applyFixes() {
       if (!renders.length) { R.toast('Render the clip first', 'bad'); return; }
@@ -293,7 +298,7 @@
     }
     function fixes(box) {
       if (!R.has('fix.suggest')) return Promise.resolve();
-      return R.run('fix.suggest', { clip_id: E.clipId }, true).then(function (d) {
+      return quiet(R.run('fix.suggest', { clip_id: E.clipId }, true)).then(function (d) {
         if (!d) return;
         var items = d.suggestions || [];
         var s = sec('Suggested fixes');
@@ -317,20 +322,20 @@
       el.appendChild(cs);
       var opts = renders.slice().reverse().map(function (r) { return [r.id, r.id + ' · ' + r.quality + ' · ' + String(r.created_at || '').replace('T', ' ').slice(5, 16)]; });
       var A = R.select(opts, renders[renders.length - 2].id), B = R.select(opts, renders[renders.length - 1].id);
-      var cmp = h('div');
+      var cmp = keep.cmp || (keep.cmp = h('div'));
       cs.appendChild(h('div', { class: 'row' }, R.field('Left (A)', A), R.field('Right (B)', B),
         R.button('Compare', function () {
           if (A.value === B.value) { R.toast('Pick two different renders', 'bad'); return; }
-          return R.run('qc.compare', { clip_id: E.clipId, render_a: A.value, render_b: B.value }).then(function (d) {
+          return quiet(R.run('qc.compare', { clip_id: E.clipId, render_a: A.value, render_b: B.value })).then(function (d) {
             if (!d) return;
             R.clear(cmp);
             cmp.appendChild(h('div', { class: 'small' }, d.summary));
             cmp.appendChild(h('div', { class: 'small muted' }, 'A: ' + d.a_verdict + ' · B: ' + d.b_verdict));
-            cmp.appendChild(h('table', { class: 'tbl compact' }, h('thead', null, h('tr', null, h('th', null, 'check'), h('th', null, 'A'), h('th', null, 'B'), h('th', null, 'change'))),
+            cmp.appendChild(h('div', { class: 'tablewrap' }, h('table', { class: 'tbl compact' }, h('thead', null, h('tr', null, h('th', null, 'check'), h('th', null, 'A'), h('th', null, 'B'), h('th', null, 'change'))),
               h('tbody', null, (d.diff || []).map(function (x) {
                 return h('tr', null, h('td', { class: 'mono small' }, x.name), h('td', null, R.statusBadge(x.a || '-')), h('td', null, R.statusBadge(x.b || '-')),
                   h('td', { class: 'small ' + (x.change === 'improved' ? 'st-pass' : x.change === 'regressed' ? 'st-fail' : 'muted') }, x.change));
-              }))));
+              })))));
             cmp.appendChild(h('a', { href: R.fileUrl(d.image), target: '_blank' }, h('img', { class: 'shot', src: R.fileUrl(d.image) + '&v=' + Date.now(), alt: 'side-by-side contact sheet' })));
           });
         }, { small: true, primary: true })));

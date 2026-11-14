@@ -11,6 +11,7 @@
     E = state; host = el; tabs = null; cueBox = null;
     E.on('load', function (reason) {
       if (!tabs) build();
+      else if (reason === 'quiet') return;   // a panel refreshed the state itself (e.g. qc.run re-saves the clip)
       else if (reason !== 'render' || tabs.current() === 'render') tabs.refresh();
     });
     E.on('select', function () { if (tabs && tabs.current() === 'layout') tabs.refresh(); });

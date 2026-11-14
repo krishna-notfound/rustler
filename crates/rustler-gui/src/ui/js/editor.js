@@ -161,6 +161,7 @@
       E.pending--;
       if (env && env.ok) {
         if (!o.keepRedo) E.redo = [];
+        E.extrasMtime = null;   // our own extras write: the next sync re-baselines without an "agent" toast
         (env.warnings || []).forEach(function (w) { R.toast('warning: ' + w); });
         (env.data && env.data.warnings || []).forEach(function (w) { R.toast(w); });
         if (o.toast) R.toast(o.toast, 'good');

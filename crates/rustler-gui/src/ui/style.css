@@ -413,3 +413,11 @@ input.short { width: 90px; } input.num.short { width: 70px; }
 .bandbox { width: 100%; aspect-ratio: 16 / 9; overflow: hidden; border-radius: 6px; border: 1px solid var(--line); }
 .bandbox img, .styleexact .bandbox img.band { width: 100%; height: 100%; aspect-ratio: auto; object-fit: cover; object-position: 50% 72%; border: 0; border-radius: 0; display: block; }
 .stylecreator input[type=color] { width: 56px; height: 30px; padding: 2px; }
+.ed-inspector .kv { grid-template-columns: 116px minmax(0, 1fr); }
+.transrow > span:first-child { flex-basis: 100%; }
+.transrow select { flex: 1; min-width: 0; } .transrow input.num { width: 64px; }
+.addfx .field input { width: 58px; } .addfx .field select { width: 104px; }
+.fxrow .mono { font-size: 11px; }
+.fxbar .x { right: 9px; z-index: 3; } .fxbar { padding-right: 22px; }
+.transrow select { min-width: 110px; }
+.modal-back { z-index: 1000; }
