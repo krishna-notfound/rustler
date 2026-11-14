@@ -253,6 +253,7 @@ async fn gather_extras(ctx: &Ctx, store: &ProjectStore, clip: &Clip, render_path
         brief: read_brief(store),
         overlay_add_text: registry_has("overlay.add_text"),
         has_crop_path: raw.get("crop_paths").and_then(|c| c.as_object()).is_some_and(|o| !o.is_empty()),
+        expected_duration: crate::fx_cmds::effective_duration_of(store, clip).ok(),
     }
 }
 
