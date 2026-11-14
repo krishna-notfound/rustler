@@ -17,6 +17,7 @@ pub mod render_cmds;
 pub mod see_cmds;
 pub mod setup_cmds;
 pub mod source_cmds;
+pub mod speaker_cmds;
 pub mod transcript_cmds;
 pub mod understand_cmds;
 pub mod variant_cmds;
@@ -44,4 +45,5 @@ pub fn register_all(reg: &mut Registry) {
     highlights_cmds::register(reg);
     brief_cmds::register(reg);
     variant_cmds::register(reg);
+    speaker_cmds::register(reg);
 }

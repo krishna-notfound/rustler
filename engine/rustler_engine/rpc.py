@@ -139,6 +139,7 @@ def _capabilities(params, progress):
         ("numpy", "numpy"),
         ("rapidocr", "rapidocr"),
         ("onnxruntime", "onnxruntime"),
+        ("sherpa-onnx", "sherpa_onnx"),
     ]:
         try:
             packages[key] = metadata.version(dist)
@@ -172,7 +173,7 @@ def _models_fetch(params, progress):
     from . import transcribe
 
     out: Dict[str, Any] = {"fetched": []}
-    if "whisper" in params or not (params.get("yunet") or params.get("yamnet")):
+    if "whisper" in params or not (params.get("yunet") or params.get("yamnet") or params.get("diarization")):
         out["fetched"] = transcribe.fetch_models(params, progress)["fetched"]
     if params.get("yunet"):
         from . import faces
@@ -184,6 +185,11 @@ def _models_fetch(params, progress):
 
         out["yamnet_path"] = audio_events.fetch_yamnet(progress)
         out["fetched"].append("yamnet")
+    if params.get("diarization"):
+        from . import speakers
+
+        out["diarization_dir"] = speakers.fetch_models(progress)
+        out["fetched"].append("diarization")
     return out
 
 
@@ -205,6 +211,18 @@ def _audio_events(params, progress):
     return audio_events.run(params, progress)
 
 
+def _speakers_diarize(params, progress):
+    from . import speakers
+
+    return speakers.diarize(params, progress)
+
+
+def _speakers_active(params, progress):
+    from . import speakers
+
+    return speakers.active(params, progress)
+
+
 def default_methods() -> Dict[str, Handler]:
     return {
         "engine.ping": _ping,
@@ -216,4 +234,6 @@ def default_methods() -> Dict[str, Handler]:
         "faces.track": _faces_track,
         "ocr.run": _ocr_run,
         "audio.events": _audio_events,
+        "speakers.diarize": _speakers_diarize,
+        "speakers.active": _speakers_active,
     }

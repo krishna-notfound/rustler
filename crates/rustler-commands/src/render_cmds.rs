@@ -9,7 +9,7 @@ use crate::see_cmds::find_fonts;
 use crate::{extras, overlay_cmds};
 use rustler_media::RenderReport;
 use chrono::Utc;
-use rustler_captions::write_ass;
+
 use rustler_core::{
     CaptionScript, Clip, ClipId, ErrorCode, ProjectStore, RenderId, RenderQuality, RenderRecord, RustlerError,
     SourceId, TimeMap,
@@ -131,7 +131,7 @@ async fn prepare(
         } else {
             let fonts = stage_fonts(paths, &fonts_dir)?;
             let family = caption_font_family(clip.captions.script, &fonts);
-            let text = write_ass(&words, &clip.captions, &clip.canvas, family)?;
+            let text = crate::speaker_cmds::write_clip_ass(store, clip, &words, family, &mut warnings)?;
             let p = workdir.join("captions.ass");
             std::fs::write(&p, text).map_err(|e| io_err("write", &p, e))?;
             ass = Some(p);

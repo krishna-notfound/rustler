@@ -61,6 +61,50 @@ pub fn write_ass(
     canvas: &Canvas,
     font_family: &str,
 ) -> rustler_core::Result<String> {
+    write_ass_impl(words, None, track, canvas, font_family)
+}
+
+/// `#RRGGBB` (or `RRGGBB`) to an ASS `0x00BBGGRR` colour; `None` for anything else.
+pub fn parse_hex_colour(s: &str) -> Option<u32> {
+    let h = s.trim().trim_start_matches('#');
+    if h.len() != 6 || !h.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let v = u32::from_str_radix(h, 16).ok()?;
+    let (r, g, b) = ((v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF);
+    Some((b << 16) | (g << 8) | r)
+}
+
+/// Like [`write_ass`], but `colors[i]` (`#RRGGBB`, parallel to `words`) overrides the text colour
+/// of word `i` (speaker-coloured captions). `None` or a missing entry keeps the preset's colour.
+/// The preset's active-word highlight is unchanged. `Validation` for an invalid colour.
+pub fn write_ass_colored(
+    words: &[CaptionWord],
+    colors: &[Option<String>],
+    track: &CaptionTrack,
+    canvas: &Canvas,
+    font_family: &str,
+) -> rustler_core::Result<String> {
+    let parsed = colors
+        .iter()
+        .map(|c| match c {
+            None => Ok(None),
+            Some(s) => parse_hex_colour(s).map(Some).ok_or_else(|| {
+                RustlerError::new(ErrorCode::Validation, "captions", format!("invalid word colour '{s}'"))
+                    .hint("use #RRGGBB, e.g. #FFE000")
+            }),
+        })
+        .collect::<rustler_core::Result<Vec<Option<u32>>>>()?;
+    write_ass_impl(words, Some(&parsed), track, canvas, font_family)
+}
+
+fn write_ass_impl(
+    words: &[CaptionWord],
+    colors: Option<&[Option<u32>]>,
+    track: &CaptionTrack,
+    canvas: &Canvas,
+    font_family: &str,
+) -> rustler_core::Result<String> {
     let p = find_preset(&track.preset).ok_or_else(|| {
         RustlerError::new(
             ErrorCode::Validation,
@@ -90,7 +134,18 @@ pub fn write_ass(
     let reset = format!(r"{{\r{blur}}}");
     let lead = if blur.is_empty() { String::new() } else { format!("{{{blur}}}") };
 
+    let mut base_index = 0usize;
+    let back_to_primary = tag_colour(p.primary);
     for (ci, chunk) in chunks.iter().enumerate() {
+        let chunk_base = base_index;
+        base_index += chunk.len();
+        // A visible non-active word, painted with its per-word colour when one is set.
+        let paint = |j: usize, d: &str| -> String {
+            match colors.and_then(|c| c.get(chunk_base + j)).copied().flatten() {
+                Some(c) => format!(r"{{\c{}}}{d}{{\c{back_to_primary}}}", tag_colour(c)),
+                None => d.to_string(),
+            }
+        };
         let disp: Vec<String> = chunk
             .iter()
             .map(|w| {
@@ -126,7 +181,7 @@ pub fn write_ass(
             match p.active {
                 ActiveStyle::Recolor => {
                     let t = join(&|j, d| {
-                        if j == i { format!(r"{{\c{ac}}}{d}{reset}") } else { d.to_string() }
+                        if j == i { format!(r"{{\c{ac}}}{d}{reset}") } else { paint(j, d) }
                     });
                     ev(0, "Default", format!("{lead}{t}"));
                 }
@@ -134,7 +189,7 @@ pub fn write_ass(
                     // Layer 0: line with the active word hidden. Layer 1: only the active word
                     // visible (same line layout, so nothing reflows) and popping.
                     let base = join(&|j, d| {
-                        if j == i { format!(r"{{{HIDE}}}{d}{{{SHOW}}}") } else { d.to_string() }
+                        if j == i { format!(r"{{{HIDE}}}{d}{{{SHOW}}}") } else { paint(j, d) }
                     });
                     ev(0, "Default", format!("{lead}{base}"));
                     let top = join(&|j, d| {
@@ -152,7 +207,7 @@ pub fn write_ass(
                         if j == i { format!(r"{{{SHOW}\1a&HFF&}}{d}{{{HIDE}}}") } else { d.to_string() }
                     });
                     ev(0, "Box", format!("{lead}{{{HIDE}}}{boxed}"));
-                    let line = join(&|_, d| d.to_string());
+                    let line = join(&|j, d| paint(j, d));
                     ev(1, "Default", format!("{lead}{line}"));
                 }
             }

@@ -102,6 +102,29 @@ The active-word highlight is automatic; per-word emphasis colours or emoji are a
 caption edit command exists (`rustler commands list` → `caption.*`). Don't add emoji unless the
 brief or niche calls for it.
 
+### Speaker colours (interviews, podcasts, panels)
+
+When two or more people talk, give each their own caption colour so viewers can follow who says what.
+
+```
+rustler analyze speakers src_X --num-speakers 2           # once per source; labels the transcript words
+rustler caption speaker-colors clp_X --enabled true        # default palette: S1 yellow, S2 cyan, S3 green ...
+rustler caption speaker-colors clp_X --enabled true --colors '{"S1":"#7CFF6B","S2":"#5EE0FF"}'
+rustler caption speaker-colors clp_X --enabled false       # back to the preset colour (palette is kept)
+rustler render preview-frame clp_X --out-t 4.0             # look at a frame of each speaker
+```
+
+- The colour is applied to the words of that speaker; the preset's own active-word highlight stays.
+  `clean-white` and `bold-karaoke` highlight in yellow, so give S1 a colour other than yellow (as
+  above) or the active word looks like a speaker change. Keep colours readable on the darkest and the
+  brightest frame, and use two or three per clip.
+- Speaker ids (`S1`, `S2`) come in order of first appearance. `rustler speaker rename src_X S1 Host`
+  stores a display name for summaries; colours are keyed by the id.
+- Short interjections get their own colour for a moment; if that flickers, pass `--num-speakers`
+  explicitly or turn colours off for that clip.
+- A clip made from a source that was never diarized renders with the plain preset colour and says so
+  in the render warnings.
+
 ## 7. Readability checks (on the contact sheet and preview frames)
 
 - Text fully inside the safe box; no letter cut at the edge.
