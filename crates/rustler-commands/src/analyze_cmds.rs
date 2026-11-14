@@ -23,14 +23,18 @@ use std::path::PathBuf;
 // engine helpers (shared with source_cmds)
 // ---------------------------------------------------------------------------------------
 
-/// Starts the Python engine. Development override: if `RUSTLER_ENGINE_PYTHON` is set, that
-/// interpreter runs `-m rustler_engine` in `RUSTLER_ENGINE_DIR` (default: the installed engine
-/// dir) instead of the venv created by `rustler setup`.
+/// Starts the Python engine. Development/test override: if `RUSTLER_ENGINE_PROJECT` names an
+/// engine source dir, the engine runs as `uv run --project <dir> python -m rustler_engine`
+/// instead of the venv created by `rustler setup`.
 pub async fn spawn_engine(paths: &ToolPaths) -> rustler_core::Result<EngineClient> {
-    if let Some(py) = std::env::var_os("RUSTLER_ENGINE_PYTHON") {
-        let dir = std::env::var_os("RUSTLER_ENGINE_DIR").map(PathBuf::from).unwrap_or_else(|| paths.engine_dir.clone());
+    if let Some(dir) = std::env::var_os("RUSTLER_ENGINE_PROJECT") {
+        let dir = PathBuf::from(dir);
         let hf = std::env::var("HF_HOME").unwrap_or_else(|_| paths.models.join("hf").to_string_lossy().into_owned());
-        return EngineClient::spawn_with(&PathBuf::from(py), &dir, &[("HF_HOME".to_string(), hf)]).await;
+        let args: Vec<String> = ["run", "--project", &dir.to_string_lossy(), "python", "-m", "rustler_engine"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        return EngineClient::spawn_command(&paths.uv, &args, &dir, &[("HF_HOME".to_string(), hf)]).await;
     }
     EngineClient::spawn(paths).await
 }

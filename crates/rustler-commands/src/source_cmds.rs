@@ -1111,7 +1111,7 @@ mod tests {
 
     #[test]
     fn progress_lines() {
-        assert_eq!(parse_ytdlp_progress("[download]  45.2% of  123.45MiB at  2.0MiB/s ETA 00:30"), Some(0.452));
+        assert!((parse_ytdlp_progress("[download]  45.2% of  123.45MiB at  2.0MiB/s ETA 00:30").unwrap() - 0.452).abs() < 1e-5);
         assert_eq!(parse_ytdlp_progress("[download] 100% of 5.00MiB in 00:02"), Some(1.0));
         assert_eq!(parse_ytdlp_progress("[info] something"), None);
     }

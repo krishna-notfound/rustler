@@ -104,7 +104,23 @@ pub fn path_allowed(roots: &[PathBuf], path: &Path) -> bool {
     if roots.is_empty() {
         return true;
     }
-    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    // Canonicalize the longest existing ancestor so not-yet-existing paths still compare right.
+    let canon = |p: &Path| {
+        let mut rest = Vec::new();
+        let mut cur = p.to_path_buf();
+        loop {
+            if let Ok(c) = std::fs::canonicalize(&cur) {
+                return rest.iter().rev().fold(c, |acc, part: &std::ffi::OsString| acc.join(part));
+            }
+            match (cur.file_name().map(|n| n.to_owned()), cur.parent().map(|p| p.to_path_buf())) {
+                (Some(n), Some(par)) => {
+                    rest.push(n);
+                    cur = par;
+                }
+                _ => return p.to_path_buf(),
+            }
+        }
+    };
     let target = canon(path);
     roots.iter().any(|r| target.starts_with(canon(r)))
 }
