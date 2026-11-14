@@ -604,7 +604,13 @@ async fn file(
     let Some(raw) = q.get("path").filter(|p| !p.is_empty()) else {
         return plain(StatusCode::BAD_REQUEST, "missing path");
     };
-    serve_path(&st, PathBuf::from(raw), &headers).await
+    let resp = serve_path(&st, PathBuf::from(raw), &headers).await;
+    // `optional=1`: a missing file is an expected state (e.g. an analysis not run yet), so answer
+    // 204 instead of 404 and keep the browser console clean.
+    if resp.status() == StatusCode::NOT_FOUND && q.get("optional").map(String::as_str) == Some("1") {
+        return (StatusCode::NO_CONTENT, "").into_response();
+    }
+    resp
 }
 
 /// Serves a file under the current project, the start project or `~/.rustler`, with Range support.

@@ -141,8 +141,9 @@
     var box = h('div', { class: 'result' });
     if (d === null || d === undefined) return box;
     var images = [];
-    JSON.stringify(d, function (k, v) { if (typeof v === 'string' && /\.(jpe?g|png|webp)$/i.test(v)) images.push(v); return v; });
-    var arr = Array.isArray(d) ? d : R.listOf(d);
+    // image paths only (not sentences that happen to end in ".jpg")
+    JSON.stringify(d, function (k, v) { if (typeof v === 'string' && /\.(jpe?g|png|webp)$/i.test(v) && !/[;:,]\s|\.\s/.test(v) && images.indexOf(v) < 0) images.push(v); return v; });
+    var arr = Array.isArray(d) ? d : R.listOf(d, 'texts', 'events', 'spans', 'scenes', 'candidates', 'suggestions', 'variants', 'items', 'matches', 'results');
     if (arr.length && typeof arr[0] === 'object') {
       var cols = [];
       arr.slice(0, 50).forEach(function (r) { Object.keys(r || {}).forEach(function (k) { if (cols.indexOf(k) < 0 && cols.length < 7) cols.push(k); }); });

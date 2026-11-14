@@ -48,8 +48,9 @@
 
   function sourceCard(s) {
     var id = R.sid(s);
-    var pr = s.probe || {};
+    var pr = s.probe || { duration: s.duration, has_audio: s.has_audio, has_video: s.has_video };
     var meta = [];
+    if (s.transcribed !== undefined) meta.push(s.transcribed ? 'transcribed' : 'not analyzed yet');
     if (pr.duration !== undefined) meta.push(R.fmt(pr.duration));
     if (pr.width) meta.push(pr.width + 'x' + pr.height);
     if (pr.fps) meta.push(R.round(pr.fps, 2) + ' fps');
@@ -220,11 +221,23 @@
     if (!cmds.length) { el.appendChild(R.na('analyze.deep', 'analyze.ocr', 'analyze.events', 'analyze.faces')); return; }
     var missingOnes = ['analyze.deep', 'analyze.ocr', 'analyze.events', 'analyze.faces'].filter(function (c) { return !R.has(c); });
     if (missingOnes.length) el.appendChild(h('div', { class: 'muted small' }, 'Not in this build yet: ' + missingOnes.join(', ')));
+    // Saved results (written by the analyze.* commands) are shown without re-running.
+    var FILES = { 'analyze.deep': 'understanding.json', 'analyze.ocr': 'ocr.json', 'analyze.events': 'events.json', 'analyze.faces': 'faces.json', 'analyze.scenes': 'scenes.json', 'analyze.audio': 'audio_events.json' };
+    var top = h('div', { class: 'card inner' }, h('h3', null, 'Summary'), h('div', { class: 'muted small' }, 'loading saved understanding...'));
+    el.appendChild(top);
+    R.getJson(R.optUrl('analysis/' + id + '/understanding.json')).then(function (u) {
+      R.clear(top).appendChild(h('h3', null, 'Summary'));
+      if (u && Array.isArray(u.understanding)) top.appendChild(h('ul', { class: 'ulist' }, u.understanding.map(function (l) { return h('li', null, l); })));
+      else top.appendChild(h('div', { class: 'muted small' }, R.has('analyze.deep') ? 'No understanding pack yet: run analyze.deep below.' : 'No understanding pack yet.'));
+    });
     var grid = h('div', { class: 'ugrid' });
     el.appendChild(grid);
     cmds.forEach(function (c) {
       var out = h('div', { class: 'uout' });
       var spec = R.spec(c);
+      if (FILES[c]) R.getJson(R.optUrl('analysis/' + id + '/' + FILES[c])).then(function (d) {
+        if (d && !out.firstChild) { out.appendChild(h('div', { class: 'muted small' }, 'saved result (' + FILES[c] + ')')); out.appendChild(summary(d)); }
+      });
       grid.appendChild(h('div', { class: 'ucard' },
         h('div', { class: 'row' }, h('strong', { class: 'mono' }, c), h('span', { class: 'grow' }),
           R.button('Run', function () {
@@ -245,11 +258,12 @@
   function summary(d) {
     var box = h('div');
     if (!d || typeof d !== 'object') { box.appendChild(h('pre', null, R.pretty(d))); return box; }
+    if (Array.isArray(d.understanding)) box.appendChild(h('ul', { class: 'ulist' }, d.understanding.map(function (l) { return h('li', null, l); })));
     var chips = h('div', { class: 'chips' });
     Object.keys(d).forEach(function (k) {
       var v = d[k];
+      if (k === 'next' || k === 'understanding' || k === 'path' || k === 'source_id') return;
       if (v === null || typeof v === 'object') { if (Array.isArray(v)) chips.appendChild(h('span', { class: 'chipv' }, k + ': ' + v.length)); return; }
-      if (k === 'next') return;
       chips.appendChild(h('span', { class: 'chipv' }, k + ': ' + R.short(typeof v === 'number' ? R.round(v, 3) : v, 40)));
     });
     box.appendChild(chips);

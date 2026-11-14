@@ -104,7 +104,7 @@
         var src = d ? (d.source || d) : { id: sid, probe: {} };
         E.sources[sid] = src;
         // Words for snapping + captions lane: the transcript file itself (read-only).
-        return R.getJson(R.fileUrl('analysis/' + sid + '/transcript.json')).then(function (tr) {
+        return R.getJson(R.optUrl('analysis/' + sid + '/transcript.json')).then(function (tr) {
           E.words[sid] = tr && Array.isArray(tr.words) ? tr.words : [];
         });
       });

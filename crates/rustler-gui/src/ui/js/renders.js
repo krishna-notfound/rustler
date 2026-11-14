@@ -49,7 +49,7 @@
       qcBox.appendChild(h('div', { class: 'row' }, R.button('Run QC', function () {
         return R.run('qc.run', { clip_id: R.cid(current), render_id: r.id, allow_fail: true }).then(drawQc);
       }, { primary: true, need: ['qc.run'] }), h('span', { class: 'muted small' }, r.qc ? 'loading saved QC...' : 'no QC yet for this render')));
-      if (r.qc) R.getJson(R.fileUrl(r.qc)).then(function (rep) { if (rep) drawQc(rep); });
+      if (r.qc) R.getJson(R.optUrl(r.qc)).then(function (rep) { if (rep) drawQc(rep); });
     }
     function pickClip(id) {
       return R.run('clip.show', { clip_id: id }).then(function (d) {

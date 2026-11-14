@@ -239,7 +239,8 @@
     // Mirrors rustler-captions presets (font, size = canvas width x factor, outline, active word).
     var P = PRESETS[cap.preset] || PRESETS['clean-white'];
     var k = W / E.clip.canvas.width;
-    var size = E.clip.canvas.width * P.size * k / 1.4;   // ASS size ~ line height; CSS px = em
+    // ASS font size ~ line height; CSS px = em (ratios measured against libass renders)
+    var size = E.clip.canvas.width * P.size * k / (P.font === 'anton' ? 1.7 : 1.4);
     ctx.save();
     ctx.font = (P.font === 'anton' ? '400 ' : '800 ') + Math.round(size) + 'px ' + R.fonts[P.font];
     ctx.textAlign = 'left';

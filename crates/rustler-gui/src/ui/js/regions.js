@@ -228,9 +228,18 @@
     if (!E.scopeAll) input.segment_id = seg.id;
     clearSuggest();
     bar.appendChild(h('span', { class: 'muted small' }, 'Looking for a facecam (face tracking over a few frames)...'));
-    return R.run('layout.detect_webcam', input).then(function (d) {
+    return R.call('layout.detect_webcam', input).then(function (env) {
       clearSuggest();
-      if (!d) return;
+      if (!env || !env.ok) {
+        var er = (env && env.error) || {};
+        bar.appendChild(h('div', { class: 'row' },
+          h('span', { class: 'small err' }, 'Detect webcam: ' + (er.message || 'failed')),
+          h('span', { class: 'grow' }),
+          R.button('Draw boxes by hand', startStreamerDraw, { small: true, primary: true, need: ['layout.from_frame_boxes'] }),
+          R.button('Dismiss', clearSuggest, { small: true })));
+        return;
+      }
+      var d = env.data;
       suggestLayer.appendChild(sBox(d.webcam, 'webcam (' + d.position + ')', 'cam'));
       suggestLayer.appendChild(sBox(d.gameplay, 'gameplay', 'game'));
       if (d.face) suggestLayer.appendChild(sBox(d.face, 'face', 'face'));

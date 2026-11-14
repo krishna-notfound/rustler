@@ -515,6 +515,27 @@ async fn file_serving_and_events() {
         .unwrap();
     assert_eq!(r.status(), 416);
 
+    // optional=1: missing -> 204 (not 404); present -> normal; outside roots still 403
+    let r = c
+        .get(format!("{}/api/file?path=analysis%2Fnope.json&optional=1&t={t}", e.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 204);
+    let r = c
+        .get(format!("{}/api/file?path=clip.mp4&optional=1&t={t}", e.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let q = enc(e.outside.path().join("secret.txt"));
+    let r = c
+        .get(format!("{}/api/file?{q}&optional=1&t={t}", e.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 403);
+
     // events: bad lines skipped
     let ev: Value = c
         .get(format!("{}/api/events?t={t}", e.base))

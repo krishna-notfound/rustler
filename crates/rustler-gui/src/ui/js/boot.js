@@ -19,6 +19,12 @@
       R.jobs.poll();
       var ok = !!R.views[initialView];
       R.go(ok ? initialView : 'project', ok ? initialArg : '');
+      // back/forward or a typed #view/arg
+      window.addEventListener('hashchange', function () {
+        var p = (location.hash || '').replace('#', '').split('/');
+        var v = p[0], a = p[1] ? decodeURIComponent(p[1]) : '';
+        if (R.views[v] && (v !== S.view || a !== S.arg)) R.go(v, a);
+      });
     });
   }
   boot();

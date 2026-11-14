@@ -7,7 +7,7 @@
   var E = null, tabs = null, host = null;
 
   I.mount = function (el, state) {
-    E = state; host = el;
+    E = state; host = el; tabs = null; cueBox = null;
     E.on('load', function (reason) {
       if (!tabs) build();
       else if (reason !== 'render' || tabs.current() === 'render') tabs.refresh();
@@ -406,7 +406,7 @@
       R.has('fix.suggest') ? R.button('Suggest fixes', function () { R.clear(out); return fixes(out); }, { small: true }) : null));
     el.appendChild(out);
     var last = E.clip.renders[E.clip.renders.length - 1];
-    if (last && last.qc) R.getJson(R.fileUrl(last.qc)).then(function (rep) { if (rep && !out.firstChild) { out.appendChild(h('div', { class: 'muted small' }, 'Saved QC of ' + last.id)); R.renderQc(out, rep); } });
+    if (last && last.qc) R.getJson(R.optUrl(last.qc)).then(function (rep) { if (rep && !out.firstChild) { out.appendChild(h('div', { class: 'muted small' }, 'Saved QC of ' + last.id)); R.renderQc(out, rep); } });
   }
   function fixes(out) {
     if (!R.has('fix.suggest')) return Promise.resolve();
@@ -415,8 +415,22 @@
       var items = R.listOf(d, 'fixes', 'suggestions', 'commands', 'items');
       var box = sec('Suggested fixes');
       out.appendChild(box);
+      if (d.verdict) box.appendChild(h('div', { class: 'small ' + (d.passed ? 'st-pass' : 'st-warn') }, d.verdict));
       if (!items.length) { box.appendChild(h('span', { class: 'muted small' }, 'No fixes suggested.')); return; }
+      var hasApply = R.has('fix.apply');
+      if (hasApply && items.some(function (f) { return f.auto_safe; })) {
+        box.appendChild(h('div', { class: 'row' }, R.button('Apply all safe fixes', function () { return E.mutate('fix.apply', { all_safe: true }, { toast: 'Safe fixes applied' }); }, { small: true, primary: true })));
+      }
       items.forEach(function (f) {
+        if (f && f.check && Array.isArray(f.commands)) {
+          box.appendChild(h('div', { class: 'fixrow' },
+            h('div', { class: 'grow' },
+              h('div', null, h('b', null, f.check), ' ', h('span', { class: 'badge ' + (f.severity === 'high' ? 'human st-fail' : 'system') }, f.severity || '')),
+              h('div', { class: 'small' }, f.why || ''),
+              f.commands.map(function (c) { return h('div', { class: 'mono small muted', title: 'CLI equivalent' }, c); })),
+            hasApply && f.auto_safe ? R.button('Apply', function () { return E.mutate('fix.apply', { check: f.check }, { toast: 'Fix applied: ' + f.check }); }, { small: true, primary: true }) : null));
+          return;
+        }
         var cmd = typeof f === 'string' ? null : (f.command || f.name);
         var input = typeof f === 'string' ? null : (f.input || f.args || null);
         var cli = typeof f === 'string' ? f : (f.cli || f.why || f.reason || '');

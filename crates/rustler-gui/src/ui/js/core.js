@@ -60,6 +60,8 @@
 
   // ------------------------------------------------------------ format
   R.fileUrl = function (p) { return '/api/file?path=' + encodeURIComponent(p) + '&t=' + encodeURIComponent(T) + (S.project ? '&project=' + encodeURIComponent(S.project) : ''); };
+  // For files that may legitimately not exist yet (204 instead of 404).
+  R.optUrl = function (p) { return R.fileUrl(p) + '&optional=1'; };
   R.frameUrl = function (sid, t, w) {
     return '/api/frame?source_id=' + encodeURIComponent(sid) + '&at=' + (Math.round(Math.max(0, t) * 1000) / 1000) + '&w=' + (w || 640) +
       '&t=' + encodeURIComponent(T) + (S.project ? '&project=' + encodeURIComponent(S.project) : '');
@@ -107,7 +109,7 @@
   R.toast = function (msg, kind) {
     var el = h('div', { class: 'toast ' + (kind || '') }, msg);
     $('toasts').appendChild(el);
-    setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, kind === 'bad' ? 9000 : 4000);
+    setTimeout(function () { if (el.parentNode && !el.classList.contains('sticky')) el.parentNode.removeChild(el); }, kind === 'bad' ? 9000 : 4000);
     return el;
   };
   function busy(d) {
@@ -121,8 +123,10 @@
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-rustler-token': T },
       body: JSON.stringify(body)
-    }).then(function (r) { return r.json(); })
-      .catch(function (e) { return { ok: false, error: { message: String(e), code: 'internal' } }; });
+    }).then(function (r) {
+      if (r.status === 401) { R.sessionLost(); return { ok: false, error: { message: 'session ended (server restarted)', code: 'usage' } }; }
+      return r.json();
+    }).catch(function (e) { return { ok: false, error: { message: String(e), code: 'internal' } }; });
   }
   R.call = function (command, input) {
     busy(1);
@@ -146,7 +150,18 @@
     });
   };
   R.getJson = function (url) {
-    return fetch(url, { headers: { 'x-rustler-token': T } }).then(function (r) { return r.ok ? r.json() : null; }).catch(function () { return null; });
+    if (S.lost) return Promise.resolve(null);
+    return fetch(url, { headers: { 'x-rustler-token': T } }).then(function (r) {
+      if (r.status === 401) { R.sessionLost(); return null; }
+      return r.ok && r.status !== 204 ? r.json() : null;
+    }).catch(function () { return null; });
+  };
+  // The server restarted (new token): stop polling and say so once.
+  R.sessionLost = function () {
+    if (S.lost) return;
+    S.lost = true;
+    var el = R.toast('This page\'s session ended (the GUI server was restarted). Open the new URL printed by `rustler gui`.', 'bad');
+    el.classList.add('sticky');
   };
   R.apiUrl = function (path, params) {
     var q = Object.keys(params || {}).filter(function (k) { return params[k] !== undefined && params[k] !== null && params[k] !== ''; })
@@ -170,8 +185,9 @@
   J.cancel = function (id) { return post('/api/jobs/cancel', { job_id: id }).then(function () { J.poll(); }); };
   J.on = function (fn) { J.subs.push(fn); return function () { J.subs = J.subs.filter(function (f) { return f !== fn; }); }; };
   J.poll = function () {
+    clearTimeout(J.timer);
     return R.getJson(R.apiUrl('/api/jobs')).then(function (d) {
-      if (!d || !Array.isArray(d.jobs)) return;
+      if (!d || !Array.isArray(d.jobs)) { if (!S.lost) J.timer = setTimeout(J.poll, 5000); return; }
       J.list = d.jobs;
       var running = J.list.filter(function (j) { return j.status === 'running'; });
       var chip = $('jobchip');
