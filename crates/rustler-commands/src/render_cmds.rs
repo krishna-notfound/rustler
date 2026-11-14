@@ -9,7 +9,6 @@ use crate::see_cmds::find_fonts;
 use crate::{audio_cmds, extras, fx_cmds, overlay_cmds};
 use rustler_media::RenderReport;
 use chrono::Utc;
-use rustler_captions::write_ass_with;
 use rustler_core::{
     CaptionScript, Clip, ClipId, ErrorCode, ProjectStore, RenderId, RenderQuality, RenderRecord, RustlerError,
     SourceId, TimeMap,
@@ -130,15 +129,16 @@ async fn prepare(
     if clip.captions.enabled {
         let (words, w) = caption_words_for_clip(store, clip)?;
         warnings.extend(w);
+        let colors = crate::speaker_cmds::word_colors_for_clip(store, clip, &words, &mut warnings)?;
         // Captions follow the picture through transitions (edit -> rendered timeline).
-        let words = fx_cmds::map_caption_words(words, &fx_cmds::transition_map(store, clip)?);
+        let (words, colors) = crate::speaker_cmds::map_words_with_colors(words, colors, &fx_cmds::transition_map(store, clip)?);
         if words.is_empty() {
             warnings.push("captions are enabled but no transcript words fall inside the clip; rendering without captions".into());
         } else {
             let fonts = stage_fonts(paths, store, &fonts_dir)?;
             let family = caption_font_family(clip.captions.script, &fonts);
             let custom = crate::asset_cmds::custom_presets(&paths.home, Some(&store.root));
-            let text = write_ass_with(&words, &clip.captions, &clip.canvas, family, &custom)?;
+            let text = crate::speaker_cmds::write_captions_ass(&words, colors.as_deref(), clip, family, &custom)?;
             let p = workdir.join("captions.ass");
             std::fs::write(&p, text).map_err(|e| io_err("write", &p, e))?;
             ass = Some(p);

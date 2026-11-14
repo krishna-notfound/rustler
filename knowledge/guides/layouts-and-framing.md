@@ -64,6 +64,34 @@ drives the crop's x position. Use it when the speaker moves or sits off-centre. 
 sheet afterwards: face inside the frame in every tile, no jumps. With two faces it follows the
 dominant one; if it swings between people, go back to a fixed `focus_x` or `blur-fit`.
 
+### Following the active speaker (podcasts and interviews: `crop track-speaker`)
+
+Two people in one wide shot, both needed, but the 9:16 crop only fits one? Let the crop follow
+whoever is talking. It needs the speaker analysis first, and a `center-crop` segment:
+
+```
+rustler analyze speakers src_X --num-speakers 2   # who speaks when (local models, a few seconds per minute of audio on CPU)
+rustler crop track-speaker clp_X                  # all center-crop segments
+rustler crop track-speaker clp_X --segment-id seg_Y
+```
+
+For each speaker turn it looks at the mouth movement (frame difference in the lower part of every
+face) and picks the face that moves while that speaker talks. The crop then pans to that face
+(about 0.2 s before the first word; turns shorter than 0.6 s such as "mm-hm" never move it).
+Read `segments[].turns[]` in the result: `face_id` counts faces left to right, `reason` says why:
+
+- `mouth-motion`: clear winner. Trust it.
+- `speaker-map`: motion was unclear in this turn, but this speaker's mouth moved in other turns on
+  that face.
+- `dominant`: ambiguous, the largest face was used. Look at the tiles for this turn. If it is wrong
+  (profile views, tiny faces, sunglasses), use `blur-fit`, or split the clip at the turn and set
+  `focus_x` per segment.
+- `only-face`: one face was ever visible; the same as `crop track-face`.
+
+Limits: it follows whoever the diarization says is talking, so check `analyze speakers` first
+(crosstalk is attributed to one speaker). Cutaways and graphics without a face hold the last
+position. Re-run it after trimming a clip: the crop path belongs to the segment's time range.
+
 ## 4. split-vertical for streamers (webcam top / gameplay bottom)
 
 ### Step 0 (fastest): let Rustler find the webcam

@@ -9,6 +9,8 @@ license-checked before it was added. Models live under `$RUSTLER_HOME/models/` (
 | YAMNet (ONNX export) | `audio.events` | Apache-2.0 | downloaded on first use |
 | PP-OCRv6 small det + rec (via RapidOCR) | `ocr.run` | Apache-2.0 | bundled inside the `rapidocr` wheel |
 | YuNet `face_detection_yunet_2023mar` | `faces.track` | MIT | downloaded on first use |
+| pyannote segmentation 3.0 (sherpa-onnx ONNX) | `speakers.diarize` | MIT | downloaded on first use |
+| WeSpeaker ResNet34 (VoxCeleb, sherpa-onnx ONNX) | `speakers.diarize` | Apache-2.0 | downloaded on first use |
 | faster-whisper models (`small` default) | `transcribe.run` | see the model card; not re-verified in this pass | Hugging Face cache (`HF_HOME`) |
 
 ## YAMNet (audio events: laughter, applause, cheering, music, speech, silence)
@@ -72,6 +74,49 @@ license-checked before it was added. Models live under `$RUSTLER_HOME/models/` (
   sha256 `8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4` (232,589 bytes; hash of the file
   currently installed on the dev machine, not enforced by the downloader).
 - Downloaded to `$RUSTLER_HOME/models/yunet/` on first use of `faces.track`.
+
+## Speaker diarization (sherpa-onnx + pyannote segmentation + WeSpeaker embeddings)
+
+Used by `speakers.diarize` (`analyze.speakers`). Runtime: `sherpa-onnx` 2.0.1 (PyPI wheels for
+Windows/Linux/macOS, **Apache-2.0**, https://github.com/k2-fsa/sherpa-onnx; it ships its own onnxruntime
+as `sherpa-onnx-core`). Models are downloaded into `$RUSTLER_HOME/models/diarization/` on first use and
+sha256-verified on every start. Checked 2026-11-15.
+
+| Role | Model | License | File and source | sha256 | Size |
+|---|---|---|---|---|---|
+| Segmentation | `pyannote/segmentation-3.0`, converted to ONNX by sherpa-onnx | **MIT** (Copyright 2022 CNRS) | `model.onnx` inside https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2 (stored as `pyannote-segmentation-3-0.onnx`) | archive `24615ee884c897d9d2ba09bb4d30da6bb1b15e685065962db5b02e76e4996488`; `model.onnx` `220ad67ca923bef2fa91f2390c786097bf305bceb5e261d4af67b38e938e1079` | 5,992,913 |
+| Embedding | WeSpeaker ResNet34, VoxCeleb, sherpa-onnx export with metadata | **Apache-2.0** | https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_resnet34.onnx | `5ef208a9da1453335308a6b6f4e6dfbd7e183a38b604de0a57664f45d257fe94` (matches the release's `checksum.txt`) | 26,534,365 |
+
+License evidence (read, not assumed):
+
+- The segmentation tarball contains a `LICENSE` file with the MIT text (sha256
+  `14d7016ad68e7394d6e6b78d96cc2ae431c905287b89674cfdf021e79e62b8ba`); the engine stores it next to the
+  model as `pyannote-segmentation-3-0.LICENSE`. Its README says the model is converted from
+  https://huggingface.co/pyannote/segmentation-3.0, whose card declares `license: mit`. The Hugging
+  Face repo asks for a contact form (access gate); the sherpa-onnx release asset needs no login.
+- The WeSpeaker model comes from the Hugging Face repo `Wespeaker/wespeaker-voxceleb-resnet34`
+  (`license: apache-2.0`, public, no gate; revision `ff1ac5bca8ef11e90662b879aa923979e0bd277b`, file
+  `voxceleb_resnet34.onnx`, sha256 `9fea6516d7ad6bf0a76c7689f5a49b65d330fad6dde96c91bb4435ffbfe056a1`).
+  The sherpa-onnx asset is the same network with sherpa metadata added (238 bytes larger), so its hash
+  differs. WeSpeaker code is Apache-2.0 (https://github.com/wenet-e2e/wespeaker).
+- Training-data caveat: pyannote segmentation 3.0 was trained on public diarization corpora (AISHELL,
+  AliMeeting, AMI, AVA-AVD, DIHARD, Ego4D, MSDWild, REPERE, VoxConverse) and WeSpeaker ResNet34 on
+  VoxCeleb; the weights' stated licenses above are what we rely on, the corpora's own terms were not
+  separately audited.
+- Rejected: NeMo TitaNet (`nvidia/speakerverification_en_titanet_large`) is CC-BY-4.0 (usable with
+  attribution, but needs a larger download for the same job); 3D-Speaker ERes2Net/CAM++ cards were not
+  verified as clean here. Not used.
+
+How it is used: the segmentation model finds up to 3 simultaneous speakers per 10 s window, the
+embedding model describes each speech piece, and sherpa-onnx's fast agglomerative clustering
+(cosine distance, threshold 0.5, or a fixed `num_speakers`) joins them into speakers. Minimum speech
+piece 0.3 s, minimum pause 0.5 s (shorter pauses between the same speaker are bridged).
+
+Verified on this machine (CPU): JFK sample alone = 1 speaker; JFK + FDR (Wikimedia Commons, public
+domain US federal recording) + JFK = 2 speakers with the changes at the right second. English-trained
+embeddings (VoxCeleb); other languages work less reliably and are untested here (Hindi/Hinglish not
+tested). The numpy `heuristic` fallback (labelled `"model": "heuristic"`) separates clearly different
+voices but can split one speaker in two.
 
 ## Adding a model
 

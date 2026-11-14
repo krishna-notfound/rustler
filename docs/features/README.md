@@ -41,7 +41,7 @@ Status reflects `docs/progress-log.md` (2026-11-15). "Not written" means no feat
 | f26 | — (not written) | Preview + draggable regions, crop keyframes, safe zones | 5 | f24, f15 | Planned |
 | f27 | — (not written) | Caption editor, asset browser, render queue, QC view | 5 | f24, f16, f23 | Planned |
 | f28 | — (not written) | CUDA/NVENC tuning, parallel renders, proxies | later | f08, f14 | Planned |
-| f29 | — (not written) | Diarization, active speaker framing, speaker captions | later | f06, f14 | Planned |
+| f29 | — (plan C4 in superpowers/plans) | Diarization, active speaker framing, speaker captions | later | f06, f14 | Built (branch, tests pass) |
 
 The 5-hour build (2026-11-15) delivered f01–f10, f11, f12, f14, f16, f17 and f24 in part; scope is in
 `docs/superpowers/plans/2026-11-15-slice1-first-real-clip.md` (section "5-HOUR SCOPE").

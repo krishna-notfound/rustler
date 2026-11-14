@@ -28,6 +28,10 @@ family's `OFL.txt` (not bundled in this repository):
   https://github.com/artbyjazi/autoclip
 - Face detector model YuNet `face_detection_yunet_2023mar.onnx` — MIT, (c) 2020 Shiqi Yu, fetched at runtime
   from opencv_zoo.
+- Speaker diarization (`speakers.diarize`): runtime sherpa-onnx (Apache-2.0, (c) the k2-fsa authors); models
+  pyannote segmentation 3.0 as converted by sherpa-onnx (MIT, (c) 2022 CNRS) and WeSpeaker ResNet34
+  (Apache-2.0), fetched at runtime into `~/.rustler/models/diarization/`. URLs, hashes and license evidence:
+  `engine/MODELS.md`.
 
 ## Fonts (SIL Open Font License 1.1, fetched from google/fonts at setup with OFL.txt)
 Anton, Poppins (ExtraBold, Bold), Noto Sans Devanagari.

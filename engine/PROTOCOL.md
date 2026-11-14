@@ -97,3 +97,36 @@ Line-delimited JSON-RPC 2.0 over the worker's stdin/stdout. Start with
   - Progress: `stage: "audio.events"` per 600 s chunk; `stage: "models.fetch"` while the model downloads.
 - `models.fetch` also accepts `{"yamnet": true}` -> adds `"yamnet"` to `fetched` and `"yamnet_path"`.
 - `engine.capabilities` `packages` now also lists `rapidocr` and `onnxruntime` when installed.
+- `speakers.diarize {"audio_path", "num_speakers": null|int, "min_speakers": null|int, "max_speakers": null|int, "model": "auto"|"sherpa"|"heuristic"}`
+  -> `{"segments": [{"start","end","speaker":"S1"}], "num_speakers": int, "duration": float, "model": "sherpa-onnx:pyannote-segmentation-3.0+wespeaker-resnet34"|"heuristic", "warnings"?: [..]}`
+  - `audio_path` is a PCM WAV (same rules as `audio.events`: the source's 16 kHz wav; other rates are
+    resampled, stereo mixed down). Segments are sorted by start, one speaker at a time, `start`/`end`
+    in seconds of the file. Speaker ids are `S1`, `S2`, ... in order of first appearance.
+  - `model: "auto"` (default) uses sherpa-onnx (Apache-2.0) offline speaker diarization with the
+    pyannote segmentation-3.0 ONNX (MIT) and the WeSpeaker ResNet34 embedding model (Apache-2.0); both
+    are downloaded to `$RUSTLER_HOME/models/diarization/` on first use and sha256-verified (`MODELS.md`).
+    When sherpa-onnx or the models are unavailable it falls back to a numpy heuristic (MFCC statistics
+    + average-linkage clustering) and says `"model": "heuristic"` with a `warnings` entry; the
+    heuristic is much less accurate (it can split one speaker in two). `"sherpa"` fails instead of
+    falling back (`media` / `dependency_missing`); `"heuristic"` never loads a model.
+  - `num_speakers` fixes the cluster count. Otherwise the count is estimated with a distance
+    threshold; `min_speakers` / `max_speakers` re-cluster with a fixed count when the estimate lies
+    outside the range. All three are integers in 1..64 (else `validation`).
+  - A file shorter than 0.5 s or without speech returns `segments: []`.
+  - Progress: `stage: "speakers.diarize"`, `pct` from the chunk callback; `stage: "models.fetch"` while
+    the models download. Speed on this laptop (CPU): about 3 s for 29 s of audio once the models are cached.
+- `speakers.active {"video_path", "start": 0.0, "end": null|float, "fps": 5.0}`
+  -> `{"width", "height", "fps", "samples": [{"t", "faces": [{"x","y","w","h","score","id","motion","speak"}]}], "tracks": [{"id","samples","mean_x","mean_area","motion_p10","motion_p95","static"}]}`
+  - Same sampling and face boxes as `faces.track` (YuNet, normalized 0..1, `t` = source time), `fps` in
+    (0, 15]. Per sample three consecutive frames (about 0.05 s apart) are read; `motion` is the mean
+    absolute grey difference (0..1) inside the lower 45 % of each face box (mouth and chin, middle 70 %
+    of the width), averaged over the burst.
+  - `id` is a stable face track id (greedy nearest-centre matching, a face may be missing for up to
+    3 s), numbered left to right by mean x. `speak` (0..1) is `motion` normalized within the face's own
+    track ((motion - p10) / (p95 - p10), clipped), so a quiet face and an animated face are comparable.
+    A track whose p95 - p10 spread is below 0.008 is `static` (a photo, a poster, someone who never
+    speaks) and gets `speak: 0`.
+  - Errors: `validation` (missing params, video not found, bad range), `media` (cannot open video,
+    cannot load the YuNet model). Progress: `stage: "speakers.active"`.
+- `models.fetch` also accepts `{"diarization": true}` -> adds `"diarization"` to `fetched` and `"diarization_dir"`.
+- `engine.capabilities` `packages` now also lists `sherpa_onnx` when installed.
