@@ -2301,7 +2301,10 @@ dependencies = [
 name = "rustler-commands"
 version = "0.1.0"
 dependencies = [
+ "ab_glyph",
  "chrono",
+ "image",
+ "imageproc",
  "rustler-captions",
  "rustler-core",
  "rustler-engine-bridge",

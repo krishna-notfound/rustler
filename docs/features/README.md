@@ -34,7 +34,7 @@ Status reflects `docs/progress-log.md` (2026-11-15). "Not written" means no feat
 | f19 | — (not written) | Sentence snap, silence trough, fillers/pauses, TimeMap | 3 | f06, f12 | Planned |
 | f20 | — (not written) | Signals, LLM two-pass candidates, rerank, judge | 4 | f07, f13, f19 | Planned |
 | f21 | — (not written) | Caption/face/hook checks, vision review, fix hints | 4 | f09, f13, f16 | Planned |
-| f22 | — (not written) | Brief schema + compliance, variants, export reports | 4 | f21 | Planned |
+| f22 | — (plan C1 in superpowers/plans) | Brief schema + compliance, variants, batch render/export, export reports | 4 | f21 | Built (branch, tests pass) |
 | f23 | — (not written) | Fonts/presets/layouts/SFX/music with license manifest | 4 | f01, f16, f17 | Planned |
 | f24 | `f24_gui_shell_and_live_sync.md` | Simple local web GUI (`rustler gui`); Tauri shell deferred to f25–f27 | 5 | f02, f03 | Verified |
 | f25 | — (not written) | Multi-track timeline, trim/split/ripple, word snap | 5 | f24, f12 | Planned |
