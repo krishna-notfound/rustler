@@ -21,6 +21,7 @@ strsim.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
+unicode-normalization = "0.1.26"
 
 [dev-dependencies]
 tempfile.workspace = true
