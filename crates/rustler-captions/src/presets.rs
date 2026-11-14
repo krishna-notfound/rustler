@@ -62,8 +62,8 @@ pub const PRESET_TABLE: &[Preset] = &[
     },
     Preset {
         name: "clean-white",
-        description: "Montserrat ExtraBold white text, soft black outline and shadow; the spoken word turns gold.",
-        font_family: "Montserrat ExtraBold",
+        description: "Poppins ExtraBold white text, soft black outline and shadow; the spoken word turns gold.",
+        font_family: "Poppins ExtraBold",
         size_factor: 0.060,
         primary: 0x00FF_FFFF,
         outline_colour: 0x0000_0000,
@@ -79,8 +79,8 @@ pub const PRESET_TABLE: &[Preset] = &[
     },
     Preset {
         name: "boxed-highlight",
-        description: "Montserrat ExtraBold white text; the spoken word sits on an opaque violet box.",
-        font_family: "Montserrat ExtraBold",
+        description: "Poppins ExtraBold white text; the spoken word sits on an opaque violet box.",
+        font_family: "Poppins ExtraBold",
         size_factor: 0.058,
         primary: 0x00FF_FFFF,
         outline_colour: 0x0000_0000,

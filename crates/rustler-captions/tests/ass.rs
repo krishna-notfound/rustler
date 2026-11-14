@@ -108,7 +108,7 @@ fn presets_table_matches_const_and_list() {
 #[test]
 fn clean_white_recolors_only_active_word() {
     let ass = write_ass(&six(), &track("clean-white"), &Canvas::default(), "").unwrap();
-    assert!(ass.contains("Style: Default,Montserrat ExtraBold,65,"));
+    assert!(ass.contains("Style: Default,Poppins ExtraBold,65,"));
     let d = dialogues(&ass);
     assert_eq!(d.len(), 6);
     assert!(d[0].contains(r"{\c&H0000D7FF&}hello{\r\blur1.5}"), "{}", d[0]);
@@ -117,7 +117,7 @@ fn clean_white_recolors_only_active_word() {
 #[test]
 fn boxed_highlight_has_box_layer_behind_text() {
     let ass = write_ass(&six(), &track("boxed-highlight"), &Canvas::default(), "").unwrap();
-    assert!(ass.contains("Style: Box,Montserrat ExtraBold,"));
+    assert!(ass.contains("Style: Box,Poppins ExtraBold,"));
     let d = dialogues(&ass);
     assert_eq!(d.len(), 12);
     assert!(d[0].starts_with("Dialogue: 0,") && d[0].contains(",Box,"), "{}", d[0]);
@@ -169,34 +169,16 @@ fn render_preset_frames_with_real_ffmpeg() {
     std::fs::create_dir_all(&fonts).unwrap();
     let src = dir.join("src");
     std::fs::create_dir_all(&src).unwrap();
-    let _ = std::fs::remove_file(fonts.join("Montserrat[wght].ttf")); // libass only sees its Thin default instance
     for (dest, url) in [
         (fonts.join("Anton-Regular.ttf"), "https://github.com/google/fonts/raw/main/ofl/anton/Anton-Regular.ttf"),
-        (src.join("Montserrat-VF.ttf"), "https://github.com/google/fonts/raw/main/ofl/montserrat/Montserrat%5Bwght%5D.ttf"),
+        (fonts.join("Poppins-ExtraBold.ttf"), "https://github.com/google/fonts/raw/main/ofl/poppins/Poppins-ExtraBold.ttf"),
     ] {
         if !dest.exists() || std::fs::metadata(&dest).unwrap().len() < 10_000 {
             let st = Command::new("curl").args(["-L", "-sS", "-f", "-o"]).arg(&dest).arg(url).status().expect("curl");
             assert!(st.success(), "font download failed: {url}");
         }
     }
-    // libass (Windows/DirectWrite) does not expose variable-font weights: pin a static
-    // "Montserrat ExtraBold" instance (that family name is what the presets reference).
-    let static_xb = fonts.join("Montserrat-ExtraBold.ttf");
-    if !static_xb.exists() {
-        let uvx = ["uvx.exe", "uvx"].iter().map(|n| rhome.join("bin").join(n)).find(|p| p.exists());
-        let Some(uvx) = uvx else {
-            eprintln!("SKIP: no uvx in {} to instantiate Montserrat ExtraBold", rhome.join("bin").display());
-            return;
-        };
-        let st = Command::new(uvx)
-            .args(["--from", "fonttools", "fonttools", "varLib.instancer"])
-            .arg(src.join("Montserrat-VF.ttf"))
-            .args(["wght=800", "--update-name-table", "-o"])
-            .arg(&static_xb)
-            .status()
-            .unwrap();
-        assert!(st.success(), "fonttools instancer failed");
-    }
+    let _ = &src;
 
     let words: Vec<CaptionWord> = [("Stop", 0.0, 0.4), ("scrolling", 0.5, 1.0), ("right", 1.1, 1.4), ("now", 1.5, 1.9)]
         .iter()
