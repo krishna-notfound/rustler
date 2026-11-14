@@ -72,3 +72,4 @@
   `findings/` → `docs/research/`, `features/` → `docs/features/`, `context/` → `docs/context/`; update all
   path references + CLAUDE.md. `knowledge/` stays at repo root (it's product content embedded in the binary,
   not project docs) but is indexed from `docs/README.md`.
+- Merged engine bridge (Rust<->Python JSON-RPC; 11 tests vs real engine; process-tree kill on cancel).
