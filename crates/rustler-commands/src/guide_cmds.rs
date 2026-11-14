@@ -13,7 +13,7 @@ use std::collections::BTreeSet;
 /// Command groups that exist; used to recognize command names in guide text.
 const COMMAND_GROUPS: &[&str] = &[
     "setup", "doctor", "project", "source", "analyze", "transcript", "see", "clip", "render",
-    "qc", "export", "guide", "prompt", "commands",
+    "qc", "export", "guide", "prompt", "edit", "history", "crop", "audio", "models",
 ];
 
 /// Things that look like `group.action` but are file names.
@@ -125,19 +125,22 @@ pub(crate) fn related_commands(markdown: &str) -> Vec<String> {
         if i % 2 == 0 {
             continue; // outside backticks
         }
-        let words: Vec<&str> = span.split_whitespace().collect();
-        if words.first() == Some(&"rustler") {
-            if let (Some(g), Some(a)) = (words.get(1), words.get(2)) {
-                if let Some(name) = command_name(g, a) {
-                    found.insert(name);
+        // Fenced blocks are one span with many lines; look at each line.
+        for line in span.lines() {
+            let words: Vec<&str> = line.split_whitespace().collect();
+            if words.first() == Some(&"rustler") {
+                if let (Some(g), Some(a)) = (words.get(1), words.get(2)) {
+                    if let Some(name) = command_name(g, a) {
+                        found.insert(name);
+                    }
                 }
             }
-        }
-        for w in &words {
-            let w = w.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '.' && c != '_');
-            if let Some((g, a)) = w.split_once('.') {
-                if let Some(name) = command_name(g, a) {
-                    found.insert(name);
+            for w in &words {
+                let w = w.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '.' && c != '_');
+                if let Some((g, a)) = w.split_once('.') {
+                    if let Some(name) = command_name(g, a) {
+                        found.insert(name);
+                    }
                 }
             }
         }
@@ -146,6 +149,8 @@ pub(crate) fn related_commands(markdown: &str) -> Vec<String> {
 }
 
 fn command_name(group: &str, action: &str) -> Option<String> {
+    let action = action.replace('-', "_");
+    let action = action.as_str();
     let ok_ident = |s: &str| {
         !s.is_empty() && s.chars().all(|c| c.is_ascii_lowercase() || c == '_')
     };
@@ -332,10 +337,10 @@ mod tests {
 
     #[test]
     fn related_commands_extracts_from_backticks_only() {
-        let md = "Use `clip.create` and `rustler render run --clip x`; also `project.json` (a file),\nand plain source.import outside backticks, `see.tiles`.";
+        let md = "Use `clip.create` and `rustler render run --clip x`; also `project.json` (a file),\nand plain source.import outside backticks, `see.tiles`, `rustler clip set-layout x`.";
         assert_eq!(
             related_commands(md),
-            vec!["clip.create", "render.run", "see.tiles"]
+            vec!["clip.create", "clip.set_layout", "render.run", "see.tiles"]
         );
     }
 
