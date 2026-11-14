@@ -16,18 +16,18 @@ context/
   code-standards.md            Implementation rules and definition of done
   ai-workflow-rules.md         How work is scoped, split, parallelised, verified
   progress-tracker.md          Current state, open questions, decisions, deferred work
-features/
+docs/features/
   README.md                    Feature index + status
-  _feature-template.md         Copy to features/fNN_<about_it>.md for each feature
+  _feature-template.md         Copy to docs/features/fNN_<about_it>.md for each feature
 ```
 
 ## How to use for a new project
 
-1. Unzip into the new repo root (you get `CLAUDE.md`, `context/`, `features/`).
-2. Replace every `{{PLACEHOLDER}}` in `CLAUDE.md` and `context/*.md`. Delete sections that do not apply.
-3. Keep `context/AGENTS.md` only if the framework moves fast; otherwise delete its warning block.
-4. Create one `features/fNN_<about_it>.md` per feature **before** writing any code.
+1. Unzip into the new repo root (you get `CLAUDE.md`, `context/`, `docs/features/`).
+2. Replace every `{{PLACEHOLDER}}` in `CLAUDE.md` and `docs/context/*.md`. Delete sections that do not apply.
+3. Keep `docs/context/AGENTS.md` only if the framework moves fast; otherwise delete its warning block.
+4. Create one `docs/features/fNN_<about_it>.md` per feature **before** writing any code.
 5. Start every Claude Code session normally — `CLAUDE.md` tells it what to read.
-6. Keep `context/progress-tracker.md` truthful after every meaningful change.
+6. Keep `docs/context/progress-tracker.md` truthful after every meaningful change.
 
 Search for `{{` to find unfilled placeholders.

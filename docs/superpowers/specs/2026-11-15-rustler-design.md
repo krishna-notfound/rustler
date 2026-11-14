@@ -1,8 +1,8 @@
 # Rustler — Agent-Native Clipping & Editing Studio — Design
 
 Status: **APPROVED by user 2026-11-15** · Date: 2026-11-15
-Inputs: `docs/00-vision-and-requirements.md` (user intent, confirmed decisions), `findings/00-comparison-matrix.md`
-(research synthesis; every "COPY/IDEA" source below is detailed there), `findings/<repo>.md`.
+Inputs: `docs/00-vision-and-requirements.md` (user intent, confirmed decisions), `docs/research/00-comparison-matrix.md`
+(research synthesis; every "COPY/IDEA" source below is detailed there), `docs/research/<repo>.md`.
 
 ---
 
@@ -114,7 +114,7 @@ rustler/
   apps/gui/                  Tauri app (Rust backend reuses crates) + React/TypeScript/Vite frontend
   assets/                    asset manifests (fonts, presets, layouts, sfx, music) — binaries fetched by setup
   skills/rustler/            SKILL.md + references for agents; AGENTS.md for non-Claude agents
-  docs/ features/ findings/ repos/ (research, read-only)
+  docs/ docs/features/ docs/research/ repos/ (research, read-only)
 ```
 
 ### 5.2 Command registry & CLI contract
@@ -230,7 +230,7 @@ Per-project permissions (`project.json → permissions`: filesystem roots, netwo
 max spend); MCP loopback HTTP hardening (bearer token, Host/Origin checks, body cap); destructive/costly commands
 annotated and require `--yes`/confirmation flag; no auto-publish.
 
-## 6. Features (build order) — detailed specs go in `features/fNN_*.md`
+## 6. Features (build order) — detailed specs go in `docs/features/fNN_*.md`
 
 **Slice 1 — "first real clip"** (agent goes from a video file/URL to a checked 9:16 clip via CLI):
 F01 workspace & bootstrap · F02 command registry & CLI contract · F03 project store & timeline model ·

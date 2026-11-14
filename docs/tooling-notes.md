@@ -12,7 +12,7 @@
   Source-code analysis uses normal repo reading.
 
 ## Superpowers skills
-- `superpowers:brainstorming` → turns findings into feature design → `features/`.
+- `superpowers:brainstorming` → turns findings into feature design → `docs/features/`.
 - `superpowers:writing-plans` → implementation plans after specs approved.
 
 ## Model tiering (user rule)

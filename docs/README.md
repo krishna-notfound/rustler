@@ -1,37 +1,43 @@
 # Docs Index
 
-Read this first when resuming work. Keep it current.
+**All project documentation lives in `docs/` and is kept updated after every merge** (user rule).
+Read this file first when resuming work, then `progress-log.md`.
 
 | File | Purpose |
 |---|---|
-| `00-vision-and-requirements.md` | User's vision + hard requirements (source of truth for intent) |
-| `research-methodology.md` | How every repo is evaluated; findings file structure; scoring scale |
-| `tooling-notes.md` | Tools/plugins/models used in this project and their status (rea, superpowers, model tiering) |
-| `progress-log.md` | Dated log of what was done, decisions, open questions |
-| `agent-brief.md` | Rules every implementation agent reads first (toolchain, ownership, commits) |
+| `00-vision-and-requirements.md` | User's vision + every confirmed decision (source of truth for intent) |
+| `progress-log.md` | Dated log: what was built/merged, test results, problems, decisions, open questions |
+| `superpowers/specs/2026-11-15-rustler-design.md` | **System design** (architecture, contracts, feature slices) — approved |
 | `superpowers/plans/2026-11-15-slice1-first-real-clip.md` | **Implementation plan** (Slice 1 + 5-hour scope) |
-| `../knowledge/` | Agent knowledge book (guides + MCP prompts) shipped inside the binary |
-| `superpowers/specs/2026-11-15-rustler-design.md` | **System design** (architecture, contracts, feature slices) |
-| `../features/README.md` | Feature index f01–f29 with slices, dependencies, status |
-| `../findings/00-comparison-matrix.md` | Research synthesis: best source per capability, choices, gaps, assets |
+| `agent-brief.md` | Rules every implementation agent reads first (toolchain, ownership, commits) |
+| `features/README.md` | Feature index f01–f29 with slices, dependencies, status |
+| `research/00-comparison-matrix.md` | Research synthesis: best source per capability, choices, gaps, assets |
+| `research/00-license-and-dependency-inventory.md` | Licenses of the 7 studied repos and their deps/assets |
+| `research/<repo>.md` | One deep research report per studied repo |
+| `research-methodology.md` | How repos were evaluated; scoring scale |
+| `tooling-notes.md` | Plugins/tools/models used to build this (rea, superpowers, model tiering) |
+| `context/` | Project context template files (CLAUDE.md read order) |
+| `../knowledge/` | Agent knowledge book (13 guides + 8 MCP prompts) — product content embedded in the binary |
 
-## Workspace layout
+## Repository layout
 ```
-repos/      cloned upstream repos (read-only reference, never edited)
-findings/   one research report per repo + comparison matrix + license inventory
-crates/     Rust workspace (core, registry, tools, engine-bridge, media, captions, commands, cli, mcp, gui, knowledge)
-engine/     Python engine (faster-whisper, scenes, faces, Hinglish translit) run by the Rust core
-knowledge/  agent guides + MCP prompts embedded in the binary
-features/   feature specs (fNN_*.md) produced from brainstorming
-docs/       vision, methodology, decisions, progress (this folder)
-context/    project context template files (to be filled once architecture is decided)
+docs/        all project documentation (this folder)
+  research/    per-repo research reports, comparison matrix, license inventory
+  features/    feature index + per-feature specs (fNN_*.md)
+  context/     project context files
+  superpowers/ design spec + implementation plans
+crates/      Rust workspace: core, registry, tools, engine-bridge, media, captions, commands,
+             cli (`rustler` binary), mcp, gui, knowledge
+engine/      Python engine (faster-whisper, scenes, faces, Hinglish translit), driven by the Rust core
+knowledge/   agent guides + MCP prompts embedded in the binary (`rustler guide …`, MCP prompts/resources)
+repos/       cloned upstream repos studied in research (gitignored, read-only)
 ```
 
 ## Phase status
 | Phase | Status |
 |---|---|
-| 1 Research | done for 7 repos — see `findings/00-comparison-matrix.md`; gap research pending |
+| 1 Research | done for 7 repos — `research/00-comparison-matrix.md` |
 | 2 Architecture | approved — `superpowers/specs/2026-11-15-rustler-design.md` |
-| 3 Specs (features/) | design approved; f01–f09 detailed in Slice 1 plan |
-| 4 Implementation plan | approved by user; executing (Slice 1 + 5-hour scope) |
+| 3 Specs | design approved; f01–f09 detailed in the Slice 1 plan |
+| 4 Implementation plan | approved; executing (Slice 1 + 5-hour scope) |
 | 5+ Implementation | IN PROGRESS — 5-hour autonomous build; see `progress-log.md` |
