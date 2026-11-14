@@ -157,3 +157,4 @@ Give Claude Code the skill: copy `skills\rustler` to `%USERPROFILE%\.claude\skil
   (OCR, audio events, faces timeline, analyze deep) [Sonnet].
 - Queued: B1 audio post + transitions/effects, B3 QC v2 + fix.suggest, B4 full GUI editor, C1 brief/
   variants/batch, C2 asset library, C3 project pack/list, C4 speakers (optional).
+- Merged A2 layout region system: layout.show/add_region/edit_region(+nudge)/remove_region/reorder/save_preset/apply_preset/delete_preset/presets/detect_webcam/from_frame_boxes. detect-webcam found a corner face 4/4 samples and produced a working split layout (preview checked visually). Guide layouts-and-framing.md updated.
