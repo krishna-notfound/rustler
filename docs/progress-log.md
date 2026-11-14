@@ -147,3 +147,13 @@ Give Claude Code the skill: copy `skills\rustler` to `%USERPROFILE%\.claude\skil
 - MCP checked over stdio like an agent: 55 tools, 8 prompts, 14 resources; `prompts/get make_viral_clips` renders.
 - YouTube scan-first verified live on a 20-min TED talk: `source info` (10 chapters, 8 heatmap peaks), `fetch-transcript` (3,170 words, no download), `import --sections 2:00-2:40` (40 s downloaded, offset 120 s kept).
 - GUI verified in a real browser on the e2e project: Project page, Renders page plays the NVENC render, QC table (12 pass, -14.3 LUFS), contact sheet; no console errors. Known nit: reloading with a `#view` hash lands on Project.
+
+## 2026-11-15 (02:40) — "complete everything" phase
+- Stopped early at ~1.5 h of the 5 h window (user called it out) → resumed. New goal from user: complete
+  CLI for every tool, then full GUI. Plan: `docs/superpowers/plans/2026-11-15-complete-rustler.md`.
+- Release build was killed by low memory → max 4 parallel agents, CARGO_BUILD_JOBS=2.
+- Running: A1 render quality (2-pass loudnorm) + text overlays [Opus], A2 layout region system +
+  detect-webcam [Sonnet], A3 highlights signals/candidates + edit.refine [Sonnet], B2 understanding v2
+  (OCR, audio events, faces timeline, analyze deep) [Sonnet].
+- Queued: B1 audio post + transitions/effects, B3 QC v2 + fix.suggest, B4 full GUI editor, C1 brief/
+  variants/batch, C2 asset library, C3 project pack/list, C4 speakers (optional).
