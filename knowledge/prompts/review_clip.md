@@ -15,7 +15,8 @@ goal is a clip that earns, not a clip that passes. Guides: `quality-checklist`, 
 ## 1. Watch
 1. `rustler clip show {{clip_id}}` → segments, layout, captions, renders. If there is no render yet,
    `rustler render run {{clip_id}}`.
-2. `rustler qc run {{clip_id}}` → read every check.
+2. `rustler qc run {{clip_id}}` → read every check (face checks: `caption_over_face`, `face_visible_ratio`,
+   `face_cut_off`; and `hook_text_present`, `duration_for_platform`). `rustler fix suggest {{clip_id}}` lists the fixes.
 3. Open the QC contact sheet image. Also check `render preview-frame` at 0.5 s and at the last second.
 4. Read exactly what is said: `rustler transcript get <source_id> --start <seg start> --end <seg end>`
    for each segment.

@@ -21,6 +21,6 @@ pub use encoders::{EncoderChoice, pick_encoder};
 pub use frames::{frame, preview};
 pub use probe::probe;
 pub use proxy::{extract_audio_wav, make_proxy};
-pub use qc::run_qc;
+pub use qc::{run_qc, run_qc_with};
 pub use render::{RenderReport, preview_frame, render, render_with_report};
 pub use tiles::{TileLabel, TileSpec, tiles};
