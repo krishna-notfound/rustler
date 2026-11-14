@@ -492,3 +492,18 @@ Checks (name → rule → status):
 - **Model tiering (user rule):** Wave 0 + Task 9 + Task 12 e2e = Opus; Tasks 3–8, 10, 11 = Sonnet; doc/feature-file writing and mechanical fixes = Haiku. Each implementer gets: this plan's Global Constraints + Review Focus + their task block + the Interfaces of the tasks they consume.
 - **Parallelism:** Wave 1 Tasks 3–8 run concurrently (6 agents). Wave 2 Tasks 9, 10a, 10b, 11 run concurrently (4 agents) after Wave 1 is green. A reviewer agent checks each task against its tests and the Global Constraints before the next wave starts.
 - **Deferred to Slice 2 (not in this plan):** MCP server (f10), job registry commands, provider endpoints (STT endpoint, vision describe), OCR, faces.
+
+---
+
+## 5-HOUR SCOPE (user constraint, 2026-11-15) — overrides the slice ordering above
+
+User: "keep GUI simple but CLI strong", **5 hours max**. Delivered in this session:
+1. Slice 1 as planned (Tasks 0–12), tests kept but `#[ignore]` live/network tests run once only.
+2. Pulled forward, strong-CLI extras (Wave 2b, parallel with Wave 2):
+   - **MCP server** `rustler mcp serve` (stdio) generated from the registry (tools/list from CommandSpec; images returned as image content).
+   - **Edit ops**: `edit.trim {clip_id, segment_id, start_delta?, end_delta?}`, `edit.split {clip_id, out_t}`, `edit.delete_segment`, `edit.remove_pauses {clip_id, min_gap: 0.5}` (splits segments at word gaps), `history.undo` (snapshot-based: `history/<rev>.clip.json`).
+   - **Face reframe v0**: engine `faces.track` (OpenCV YuNet at 4 fps on proxy → per-sample box) + Rust smoothing (median + One-Euro + dead zone) → `center-crop` focus driven by `sendcmd` x-keyframes; command `crop.track_face {clip_id, segment_id?}`.
+   - **Caption presets ×4**: `bold-karaoke`, `clean-white`, `boxed-highlight`, `hormozi-pop` (data-driven in presets.rs) + `caption.list_styles`.
+   - **Music bed**: `audio.add_music {clip_id, path, volume_db: -18, duck: true}` (sidechaincompress threshold 0.08 ratio 5 attack 100 release 1000, amix normalize=0, fades).
+3. **Simple GUI = local web page, not Tauri** (Claude's call for the time budget): `rustler gui` starts an axum server on 127.0.0.1 (random port, token in URL) serving one static page: projects → sources (transcript, tiles) → clips (segments, layout, captions) → renders (video player, QC report + contact sheet) + buttons that call registry commands through `POST /api/run {command, input}`. Same registry = same capabilities. Tauri Premiere-style editor stays in the backlog (Slice 5).
+Deferred: provider layer, highlight helpers, brief/variants, asset library, transitions/effects, diarization, Tauri editor.

@@ -94,3 +94,7 @@ renders, checks quality, fixes problems, and delivers finished short-form clips.
   Grok bot — each on **its own machine**. Toolkit is installed and run where the agent lives.
   Claude's call: delivery is the agent's job — the toolkit writes finished clips + a per-clip report
   (score, brief check, notes) to the project's `exports/` folder; upload/delivery adapters deferred.
+- 2026-11-15: **No AI API integrations.** Rustler calls no LLM/vision/TTS/STT APIs. The agent using it
+  (Muse, Claude Code, Antigravity, …) does all the thinking — choosing moments, hooks, styles, judging
+  quality by looking at frames/contact sheets. Rustler = local tools only (FFmpeg, yt-dlp, local
+  faster-whisper, OpenCV). Provider layer (f13) and LLM-based helpers are dropped from scope.

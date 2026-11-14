@@ -46,3 +46,8 @@
   then download only chosen sections (`source.info`, `source.fetch_transcript`, `source.import --sections`).
 - VS 2022 Build Tools MSVC 14.44 present (linker for Rust).
 - Waiting: user review of the plan before implementation.
+- 2026-11-15: User set a **5-hour autonomous build window** (user asleep, no questions). Scope = plan's
+  "5-HOUR SCOPE" section. Defaults decided: public-domain/CC test media, local installs in ~/.rustler,
+  priority CLI pipeline → MCP → edit ops → face reframe → caption styles → music → simple web GUI.
+- Private GitHub repo created: github.com/krishna-notfound/rustler (remote `origin`, branch master).
+  `repos/` (third-party clones) is gitignored and never pushed.
