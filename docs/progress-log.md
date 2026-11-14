@@ -1,5 +1,55 @@
 # Progress Log
 
+## ★ STATUS AT END OF THE 5-HOUR AUTONOMOUS BUILD (2026-11-15) — read this first
+
+**Working now (tested for real on this laptop):**
+- `rustler setup` / `rustler doctor` → installs/detects FFmpeg (libass), yt-dlp, uv + Python engine (CUDA),
+  whisper `small`, fonts into `~/.rustler`; doctor = ready, NVENC/QSV/libx264.
+- Full clip pipeline through the CLI (e2e passed): project → import (file or URL) → analyze quick
+  (transcript + units, scenes, loudness/silences, highlight signals) → transcript get/search → see
+  frame/tiles/preview → clip create by **unit ids + --expect-text** → layouts (center-crop, blur-fit,
+  split-vertical) → 4 caption styles (bold-karaoke, clean-white, boxed-highlight, hormozi-pop) + SRT →
+  music bed with ducking → face-tracked crop (`crop track-face`) → render (one NVENC encode) → QC (12
+  checks + contact sheet) → export (mp4 + report.json + srt).
+- YouTube **scan-first**: `source info` (chapters, most-replayed peaks), `source fetch-transcript`
+  (captions without download), `source import --sections` (downloads only chosen minutes). Verified on a
+  20-min TED talk.
+- Edit commands with undo: trim, split, delete/move segment, set-range, remove-pauses, remove-words,
+  history list/undo/restore.
+- Hinglish: Devanagari → Latin romanization ("क्या scene है" → "kya scene hai").
+- **MCP server** `rustler mcp serve`: 55 tools, 8 workflow prompts, 14 resources (guides, commands,
+  project state); frames come back as images for vision agents.
+- **Knowledge book**: 13 guides + 8 prompts (`rustler guide list|show|search`, `rustler prompt list|show`).
+- **Simple GUI** `rustler gui`: projects, sources, clips, renders (player + QC + contact sheet), activity,
+  generic command runner. Verified in a browser.
+- Agent onboarding: `skills/rustler/SKILL.md` (Claude Code), `skills/rustler/AGENTS.md` (others),
+  `docs/agent-integration.md`.
+- Tests: last full Rust run 308 passed / 1 failed (an outdated test, since replaced; CLI suite then 26/26); Python engine 85 passed. Fixes made after that run were re-tested per crate only. Run `cargo test --workspace` to re-confirm.
+- Binary: `target\debug\rustler.exe` (debug build). The release build was stopped by Claude Code because the laptop ran low on memory — run `cargo build --release -p rustler-cli` when the machine is free. The debug binary predates the last knowledge-book wording fix (rebuild to embed it).
+
+**How to try it (PowerShell):**
+```
+cd C:\Users\krishna\Desktop\rustler
+.\target\debug\rustler.exe doctor
+.\target\debug\rustler.exe help
+.\target\debug\rustler.exe guide show start-here
+.\target\debug\rustler.exe --project $env:TEMP\rustler-e2e gui     # opens the demo project in the browser
+```
+Demo clip from the e2e run: `%TEMP%\rustler-e2e\exports\jfk-hook.mp4`.
+Give Claude Code the skill: copy `skills\rustler` to `%USERPROFILE%\.claude\skills\rustler`, then add MCP:
+`claude mcp add rustler -- <path>\rustler.exe mcp serve`.
+
+**Known gaps / next steps (in order):**
+1. Two-pass loudnorm (single pass lands ~-15.9 LUFS on half-silent clips; QC warns).
+2. Live test of `crop track-face` on a real talking-head video (unit-tested; engine path tested separately).
+3. Linux run (cloud agents like Muse) — code paths exist, not executed on Linux yet.
+4. Not built (deferred by the 5-hour scope): Tauri Premiere-style editor, highlight helpers, briefs/variants,
+   asset library, transitions/effects, SFX, speakers/diarization. Multi-region layouts exist via presets +
+   layout params; free-form region editing commands are not built yet.
+5. GitHub release binaries + one-line installer for agents on other machines.
+
+---
+
 ## 2026-11-15
 - Cloned 7 repos (shallow) into `repos/`: hypit (Apache-2.0, TS), openshorts (MIT, Py),
   supoclip (MIT, Py+TS), autoclip (MIT, Py), ViralCutter (MIT, Py), bridgeclip (MIT, Py+TS),
