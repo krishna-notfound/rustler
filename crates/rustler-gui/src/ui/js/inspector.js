@@ -310,7 +310,12 @@
       var spec = R.spec(c);
       var fixed = {};
       if (R.hasProp(c, 'clip_id')) fixed.clip_id = E.clipId;
-      var f = R.schemaForm(c, { fixed: fixed, submit: c.split('.')[1].replace(/_/g, ' '), compact: true,
+      // time fields default to the playhead (start) and +3 s (end)
+      var initial = {};
+      if (R.hasProp(c, 'start') && R.schemaKind(c, 'start') && /number/.test(R.schemaKind(c, 'start').kind)) initial.start = R.round(E.t, 2);
+      if (R.hasProp(c, 'end') && R.schemaKind(c, 'end') && /number/.test(R.schemaKind(c, 'end').kind) && /add|create/.test(c)) initial.end = R.round(Math.min(E.duration, E.t + 3), 2);
+      if (!/add|create/.test(c)) initial = {};
+      var f = R.schemaForm(c, { fixed: fixed, initial: initial, submit: c.split('.')[1].replace(/_/g, ' '), compact: true,
         run: function (cmd, input) { return (spec.annotations && spec.annotations.read_only) ? R.run(cmd, input) : E.mutate(cmd, input, { toast: cmd + ' done' }); },
         done: function (d) { if (o.onResult) o.onResult(c, d); } });
       el.appendChild(h('details', { class: 'cmdbox', open: o.open && o.open.indexOf(c) >= 0 }, h('summary', null, h('span', { class: 'mono' }, c), h('span', { class: 'muted small' }, spec.summary || '')), f.el));
@@ -320,7 +325,7 @@
   function overlaysTab(el) {
     var cmds = R.cmdsWithPrefix('overlay.');
     if (!cmds.length) { el.appendChild(R.na('overlay.add_text')); return; }
-    genericPanel(el, cmds, 'overlay.list', {
+    genericPanel(el, cmds.filter(function (c) { return c !== 'overlay.edit' && c !== 'overlay.remove'; }), 'overlay.list', {
       listTitle: 'Overlays', listKey: 'overlays', open: ['overlay.add_text'],
       item: function (o) {
         var tm = R.overlayTimes(o);
@@ -330,6 +335,13 @@
           h('span', { class: 'muted small mono' }, tm ? R.fmt(tm.start) + '–' + R.fmt(tm.end) : ''),
           h('span', { class: 'grow' }),
           tm ? h('button', { class: 'small ghost', type: 'button', onclick: function () { R.monitor.seek(tm.start + 0.001); } }, 'go') : null,
+          R.has('overlay.edit') ? h('button', { class: 'small ghost', type: 'button', onclick: function () {
+            var init = {}; ['text', 'start', 'end', 'style', 'position_y', 'font_size_factor', 'box'].forEach(function (k) { if (o[k] !== undefined && o[k] !== null) init[k] = o[k]; });
+            var close = null;
+            var f = R.schemaForm('overlay.edit', { fixed: { clip_id: E.clipId, overlay_id: id }, initial: init, submit: 'Save overlay',
+              run: function (c, input) { return E.mutate(c, input, { toast: 'Overlay saved' }); }, done: function () { if (close) close(); } });
+            close = R.modal('Edit overlay ' + id, f.el);
+          } }, 'edit') : null,
           removeCmd ? h('button', { class: 'small ghost', type: 'button', title: 'remove', onclick: function () {
             var key = R.hasProp(removeCmd, 'overlay_id') ? 'overlay_id' : 'id';
             var input = {}; input[key] = id;

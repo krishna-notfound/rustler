@@ -6,7 +6,6 @@
   var R = window.R, h = R.h;
   var TL = R.timeline = {};
   var E = null, scroll = null, inner = null, ruler = null, playhead = null, tracks = {}, zoom = 60, heads = null, zoomIn = null, snapChk = null, tcEl = null;
-  var HEAD_W = 74;
 
   // ------------------------------------------------------------ overlay helpers (schema-agnostic)
   var START_KEYS = ['start', 'out_start', 'start_t', 'from'], END_KEYS = ['end', 'out_end', 'end_t', 'to'];
@@ -38,7 +37,7 @@
     E = state;
     zoom = Number(R.store('rustler.zoom')) || 60;
     zoomIn = h('input', { type: 'range', min: 8, max: 400, step: 1, value: zoom, title: 'zoom (Ctrl+wheel)' });
-    zoomIn.addEventListener('input', function () { setZoom(Number(zoomIn.value), true); });
+    zoomIn.addEventListener('input', function () { autoFit = false; setZoom(Number(zoomIn.value), true); });
     snapChk = h('input', { type: 'checkbox', checked: E.snap });
     snapChk.addEventListener('change', function () { E.snap = snapChk.checked; R.store('rustler.snap', E.snap ? '1' : '0'); draw(); });
     tcEl = h('span', { class: 'tc' }, '00:00.00');
@@ -73,10 +72,14 @@
       e.preventDefault();
       var b = scroll.getBoundingClientRect();
       var at = (e.clientX - b.left + scroll.scrollLeft) / zoom;
+      autoFit = false;
       setZoom(zoom * (e.deltaY < 0 ? 1.15 : 1 / 1.15));
       scroll.scrollLeft = at * zoom - (e.clientX - b.left);
     }, { passive: false });
-    E.on('load', function (reason) { if (reason === 'first') fit(); else draw(); });
+    E.on('load', function (reason) { if (reason === 'first' || autoFit) fit(); else draw(); });
+    var onResize = function () { if (autoFit) fit(); else draw(); };
+    window.addEventListener('resize', onResize);
+    R.onLeave(function () { window.removeEventListener('resize', onResize); });
     E.on('captions', drawCaptions);
     E.on('select', draw);
     E.on('time', movePlayhead);
@@ -90,9 +93,11 @@
     draw();
     if (keepCenter) scroll.scrollLeft = center * zoom - scroll.clientWidth / 2;
   }
+  var autoFit = true;   // follow the window size until the user zooms
   function fit() {
     if (!E || !E.duration) return;
     setZoom((scroll.clientWidth - 40) / E.duration);
+    autoFit = true;
     scroll.scrollLeft = 0;
   }
   function X(t) { return t * zoom; }

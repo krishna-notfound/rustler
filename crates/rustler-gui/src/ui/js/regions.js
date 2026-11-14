@@ -183,10 +183,6 @@
     E.on('load', function () { E.draft = null; refresh(); });
     E.on('select', refresh);
     E.on('draft', function () { if (E.draft && E.draft.which === 'dst') srcLayer.update(R.monitor.regionsFor(E.selSeg), E.selRegion); });
-    E.on('time', function () {
-      var m = E.segAt(E.t);
-      if (m && m.segment_id !== E.selSeg && !E.playing) { /* selection follows clicks, not playback */ }
-    });
   };
   function refresh() {
     if (!E || !E.clip) return;

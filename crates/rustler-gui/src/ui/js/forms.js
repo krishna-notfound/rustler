@@ -67,7 +67,11 @@
     var hide = (o.hide || []).concat(['base_revision', 'expect_revision', 'dry_run']);
     var getters = {};
     var rows = [];
-    Object.keys(props).forEach(function (k) {
+    // required fields first, then text-like fields, then the rest (schema order)
+    var keys = Object.keys(props);
+    var rank = function (k) { return (req.indexOf(k) >= 0 ? 0 : 2) + (/^(text|name|path|kind|style)$/.test(k) ? 0 : 1); };
+    keys = keys.map(function (k, i) { return [k, i]; }).sort(function (a, b) { return rank(a[0]) - rank(b[0]) || a[1] - b[1]; }).map(function (x) { return x[0]; });
+    keys.forEach(function (k) {
       if (Object.prototype.hasOwnProperty.call(fixed, k) || hide.indexOf(k) >= 0) return;
       if (o.fields && o.fields.indexOf(k) < 0) return;
       var p = resolve(props[k], root);
