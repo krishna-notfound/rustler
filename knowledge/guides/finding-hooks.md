@@ -90,7 +90,7 @@ fine; a signal with no good line is a lead to read, not a clip.
 | Loudness peaks | `rustler analyze audio SRC` (`peaks`), per window in `rustler highlights signals SRC` | shouting, laughing, hype, crowd |
 | Long silence before a line | `silences` in `analyze audio`; `pause_before` in `highlights signals` | dramatic pause, or dead air to cut |
 | Scene cuts dense in a range | `rustler analyze scenes SRC`; `scene_cuts` in `highlights signals` | edited source: action or montage |
-| Heatmap spike | `rustler source info URL` (`heatmap_peaks`); `heatmap` in `highlights signals` once the info JSON is saved as `analysis/SRC/source_info.json` | viewers rewatched; payoff is near the spike |
+| Heatmap spike | `rustler source info URL` (`heatmap_peaks`); `heatmap` in `highlights signals` (URL imports save the info JSON as `analysis/SRC/source_info.json`; `source info --source-id SRC` reads it back offline) | viewers rewatched; payoff is near the spike |
 | Questions / exclamations | `questions` / `exclamations` in `highlights signals` | Q&A hooks, reactions |
 | Speech rate, emphasis words | `wpm_vs_median`, `emphasis_words` in `highlights signals` | urgency, claims ("never", "secret", "bhai", "sach") |
 | Faces in tiles | `rustler see tiles SRC --around "<line>"` | is the reaction visible? is the speaker on screen? |

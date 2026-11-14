@@ -52,7 +52,7 @@ Without `--segment-id`, `clip set-layout` applies to every segment. Anything bey
 - Leave **headroom**: eyes should land at roughly 30-40 % of canvas height. center-crop keeps full
   height, so this is automatic for normal framing; for very low-framed sources prefer `blur-fit`.
 
-### Face tracking (if available — `crop track-face`)
+### Face tracking (`crop track-face`)
 
 ```
 rustler crop track-face clp_X                     # all segments

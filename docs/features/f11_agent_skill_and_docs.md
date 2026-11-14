@@ -11,8 +11,8 @@ binary, and exposed through `rustler guide …`, `rustler prompt …` and the MC
 ## Scope
 
 **In:**
-- `knowledge/guides/*.md` (13 guides: start-here, workflows for local files and YouTube long-form, cut points, finding hooks, captions and style, layouts and framing, audio, Hinglish, platform specs, quality checklist, troubleshooting, CLI reference conventions).
-- `knowledge/prompts/*.md` (8 prompts: make viral clips, clip from stream, batch from brief, quick scan source, review clip, fix QC failures, restyle clip, Hinglish podcast clips).
+- `knowledge/guides/*.md` (17 guides since the full command set landed; the original 13: start-here, workflows for local files and YouTube long-form, cut points, finding hooks, captions and style, layouts and framing, audio, Hinglish, platform specs, quality checklist, troubleshooting, CLI reference conventions; added later: streamer-clips, editing-toolkit, briefs-and-batches, assets).
+- `knowledge/prompts/*.md` (10 prompts, incl. streamer_split_clip and polish_clip; the original 8: make viral clips, clip from stream, batch from brief, quick scan source, review clip, fix QC failures, restyle clip, Hinglish podcast clips).
 - Loader crate `rustler-knowledge` (embeds `knowledge/` at build time).
 - Commands: `guide.list`, `guide.show`, `guide.search`, `prompt.list`, `prompt.show`.
 
@@ -77,3 +77,4 @@ binary, and exposed through `rustler guide …`, `rustler prompt …` and the MC
 ## Status Log
 
 - 2026-11-15 — Knowledge book committed (13 guides, 8 prompts). Loader crate and guide and prompt commands merged; MCP prompts and resources render. Agent skill, skill AGENTS.md and integration guide committed (8e23db6). Guide-command test location unverified.
+- 2026-11-15 — Docs pass for the full command set: `cli-reference-conventions` lists all 118 commands by area; 4 new guides (streamer-clips, editing-toolkit, briefs-and-batches, assets) and 2 new prompts (streamer_split_clip, polish_clip); every `rustler <group> <action>` in knowledge/, skills/ and docs/ checked against `commands list`; Windows PowerShell 5.1 JSON-quote note added.

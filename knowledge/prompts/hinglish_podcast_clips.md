@@ -43,7 +43,7 @@ Weak openers to skip: toh, matlab, haan, na, accha, dekho, yaar, bas, aur, phir,
 ## 4. Cut and style
 - `clip create … --start-unit <a> --end-unit <b> --expect-text "<first words as printed>"`.
 - Two-person podcasts: if both faces matter and sit far apart → `blur-fit`; else `center-crop` on the
-  speaker with `crop track-face` (if available).
+  speaker with `crop track-face` (or `analyze speakers` + `crop track-speaker`).
 - Captions: `--script latin` (default), `--max-words-per-line 2` or `3` (romanised Hindi words are
   long); `bold-karaoke` for energetic talk, `clean-white` for emotional/slow parts. Use
   `--script devanagari` only if the brief asks; then check for □ boxes in the preview.

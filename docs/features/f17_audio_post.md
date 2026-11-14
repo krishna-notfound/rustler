@@ -1,9 +1,10 @@
-# f17 — Audio Post (music bed and ducking only)
+# f17 — Audio Post (music bed, ducking, 2-pass loudnorm, denoise, SFX, volume)
 
 **Status:** Verified  |  **Depends on:** f08, f12  |  **Owner:** orchestrator + implementation agents (see `docs/progress-log.md`, 2026-11-15)
 
-**Scope note:** only the music bed with speech ducking is built. The feature index entry also names 2-pass
-loudnorm, denoise, SFX and voice-over; none of those is built.
+**Scope note:** the music bed with speech ducking was built first; two-pass loudnorm (`render.run --two-pass-loudness`, default true),
+`audio.denoise`, `audio.add_sfx` / `audio.remove_sfx`, `audio.volume` and `audio.list` were added later (B1/A1, see the status log and
+`crates/rustler-commands/src/audio_cmds.rs`, tests `tests/audio.rs`). Voice-over is not built. Sections below describe the music bed.
 
 ## Purpose
 
@@ -20,9 +21,8 @@ so the render stays a single pass.
 - Music-bed graph built by the render compiler (`compile.rs`).
 
 **Out (explicitly):**
-- Two-pass loudnorm. Single-pass loudnorm lands near -15.9 LUFS on half-silent clips (progress log, open).
-- Denoise, sound effects and voice-over (not built).
-- A licensed music library or asset manifest (f23, planned).
+- Voice-over (not built).
+- Bundled music: the asset library (f23) ships CC0 SFX but no music; users add their own with `asset add --license`.
 
 ## User-facing Behavior
 
@@ -76,3 +76,4 @@ so the render stays a single pass.
 ## Status Log
 
 - 2026-11-15 — Music bed and ducking merged and verified in the render: ducking measured -3.9 dB. Single-pass loudnorm gave -15.9 LUFS on half-silent clips; two-pass loudnorm is the open follow-up.
+- 2026-11-15 — Follow-ups merged: two-pass loudnorm (half-silent clip -15.9 to -14.0 LUFS, true peak -2.2), `audio.denoise`, word-anchored `audio.add_sfx` (also `asset:<id>`), `audio.volume`, `audio.list` (progress log, B1/A1/C2).

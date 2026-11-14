@@ -42,13 +42,16 @@ laughter, chat interactions, wild statements. Read `workflow-youtube-longform`,
   setup. Pure talk with no event is fine only if the line itself is a strong hook.
 - Length: reactions 8-25 s; stories/rants 30-60 s.
 
-## 4. Measure the layout once per section
-1. `rustler see frame <src> --t <t1>` and `--t <t2>` (two times, to confirm the webcam doesn't move).
-2. Webcam box px → normalised `{x,y,w,h}`, inset 2-3 % to drop borders.
-3. `split ≈ 0.5625 / (1.778 × w/h)` clamped 0.30-0.50 (smaller if the webcam is < 400 px wide).
-4. Gameplay rect: full height, `w ≈ (1080 / (1920 × (1 − split))) / 1.778`, centred on the action,
-   **excluding** the webcam overlay.
-5. No webcam (just chatting full-cam) → `center-crop`; menus/text-heavy screens → `blur-fit`.
+## 4. Find the layout once per section
+1. `rustler analyze deep <src>` → faces: is there a small, steady face (webcam)? audio events: reactions.
+2. `rustler layout detect-webcam <src> --clip-id <clip>` → webcam rect, gameplay rect, split and a ready
+   `set-layout` line. It can include a sliver of gameplay: check the preview and nudge with
+   `layout edit-region <clip> top --nudge …`. "No small, consistent face" → measure by hand: `see frame` at two
+   times, webcam box px → normalised `{x,y,w,h}` inset 2-3 %, `split ≈ 0.5625 / (1.778 × w/h)` clamped
+   0.30-0.50 (smaller if the webcam is < 400 px wide), gameplay rect full height excluding the webcam.
+3. Save it: `layout save-preset <name> <clip>`, reuse with `layout apply-preset <clip> <name>`.
+4. No webcam (just chatting full-cam) → `center-crop`; menus/text-heavy screens → `blur-fit`.
+The full single-clip recipe is the `streamer_split_clip` prompt.
 
 ## 5. Build each clip
 ```
@@ -56,14 +59,18 @@ rustler clip create --name <slug> --source-id <src> --start-unit <a> --end-unit 
   --expect-text "<opening words>" --layout split-vertical \
   --layout-params '{"top":{…},"bottom":{…},"split":<s>}'
 rustler clip set-captions <clip> --style bold-karaoke --position-y <split + 0.06> --max-words-per-line 2
+rustler overlay add-text <clip> "<payoff in <= 7 words>" --start 0 --end 2.5      # hook title
+rustler effect add <clip> punch-in --start <reaction t> --end <t + 0.5>           # optional
 rustler render preview-frame <clip> --out-t 1.0
 ```
 Check the preview: face fills the top, no overlay border, no duplicate webcam, gameplay readable,
-captions between the face and the action. Busy bright game → `--preset boxed-highlight`.
+captions between the face and the action. Busy bright game → `--style boxed-highlight`. Two people on screen → `analyze speakers` +
+`caption speaker-colors`. Polish pass: `polish_clip`.
 For no-speech moments use `--start/--end` taken only from Rustler output (peaks, scenes, tile labels).
 
 ## 6. Render, watch, fix, export
-`render run` → `qc run` → open the contact sheet → fix (`quality-checklist`) → `export clip`.
+`render run` → `qc run` → open the contact sheet → `fix suggest` / fix (`quality-checklist`) → `export clip`
+(or `render batch --all true` + `export batch --all true` for all the clips).
 Keep the reaction tail: end 0.5-1.5 s after the peak of the reaction.
 
 ## 7. Report

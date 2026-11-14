@@ -15,7 +15,7 @@ so they stay in sync after every re-cut.
 ## 1. The settings
 
 ```
-rustler caption list-styles                         # (if available) presets with their look
+rustler caption list-styles                         # preset names; `caption styles` adds custom ones with font and kind
 rustler clip set-captions clp_X --style bold-karaoke --position-y 0.70 --max-words-per-line 3 --script latin
 rustler clip set-captions clp_X --enabled false     # turn off (e.g. music-only clip)
 ```
@@ -151,8 +151,8 @@ rustler render preview-frame clp_X --out-t 4.0             # look at a frame of 
 - Not over the face in any tile; captions jump only between chunks, not mid-chunk.
 - Contrast: readable on the brightest tile. If not → `boxed-highlight`.
 - Spelling: names, brands, slang and numbers are where Whisper fails. Compare the caption text in
-  the contact sheet with what is said. Fix with a caption word-edit command if available; otherwise
-  note the error in the report (a misspelt creator name can get a clip rejected).
+  the contact sheet with what is said. There is no caption word-edit command: pick another
+  take or note the error in the report (a misspelt creator name can get a clip rejected).
 - Profanity: if the brief or platform requires, mask or avoid clips where it can't be fixed.
 - No double captions (source subtitles + ours).
 - Captions present from the first word: the hook must be readable in the first second.

@@ -46,7 +46,8 @@ moment itself doesn't work — no amount of styling saves a weak moment).
 ## 3. Fix
 For each fixable problem, make one targeted edit (see the fix table in `quality-checklist`):
 start/end units, `edit trim`, `edit remove-pauses`, `clip set-layout`, `crop track-face`,
-`clip set-captions`. Preview with `render preview-frame`, then `render run` → `qc run` → contact
+`clip set-captions`, `overlay add-text` (hook), `effect`/`transition`/`audio` polish (`editing-toolkit`),
+`fix apply` for the safe QC fixes. Preview with `render preview-frame`, then `render run` → `qc run` → contact
 sheet again. Max 3 rounds per problem; `history undo {{clip_id}}` if a change makes it worse.
 
 ## 4. Report

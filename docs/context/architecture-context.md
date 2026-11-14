@@ -89,7 +89,7 @@ IDs are prefixed ULIDs (`SourceId`, `ClipId`, `RenderId`, `ProjectId`).
 
 | Risk | Impact | Mitigation |
 | ---- | ------ | ---------- |
-| Single-pass loudnorm lands near -15.9 LUFS on half-silent clips | Loudness may miss target on quiet clips | Two-pass loudnorm (open, f17) |
+| Single-pass loudnorm landed near -15.9 LUFS on half-silent clips | Loudness missed target on quiet clips | Fixed: `render.run` measures first (two-pass, default true); half-silent clip now -14.0 LUFS (f17) |
 | Face tracking has no recorded live run | Reframe quality unknown on real footage | Live check with `crop.track_face` (f14 task) |
 | Edit operations (f12) have no recorded test run | Undo and edit behaviour unconfirmed in the log | Run `cargo test -p rustler-commands --test edit` and log it |
 | Windows linker clash in Git Bash | Build fails from bash | Run cargo from PowerShell |

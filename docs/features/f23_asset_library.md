@@ -1,6 +1,6 @@
 # f23 - Asset library
 
-**Status:** Built (branch, tests pass)  |  **Depends on:** f01, f16, f17  |  **Owner:** C2 agent
+**Status:** Built (merged, tests pass)  |  **Depends on:** f01, f16, f17  |  **Owner:** C2 agent
 
 ## Purpose
 
@@ -16,7 +16,17 @@ rustler-captions); `asset:<id>` in place of a path (`audio.add_music`; `audio.ad
 `rustler setup` fills the global library (built-in styles/layouts, installed OFL fonts, a curated subset of two
 Kenney CC0 sound packs); font assets are staged for every render.
 **Out:** bundled music (no verifiably CC0, login-free source: users add their own with `asset add --license`),
-GUI asset browser (f27), custom multi-region layouts as assets (layouts live in `<project>/layouts`, f15).
+a full GUI asset browser (f25 has a music picker only), custom multi-region layouts as assets (layouts live in `<project>/layouts`, f15).
+
+## Routes / Files
+
+**Owned files (this feature may create/edit only these):**
+- `crates/rustler-commands/src/asset_cmds.rs` (asset.*, caption.create_style, caption.styles, `asset:<id>` resolver)
+- `crates/rustler-tools/src/assets.rs` (manifest, built-ins, setup fetch)
+- `crates/rustler-captions/src/custom.rs` (custom caption styles)
+- Tests: `crates/rustler-commands/tests/asset.rs`
+
+**Read-only dependencies:** `audio_cmds.rs` (calls the resolver for `audio.add_music` and `audio.add_sfx`), `setup_cmds.rs`.
 
 ## Data
 
@@ -38,6 +48,12 @@ colours `#RRGGBB[AA]`).
 
 `cargo test -p rustler-commands --test asset` (7 tests; ffmpeg ones skip without tools) and
 `cargo test -p rustler-commands --test asset -- --ignored` (network: fetches the Kenney packs).
+
+## Docs-pass check (2026-11-15)
+
+`asset list` (4 caption styles, 3 layouts, 4 fonts, 26 SFX), `asset search`, `asset show style-neon-pop` (preview PNG), `asset add` (music, license `own work`, refused for a `.mp4`),
+`caption create-style neon-pop --base hormozi-pop`, `caption set --style neon-pop`, `audio add-sfx asset:sfx-kenney-interface-click-1`, `audio add-music --path asset:music-... --dry-run`
+all ran against a temp project. `--tags` takes a JSON array (`'["a","b"]'`); a plain comma string becomes one tag.
 
 ## Status Log
 

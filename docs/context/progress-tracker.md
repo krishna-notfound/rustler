@@ -10,6 +10,7 @@ Per-feature status: `docs/features/README.md`. Plan and scope: `docs/superpowers
 ## Current Phase
 
 - Slice 1 ("First Real Clip") plus the 5-hour extras are built and were run end to end on 2026-11-15.
+- The "complete everything" phase added (all merged): layout regions and webcam detection (f15), overlays/hook titles, transitions, effects, progress bar (f18), cut refinement (f19), highlight helpers (f20), understanding v2 (f07b), QC v2 and fix loop (f21), brief/variants/batches (f22), asset library (f23), the full GUI editor (f25-f27), speakers (f29), project pack/status, audio post (denoise, SFX, two-pass loudnorm). The registry has 118 commands; the knowledge book has 17 guides and 10 prompts.
 - Phase status per `docs/README.md`: implementation in progress under the 5-hour build window.
 
 ## Current Goal
@@ -27,7 +28,7 @@ Per-feature status: `docs/features/README.md`. Plan and scope: `docs/superpowers
 - See commands: tile grids and frames inspected (f07).
 - Render compiler with NVENC and Devanagari-named source (f08).
 - QC v1 12/12 and export (f09).
-- MCP over stdio: 55 tools, 8 prompts, 14 resources (f10).
+- MCP over stdio: 55 tools, 8 prompts, 14 resources at the time of the check (f10); the registry now has 118 commands, so 118 tools and 10 prompts.
 - GUI in a real browser: Renders page, QC table, contact sheet (f24).
 - Captions: four presets and SRT (f16); music bed with ducking measured -3.9 dB (f17).
 
@@ -41,8 +42,8 @@ Per-feature status: `docs/features/README.md`. Plan and scope: `docs/superpowers
 
 - Log a test run for f12 (`cargo test -p rustler-commands --test edit`).
 - Live check of `crop.track_face` on a talking-head clip (f14).
-- Two-pass loudnorm (f17).
-- Next planned feature units by index: f15 (custom layouts), f18 (overlays and transitions), f19 (cut refinement). Feature files for these are not written yet; write one before coding (see `docs/features/README.md`).
+- Not yet run live: `analyze speakers` / `crop track-speaker` on real two-person footage (f29); `rustler setup run` refreshes the engine with the speaker models.
+- Remaining planned units: GPU throughput (f28). The Tauri shell for the GUI editor (f25) is deferred.
 
 ## Open Questions
 
@@ -68,10 +69,9 @@ Per-feature status: `docs/features/README.md`. Plan and scope: `docs/superpowers
 ## Deferred Work
 
 - Provider layer (f13) — dropped by user decision.
-- Highlight helpers (f20), brief and variants (f22), asset library (f23) — later slices.
-- Transitions and hook titles (f18), custom layouts (f15), cut refinement (f19) — not started.
-- Tauri timeline editor, program monitor, caption editor (f25–f27) — the simple GUI stands in.
-- Diarization (f29), GPU throughput (f28).
+- GPU throughput and parallel renders (f28).
+- Tauri desktop shell for the GUI editor (f25–f27 are built in the web GUI).
+- Dedicated GUI panels for speaker colours, custom caption styles and a full asset browser.
 - MCP loopback HTTP transport with bearer token (spec §5.12) — stdio only is built.
 
 ## Session Notes

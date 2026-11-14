@@ -3,7 +3,7 @@
 **Status:** Verified  |  **Depends on:** f02, f03  |  **Owner:** orchestrator + implementation agents (see `docs/progress-log.md`, 2026-11-15)
 
 **Scope note:** the feature index planned a Tauri shell. The built GUI is a simple local web page served by
-`rustler gui`, as chosen for the 5-hour window (plan, 5-HOUR SCOPE). The Tauri editor is deferred to f25–f27.
+`rustler gui`, as chosen for the 5-hour window (plan, 5-HOUR SCOPE). The editor (timeline, monitor, region editor, panels) was built later inside this GUI, see `f25_gui_editor.md`; a Tauri shell is still deferred.
 
 ## Purpose
 
@@ -61,7 +61,7 @@ registry as the CLI and MCP, so the GUI can never do something the agent cannot.
 
 - [x] Axum server, token, static page (`crates/rustler-gui/src/lib.rs`)
 - [x] Views and command runner (`app.js`)
-- [ ] Tauri shell and timeline editor (deferred, f25–f27)
+- [ ] Tauri shell (deferred). The timeline editor and panels (f25–f27) were built later inside this GUI: see `f25_gui_editor.md`
 
 ## Acceptance Criteria
 

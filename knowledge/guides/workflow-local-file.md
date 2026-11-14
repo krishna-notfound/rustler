@@ -101,6 +101,10 @@ are, whether there is burned-in text, and whether the reaction matches the words
 
 ## Step 4: plan clips
 
+Shortcut for long files: `rustler highlights candidates src_ep12 --count 10` returns ranked,
+sentence-aligned windows with unit ids, reasons and a ready `create_cmd`; read each with
+`transcript read-window` and judge it yourself (the score is evidence, not a decision; see `finding-hooks`).
+
 For each candidate write one line: `units #a-#b · opening words · payoff · score · layout`. Use the
 rubric in `finding-hooks` and the boundary rules in `cut-points`. Keep candidates ≥ 70, drop the
 rest. Remove overlaps and repeats.
@@ -118,9 +122,9 @@ Example plan (illustrative):
 ```
 rustler clip create --name "nobody-tells-you" --source-id src_ep12 \
     --start-unit 212 --end-unit 219 --expect-text "nobody tells you" --layout center-crop
-rustler crop track-face clp_X                        # (if available) faces move → follow them
+rustler crop track-face clp_X                        # faces move → follow them (`analyze deep` says when it helps)
 rustler clip set-captions clp_X --style bold-karaoke --position-y 0.70
-rustler edit remove-pauses clp_X --min-gap 0.5       # (if available) tighten dead air
+rustler edit remove-pauses clp_X --min-gap 0.5       # tighten dead air
 rustler render preview-frame clp_X --out-t 1.0       # look: face framed? captions clear?
 rustler render run clp_X
 rustler qc run clp_X                                 # then open qc contact sheet
@@ -141,4 +145,4 @@ result, what you checked on the contact sheet, a suggested title/description/has
 No speech means no units. Pick by eye: `analyze scenes`, then `see tiles` over scene ranges; choose
 action, reveals, transformations, fails. Cut on scene changes, never mid-motion. Create with
 `--start/--end` using times from scene boundaries or tile labels only. Captions are disabled
-automatically; add a hook text overlay only if an overlay command exists (`commands list`).
+automatically; add a hook text overlay (`overlay add-text clp_X "Wait for it" --start 0 --end 2.5`).
