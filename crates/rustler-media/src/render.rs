@@ -1,8 +1,8 @@
 //! Run a compiled render. (Task 9)
 
 use crate::compile::{
-    CompiledRender, GRAPH_FILE, LoudnessMeasurement, LoudnessPass, PREVIEW_GRAPH_FILE,
-    measured_loudnorm, parse_loudnorm_json,
+    CompiledRender, GRAPH_FILE, LOUDNESS_GRAPH_FILE, LoudnessMeasurement, LoudnessPass, NoisePass,
+    PREVIEW_GRAPH_FILE, measured_loudnorm, noise_floor_from_log, parse_loudnorm_json,
 };
 use crate::proc_render;
 use rustler_core::{ErrorCode, RustlerError};
@@ -86,9 +86,42 @@ pub struct RenderReport {
     /// First-pass values (two-pass only).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub measured: Option<LoudnessMeasurement>,
-    /// Why two-pass fell back to single pass.
+    /// Dialogue noise floor (dBFS) measured for denoise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub noise_floor_db: Option<f64>,
+    /// The denoise filter the render used.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub denoise_filter: Option<String>,
+    /// Why two-pass fell back to single pass (or denoise used the default floor).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+}
+
+/// Runs the noise-floor pass; `Err(reason)` when it fails or prints too few windows.
+async fn measure_noise(
+    ffmpeg: &Path,
+    compiled: &CompiledRender,
+    pass: &NoisePass,
+    cancel: &CancellationToken,
+) -> rustler_core::Result<std::result::Result<f64, String>> {
+    let mut log = String::new();
+    let o = proc_render::run_streaming(ffmpeg, &pass.args, Some(&compiled.workdir), cancel, |l| {
+        if l.contains("RMS_level=") {
+            log.push_str(l);
+            log.push('\n');
+        }
+        true
+    })
+    .await;
+    let o = match o {
+        Ok(o) => o,
+        Err(e) if e.code == ErrorCode::Cancelled => return Err(e),
+        Err(e) => return Ok(Err(e.message)),
+    };
+    if !o.status.success() {
+        return Ok(Err(format!("noise pass failed ({})", o.status)));
+    }
+    Ok(noise_floor_from_log(&log).ok_or_else(|| "noise pass found no usable audio windows".to_string()))
 }
 
 /// Runs the audio-only measurement pass; `Err(reason)` when it fails or prints no usable JSON.
@@ -164,9 +197,36 @@ pub async fn render_with_report(
             LoudnessMode::Off
         },
         measured: None,
+        noise_floor_db: None,
+        denoise_filter: None,
         warnings: Vec::new(),
     };
     let mut graph = compiled.filter_script.clone();
+    if let Some(np) = &compiled.noise {
+        progress.emit(ProgressEvent {
+            stage: "render.denoise".into(),
+            pct: Some(0.0),
+            message: Some("measuring the noise floor".into()),
+        });
+        match measure_noise(&ffmpeg, compiled, np, cancel).await? {
+            Ok(floor) => {
+                if let Some(f) = np.denoise.filter_for(floor) {
+                    graph = graph.replacen(&np.filter, &f, 1);
+                    // The loudness pass must hear the same denoised dialogue.
+                    let lg = compiled.workdir.join(LOUDNESS_GRAPH_FILE);
+                    if let Ok(body) = std::fs::read_to_string(&lg) {
+                        let _ = std::fs::write(&lg, body.replacen(&np.filter, &f, 1));
+                    }
+                    report.denoise_filter = Some(f);
+                }
+                report.noise_floor_db = Some(floor);
+            }
+            Err(reason) => {
+                report.denoise_filter = Some(np.filter.clone());
+                report.warnings.push(format!("denoise used the default noise floor: {reason}"));
+            }
+        }
+    }
     if let Some(pass) = &compiled.loudness {
         progress.emit(ProgressEvent {
             stage: "render.loudness".into(),
