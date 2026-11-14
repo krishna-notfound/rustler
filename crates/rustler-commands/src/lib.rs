@@ -7,6 +7,7 @@ pub mod guide_cmds;
 pub mod layout_cmds;
 pub mod highlights_cmds;
 pub mod edit_cmds;
+pub mod fix_cmds;
 pub mod project_cmds;
 pub mod qc_cmds;
 pub mod render_cmds;
@@ -30,6 +31,7 @@ pub fn register_all(reg: &mut Registry) {
     edit_cmds::register(reg);
     render_cmds::register(reg);
     qc_cmds::register(reg);
+    fix_cmds::register(reg);
     layout_cmds::register(reg);
     highlights_cmds::register(reg);
     cut_cmds::register(reg);

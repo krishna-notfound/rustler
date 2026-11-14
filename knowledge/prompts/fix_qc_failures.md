@@ -18,7 +18,13 @@ as your reference. Never use `--yes` to export past a real failure.
    `name`, `status`, `value`, `expected`, `fix_hint`.
 3. Open the contact sheet image. Note each visual problem with its output time label.
 
-## 2. Map problems to edits
+## 2. Let Rustler list the fixes
+`rustler fix suggest {{clip_id}}` → ordered `{check, severity, why, commands, auto_safe}`. Run
+`rustler fix apply {{clip_id}}` to execute the `auto_safe` ones (caption position, remove pauses,
+re-render + re-QC). Everything else is a creative choice: decide it yourself with the commands listed.
+After a re-render, `rustler qc compare {{clip_id}} <old render> <new render>` and open the image.
+
+## 2b. Map problems to edits
 QC times are output times; find the segment whose `out_start ≤ t < out_end`, then the source time
 `segment.start + (t − out_start)`.
 
@@ -30,6 +36,10 @@ QC times are output times; find the segment whose `out_start ≤ t < out_end`, t
 | `loudness` warn | lower/remove music bed; cut the extreme passage; accept only if it sounds fine and note it |
 | `long_silence` warn | `edit remove-pauses {{clip_id}} --min-gap 0.5` or trim at the hinted time |
 | `frozen_video` warn | if not a slide, cut that stretch (`edit split` + `edit delete-segment`) |
+| `caption_over_face` warn | `clip set-captions {{clip_id}} --position-y <y from the hint>` (or `fix apply --check caption_over_face`) |
+| `face_visible_ratio` / `face_cut_off` warn | `crop track-face {{clip_id}}`; for splits `layout detect-webcam <source> --clip-id {{clip_id}}` |
+| `hook_text_present` warn | add hook text (`overlay add-text` when it exists) or start on speech with `edit trim --start-delta` |
+| `duration_for_platform` warn | `edit trim` / `edit refine` to fit the brief's range |
 | face cut off / wrong person | `clip set-layout` with a new `focus_x`, `crop track-face`, or `blur-fit` |
 | captions over face / in UI zone | `clip set-captions {{clip_id}} --position-y <0.66-0.78>` |
 | captions unreadable | `--preset boxed-highlight` |

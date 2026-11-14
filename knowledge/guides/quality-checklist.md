@@ -1,9 +1,9 @@
 ---
 id: quality-checklist
 title: "Quality checklist: QC, the contact sheet and the fix loop"
-summary: "How to read qc run output, each check and its fix, what to look for on the contact sheet, the re-render loop and when to make variants."
+summary: "How to read qc run output, each check and its fix, fix suggest / fix apply / qc compare, what to look for on the contact sheet, the re-render loop and when to make variants."
 order: 9
-tags: [qc, quality, review, contact-sheet, fix-loop, variants]
+tags: [qc, quality, review, contact-sheet, fix-loop, fix-suggest, qc-compare, variants]
 ---
 
 # Quality checklist
@@ -41,10 +41,19 @@ not use `--yes` to skip a real failure). Warns need a decision and a note in the
 | `black_frames` | no black ≥ 0.5 s (fail) | segment over a fade/black part of the source; split rect pointing at an empty area; blur-fit on a letterboxed source | move segment boundaries off the black; fix the region rect; check `see frame` at that time |
 | `frozen_video` | no frozen picture ≥ 2 s (warn) | paused stream, static slide, "be right back" screen | fine for slides; otherwise cut it out |
 | `long_silence` | no silence ≥ 1.5 s (warn) | dead air | `edit remove-pauses` or trim at the hinted time |
+| `caption_safe_zone` | `position_y` between 0.10 and 0.85 (warn) | captions under the platform UI | `clip set-captions --position-y 0.70` |
+| `caption_over_face` | captions on: a face box overlaps the caption band (`position_y` -0.08 .. +0.04 of the height) in at most 20 % of samples taken at 2 fps from the render (warn) | speaker's face sits where the captions are | `clip set-captions <clip> --position-y <y>`: the hint computes a `y` below the median face box, else above it |
+| `face_visible_ratio` | center-crop (or the top pane of a split): a face at least 60 % inside the frame in at least 70 % of samples (warn) | crop not following the face; wrong `focus_x`; wrong webcam rect | `crop track-face <clip>`, or `layout detect-webcam <source> --clip-id <clip>` for splits |
+| `face_cut_off` | a face touching the left/right frame edge in at most 25 % of samples (warn) | crop too tight or off-centre | `crop track-face <clip>` or switch to `blur-fit` |
+| `hook_text_present` | an overlay starting before 3 s (`extras.json` `overlays`) or caption words in the first 3 s (warn) | late first word, captions off | `overlay add-text <clip> --text "<hook>" --start 0 --end 3` when that command exists, else trim to speech / turn captions on |
+| `duration_for_platform` | within the brief's min/max (`brief.json`), else the platform default: YouTube Shorts 60 s, TikTok/Reels 90 s (warn) | over-long cut; no brief says which platform | `edit trim` / `edit refine`; or set the platform in the brief |
 | `contact_sheet` | always pass | — | **open the image** (next section) |
 
-Later QC versions may add `caption_safe_zone`, `caption_over_face`, `face_visible`,
-`hook_in_first_3s` and `brief`. Treat their `fix_hint` the same way: it names the edit to make.
+The face checks run the engine's `faces.track` on the **render** (2 fps). If the engine is not
+available they report `status: warn` with `value: {"skipped": "engine unavailable"}`; they never fail
+QC. Run `rustler doctor` and re-run `qc run` to get the real answer. Face checks only exist for layouts
+where the face matters (center-crop, split-vertical top pane); `caption_over_face` only when captions
+are on.
 
 Output time vs source time: QC reports times in **output (clip) time**. `clip show clp_X` lists each
 segment's `out_start/out_end` so you can find the segment and the source time behind any QC time.
@@ -72,6 +81,24 @@ Check every tile:
 
 ## 4. The fix loop
 
+Fast path: let Rustler turn the QC report into commands.
+
+```
+rustler fix suggest clp_X        # ordered list: {check, severity, why, commands[], auto_safe}
+rustler fix apply clp_X          # runs the auto_safe ones, re-renders, re-runs QC, lists what is left
+rustler fix apply clp_X --check caption_over_face --rerender false   # one fix, no re-render yet
+rustler qc compare clp_X rnd_OLD rnd_NEW   # side-by-side contact sheet + per-check diff; OPEN the image
+```
+
+`fix suggest` runs QC first when the render has no report. Failures come first (`severity: high`), then
+warnings by impact; checks skipped for lack of the engine come last. `auto_safe: true` means the fix is
+deterministic and non-creative: moving captions off a face or out of the UI zone, `edit remove-pauses`,
+and a plain re-render (loudness). `fix apply` never touches creative choices (hook text, layout, cuts,
+music, trims): those suggestions stay in `not_applied` with the exact commands for you to judge. After
+`fix apply`, look at the new contact sheet (`after.look_at`) and compare with `qc compare`.
+
+Manual loop:
+
 ```
 qc run → read checks + contact sheet → list problems → one edit per problem →
 render preview-frame at the problem time → render run → qc run → contact sheet again
@@ -80,7 +107,7 @@ render preview-frame at the problem time → render run → qc run → contact s
 | What you see | Edit |
 |---|---|
 | Face cut off / crop on the wrong person | `clip set-layout --params '{"focus_x":…}'` or `crop track-face`, or switch to `blur-fit` |
-| Captions over the face | `clip set-captions --position-y` (lower to 0.74-0.78, or up to 0.22) |
+| Captions over the face | `caption_over_face` hint gives the exact `--position-y`; or `fix apply --check caption_over_face` |
 | Captions hard to read | `--preset boxed-highlight` |
 | Slow first 2 s | move start: recreate with a later `--start-unit` or `edit trim --start-delta` |
 | Ends weak / cuts the laugh | `edit trim --end-delta` or a later `--end-unit` |
