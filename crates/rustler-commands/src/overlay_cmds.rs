@@ -222,6 +222,12 @@ async fn add_text(ctx: Ctx, i: AddTextIn) -> Result<OverlayOut> {
     let mut o = TextOverlay::new(String::new(), text, start, end.min(duration), style);
     if let Some(y) = i.position_y {
         o.position_y = y;
+    } else if matches!(style, rustler_media::compile::OverlayStyle::HookTop) {
+        // Stacked layouts (webcam over gameplay): put the hook on the seam between the panels
+        // instead of over the top panel's face.
+        if let Some(seam) = stacked_seam(&clip) {
+            o.position_y = seam;
+        }
     }
     if let Some(f) = i.font_size_factor {
         o.font_size_factor = f;
@@ -516,4 +522,19 @@ mod tests {
         assert!(apply_edit("t", &mut o, &edit(None, None, Some(12.0)), 10.0).is_err());
         assert_eq!(o.end, 8.0, "failed edit leaves the overlay unchanged in storage (caller discards)");
     }
+}
+
+/// The y of the boundary between two vertically stacked panels in the clip's first segment
+/// (e.g. split-vertical: webcam top, gameplay bottom), when there is one.
+fn stacked_seam(clip: &Clip) -> Option<f64> {
+    let regions = &clip.segments.first()?.layout.regions;
+    if regions.len() < 2 {
+        return None;
+    }
+    // A panel that starts well below the top and spans most of the width marks the seam.
+    regions
+        .iter()
+        .filter(|r| r.dst.y > 0.2 && r.dst.y < 0.8 && r.dst.w > 0.8)
+        .map(|r| r.dst.y)
+        .min_by(|a, b| a.total_cmp(b))
 }
