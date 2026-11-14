@@ -243,7 +243,8 @@ button.pill { padding: 2px 9px; }
 .cuerow { display: flex; gap: 8px; padding: 3px 8px; border-bottom: 1px solid var(--line); cursor: pointer; font-size: 12px; }
 .cuerow:hover { background: var(--panel2); }
 .cmdbox { background: var(--bg2); }
-.cmdbox summary { font-size: 12px; }
+.cmdbox summary { font-size: 12px; flex-direction: column; gap: 1px; align-items: flex-start; }
+.cmdbox summary .mono { white-space: nowrap; color: var(--text); }
 .cmdbox .sform { padding: 4px 10px 8px; }
 .fixrow { display: flex; gap: 8px; align-items: center; padding: 5px 0; border-bottom: 1px solid var(--line); }
 .renderrow { display: flex; gap: 10px; align-items: baseline; padding: 4px 6px; border-radius: 6px; cursor: pointer; }
@@ -282,6 +283,8 @@ button.pill { padding: 2px 9px; }
 .trim.l { left: 0; border-left: 3px solid rgba(255,255,255,.55); } .trim.r { right: 0; border-right: 3px solid rgba(255,255,255,.55); }
 .trim:hover { background: rgba(255,255,255,.25); }
 .wticks { position: absolute; left: 0; right: 0; bottom: 0; height: 6px; pointer-events: none; }
+.ckeys { position: absolute; left: 0; right: 0; top: 2px; height: 6px; pointer-events: none; }
+.ckeys i { position: absolute; top: 0; width: 5px; height: 5px; margin-left: -2px; background: #ffd23d; transform: rotate(45deg); }
 .wticks i { position: absolute; bottom: 0; width: 1px; height: 6px; background: rgba(255,255,255,.55); }
 .cue { position: absolute; top: 4px; bottom: 4px; background: #1f6f66; border: 1px solid #2fa597; border-radius: 4px; font-size: 10px; padding: 1px 4px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: #dffaf6; cursor: pointer; }
 .ovl { position: absolute; top: 4px; bottom: 4px; background: #8a6508; border: 1px solid #d6a21a; border-radius: 4px; font-size: 11px; padding: 1px 8px; overflow: hidden; white-space: nowrap; color: #fff6dc; cursor: grab; }

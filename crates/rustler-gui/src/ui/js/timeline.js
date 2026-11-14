@@ -188,6 +188,13 @@
         words.forEach(function (w) { if (w.t0 >= m.out_start && w.t0 < m.out_end) wl.appendChild(h('i', { style: { left: X(w.t0 - m.out_start) + 'px' } })); });
         el.appendChild(wl);
       }
+      // crop-path keyframes (crop.track_face): segment-relative times
+      var keys = E.extras && E.extras.crop_paths && E.extras.crop_paths[m.segment_id];
+      if (keys && keys.length) {
+        var kl = h('div', { class: 'ckeys', title: keys.length + ' crop keyframes (face tracking)' });
+        keys.forEach(function (k) { if (k.t <= m.out_end - m.out_start) kl.appendChild(h('i', { style: { left: X(k.t) + 'px' } })); });
+        el.appendChild(kl);
+      }
       el.addEventListener('pointerdown', function (e) { segDown(e, m, el); });
       tr.appendChild(el);
     });
