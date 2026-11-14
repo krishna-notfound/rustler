@@ -16,9 +16,7 @@ pub mod see_cmds;
 pub mod setup_cmds;
 pub mod source_cmds;
 pub mod transcript_cmds;
-
 use rustler_registry::Registry;
-
 /// Registers every command module.
 pub fn register_all(reg: &mut Registry) {
     setup_cmds::register(reg);
@@ -37,3 +35,5 @@ pub fn register_all(reg: &mut Registry) {
     highlights_cmds::register(reg);
     cut_cmds::register(reg);
 }
+pub mod understand_cmds;
+    understand_cmds::register(reg);
