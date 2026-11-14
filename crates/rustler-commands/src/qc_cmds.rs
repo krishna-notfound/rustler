@@ -12,7 +12,10 @@ use rustler_core::model::CaptionScript;
 use rustler_core::{
     Clip, ClipId, ErrorCode, Event, ProjectStore, QcStatus, RenderId, RenderRecord, RustlerError, Transcript,
 };
-use rustler_media::qc::{QcView, default_font, names_with, view};
+use rustler_media::qc::{
+    CompareColumn, FACE_SAMPLE_FPS, QcBrief, QcExtras, QcView, compare_sheet, default_font, names_with, view,
+    wants_faces,
+};
 use rustler_registry::{Annotations, Ctx, Example, Registry, typed};
 use rustler_tools::{Tool, ToolPaths};
 use schemars::JsonSchema;
@@ -26,7 +29,7 @@ const STAGE: &str = "qc";
 pub fn register(reg: &mut Registry) {
     reg.register(typed(
         "qc.run",
-        "Run QC on a render (latest by default): streams, dimensions, duration, A/V sync, loudness, black/frozen video, silence, hook, caption safe zone, plus a contact sheet you must look at. Exit 7 when it fails.",
+        "Run QC on a render (latest by default): streams, dimensions, duration, A/V sync, loudness, black/frozen video, silence, hook, caption safe zone, caption over face, face visibility, face cut off, hook text, duration for the platform (face checks need the engine and degrade to a skipped warning), plus a contact sheet you must look at. Exit 7 when it fails.",
         &["clip_id"],
         Annotations { long_running: true, ..Annotations::default() },
         vec![
@@ -37,6 +40,17 @@ pub fn register(reg: &mut Registry) {
             },
         ],
         qc_run,
+    ));
+    reg.register(typed(
+        "qc.compare",
+        "Compare two renders of a clip: a labelled side-by-side contact sheet (look at it) plus a per-check status diff (improved / regressed / same). Runs QC on a render that has no report yet.",
+        &["clip_id", "render_a", "render_b"],
+        Annotations { long_running: true, ..Annotations::default() },
+        vec![Example {
+            description: "did the re-render fix the warnings?",
+            cli: "rustler qc compare clp_X rnd_A rnd_B",
+        }],
+        qc_compare,
     ));
     reg.register(typed(
         "export.clip",
@@ -77,7 +91,7 @@ pub struct QcRunOutput {
     pub warnings: Vec<String>,
 }
 
-fn pick_render(clip: &Clip, render_id: Option<&RenderId>) -> rustler_core::Result<RenderRecord> {
+pub(crate) fn pick_render(clip: &Clip, render_id: Option<&RenderId>) -> rustler_core::Result<RenderRecord> {
     match render_id {
         Some(id) => clip.renders.iter().find(|r| &r.id == id).cloned().ok_or_else(|| {
             RustlerError::new(ErrorCode::NotFound, STAGE, format!("clip {} has no render {id}", clip.id))
@@ -99,7 +113,7 @@ fn tools(ctx: &Ctx) -> rustler_core::Result<ToolPaths> {
 
 /// Runs QC. With `persist`: saves the report JSON, sets `RenderRecord.qc` via a revision-checked
 /// `save_clip` and appends an event. Without: everything goes to a scratch dir.
-async fn execute_qc(
+pub(crate) async fn execute_qc(
     ctx: &Ctx,
     store: &ProjectStore,
     mut clip: Clip,
@@ -117,7 +131,8 @@ async fn execute_qc(
         std::env::temp_dir().join(format!("rustler-qc-dry-{}-{}", std::process::id(), render.id))
     };
     let render_path = store.resolve(&render.path);
-    let report = rustler_media::run_qc(&paths, &clip, render, &render_path, &font, &out_dir).await?;
+    let extras = gather_extras(ctx, store, &clip, &render_path, &paths).await;
+    let report = rustler_media::run_qc_with(&paths, &clip, render, &render_path, &font, &out_dir, &extras).await?;
     let v = view(report);
     let report_path = out_dir.join(format!("{}.json", render.id));
     if !persist {
@@ -146,6 +161,269 @@ async fn execute_qc(
         }),
     })?;
     Ok((v, report_path))
+}
+
+// ---------------------------------------------------------------------------------------
+// QC v2 inputs: engine face samples, overlays, caption timing, brief
+// ---------------------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct FacesTrackResult {
+    samples: Vec<rustler_media::facepath::FaceSample>,
+}
+
+/// `faces.track` over the whole render at [`FACE_SAMPLE_FPS`]. `None` (logged) when the engine
+/// cannot start or the call fails: QC then reports the face checks as skipped, never as failed.
+async fn track_faces(
+    ctx: &Ctx,
+    paths: &ToolPaths,
+    render_path: &Path,
+) -> Option<Vec<rustler_media::facepath::FaceSample>> {
+    let engine = match crate::analyze_cmds::spawn_engine(paths).await {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::warn!("qc: engine unavailable, face checks skipped: {}", e.message);
+            return None;
+        }
+    };
+    let params = json!({ "video_path": render_path, "start": 0.0, "end": null, "fps": FACE_SAMPLE_FPS });
+    let res: rustler_core::Result<FacesTrackResult> = engine.call("faces.track", params, &ctx.progress, &ctx.cancel).await;
+    engine.shutdown().await;
+    match res {
+        Ok(r) => Some(r.samples),
+        Err(e) => {
+            tracing::warn!("qc: faces.track failed, face checks skipped: {}", e.message);
+            None
+        }
+    }
+}
+
+/// First number found under any of `keys` of a JSON object.
+fn first_num(v: &serde_json::Value, keys: &[&str]) -> Option<f64> {
+    keys.iter().find_map(|k| v.get(*k).and_then(serde_json::Value::as_f64))
+}
+
+/// Overlay start times from `extras.json` (read leniently: the key may be absent, entries may
+/// be an array or an object of overlays, and the start key may be spelled a few ways).
+pub(crate) fn overlay_starts(extras: &serde_json::Value) -> Vec<f64> {
+    let items: Vec<&serde_json::Value> = match extras.get("overlays") {
+        Some(serde_json::Value::Array(a)) => a.iter().collect(),
+        Some(serde_json::Value::Object(o)) => o.values().collect(),
+        _ => Vec::new(),
+    };
+    items.into_iter().filter_map(|o| first_num(o, &["start", "start_s", "out_start", "t0"])).collect()
+}
+
+/// QC-relevant limits from `<project>/brief.json`, read leniently (none of it is required).
+pub(crate) fn read_brief(store: &ProjectStore) -> Option<QcBrief> {
+    let v: serde_json::Value = store.read_json(Path::new("brief.json")).ok()?;
+    let nested = |k: &str| v.get("duration").and_then(|d| first_num(d, &[k, &format!("{k}_s")]));
+    let b = QcBrief {
+        platform: v.get("platform").and_then(|p| p.as_str()).map(str::to_string),
+        min_s: first_num(&v, &["min_duration_s", "min_duration", "min_s"]).or_else(|| nested("min")),
+        max_s: first_num(&v, &["max_duration_s", "max_duration", "max_s"]).or_else(|| nested("max")),
+    };
+    (b != QcBrief::default()).then_some(b)
+}
+
+/// Output time of the first caption word, if a transcript covers the clip.
+fn first_caption_word(store: &ProjectStore, clip: &Clip) -> Option<f64> {
+    if !clip.captions.enabled {
+        return None;
+    }
+    srt_words(store, clip, &mut Vec::new()).iter().map(|w| w.out_start).reduce(f64::min)
+}
+
+/// True when the command exists in this build's registry.
+fn registry_has(name: &str) -> bool {
+    let mut reg = Registry::new();
+    crate::register_all(&mut reg);
+    reg.describe(name).is_some()
+}
+
+async fn gather_extras(ctx: &Ctx, store: &ProjectStore, clip: &Clip, render_path: &Path, paths: &ToolPaths) -> QcExtras {
+    let raw: serde_json::Value = store
+        .read_json(&crate::clip_cmds::extras_rel(&clip.id))
+        .unwrap_or(serde_json::Value::Null);
+    let faces = if wants_faces(clip) && render_path.is_file() { track_faces(ctx, paths, render_path).await } else { None };
+    QcExtras {
+        faces,
+        overlay_starts: overlay_starts(&raw),
+        first_caption_word_s: first_caption_word(store, clip),
+        brief: read_brief(store),
+        overlay_add_text: registry_has("overlay.add_text"),
+        has_crop_path: raw.get("crop_paths").and_then(|c| c.as_object()).is_some_and(|o| !o.is_empty()),
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// qc.compare
+// ---------------------------------------------------------------------------------------
+
+#[derive(Deserialize, JsonSchema)]
+pub struct QcCompareInput {
+    pub clip_id: ClipId,
+    /// Left column.
+    pub render_a: RenderId,
+    /// Right column.
+    pub render_b: RenderId,
+}
+
+#[derive(Serialize, JsonSchema)]
+pub struct CheckDiff {
+    pub name: String,
+    pub a: Option<QcStatus>,
+    pub b: Option<QcStatus>,
+    /// improved | regressed | same | added | removed (B relative to A)
+    pub change: String,
+    /// Check values of A and B, only when they differ.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub a_value: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub b_value: Option<serde_json::Value>,
+}
+
+#[derive(Serialize, JsonSchema)]
+pub struct QcCompareOutput {
+    pub clip_id: ClipId,
+    pub render_a: RenderId,
+    pub render_b: RenderId,
+    /// Side-by-side contact sheet (A left, B right). Open it before judging the change.
+    pub image: PathBuf,
+    pub look_at: Vec<PathBuf>,
+    pub a_verdict: String,
+    pub b_verdict: String,
+    pub diff: Vec<CheckDiff>,
+    pub summary: String,
+    pub dry_run: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+fn rank(s: QcStatus) -> u8 {
+    match s {
+        QcStatus::Pass => 0,
+        QcStatus::Warn => 1,
+        QcStatus::Fail => 2,
+    }
+}
+
+/// The saved QC report of a render, running (and persisting, unless dry-run) QC when it has none.
+async fn report_for(ctx: &Ctx, store: &ProjectStore, clip_id: &ClipId, render_id: &RenderId) -> rustler_core::Result<QcView> {
+    let clip = store.load_clip(clip_id)?;
+    let render = pick_render(&clip, Some(render_id))?;
+    if let Some(v) = render.qc.as_ref().and_then(|p| store.read_json::<QcView>(p).ok()) {
+        return Ok(v);
+    }
+    Ok(execute_qc(ctx, store, clip, &render, !ctx.dry_run).await?.0)
+}
+
+/// Short label line for a column: `PASS` or `FAIL: a, b` plus warnings.
+fn column_subtitle(v: &QcView) -> String {
+    let fails = names_with(&v.report, QcStatus::Fail);
+    let warns = names_with(&v.report, QcStatus::Warn);
+    let mut s = if fails.is_empty() { "PASS".to_string() } else { format!("FAIL: {}", fails.join(", ")) };
+    if !warns.is_empty() {
+        s.push_str(&format!("  warn: {}", warns.join(", ")));
+    }
+    s
+}
+
+async fn qc_compare(ctx: Ctx, input: QcCompareInput) -> rustler_core::Result<QcCompareOutput> {
+    let store = ctx.store()?;
+    if input.render_a == input.render_b {
+        return Err(RustlerError::new(ErrorCode::Validation, "qc.compare", "render_a and render_b are the same render")
+            .hint(format!("pick two different renders; list them with `rustler clip show {}`", input.clip_id)));
+    }
+    let a = report_for(&ctx, &store, &input.clip_id, &input.render_a).await?;
+    let b = report_for(&ctx, &store, &input.clip_id, &input.render_b).await?;
+    let paths = tools(&ctx)?;
+    let font = default_font(&paths).ok_or_else(|| {
+        RustlerError::new(ErrorCode::DependencyMissing, "qc.compare", "no font available for the labels")
+            .hint("run `rustler setup` (installs fonts)")
+    })?;
+    let mut warnings = Vec::new();
+    let dir = if ctx.dry_run {
+        warnings.push("dry run: the comparison image went to a scratch directory".to_string());
+        std::env::temp_dir().join(format!("rustler-qc-compare-{}", std::process::id()))
+    } else {
+        store.clip_dir(&input.clip_id).join("qc")
+    };
+    let image = dir.join(format!("compare-{}-{}.jpg", input.render_a, input.render_b));
+    let (sheet_a, sheet_b) = (store.resolve(&a.report.contact_sheet), store.resolve(&b.report.contact_sheet));
+    compare_sheet(
+        &CompareColumn { image: &sheet_a, title: format!("A  {}", input.render_a), subtitle: column_subtitle(&a) },
+        &CompareColumn { image: &sheet_b, title: format!("B  {}", input.render_b), subtitle: column_subtitle(&b) },
+        &font,
+        &image,
+    )?;
+
+    let mut diff = Vec::new();
+    for ca in a.report.checks.iter().filter(|c| c.name != "contact_sheet") {
+        let cb = b.report.checks.iter().find(|c| c.name == ca.name);
+        let (change, differs) = match cb {
+            None => ("removed", true),
+            Some(cb) => (
+                match rank(cb.status).cmp(&rank(ca.status)) {
+                    std::cmp::Ordering::Less => "improved",
+                    std::cmp::Ordering::Greater => "regressed",
+                    std::cmp::Ordering::Equal => "same",
+                },
+                cb.value != ca.value,
+            ),
+        };
+        diff.push(CheckDiff {
+            name: ca.name.clone(),
+            a: Some(ca.status),
+            b: cb.map(|c| c.status),
+            change: change.into(),
+            a_value: differs.then(|| ca.value.clone()),
+            b_value: cb.filter(|_| differs).map(|c| c.value.clone()),
+        });
+    }
+    for cb in b.report.checks.iter().filter(|c| c.name != "contact_sheet") {
+        if !a.report.checks.iter().any(|c| c.name == cb.name) {
+            diff.push(CheckDiff {
+                name: cb.name.clone(),
+                a: None,
+                b: Some(cb.status),
+                change: "added".into(),
+                a_value: None,
+                b_value: Some(cb.value.clone()),
+            });
+        }
+    }
+    let count = |c: &str| diff.iter().filter(|d| d.change == c).count();
+    let summary = format!(
+        "B vs A: {} improved, {} regressed, {} unchanged. A: {}. B: {}. Open the image to compare the frames.",
+        count("improved"),
+        count("regressed"),
+        count("same"),
+        column_subtitle(&a),
+        column_subtitle(&b)
+    );
+    if !ctx.dry_run {
+        store.append_event(&Event {
+            ts: Utc::now(),
+            actor: ctx.actor,
+            kind: "qc.compare".into(),
+            project_revision: store.load_project()?.revision,
+            data: json!({ "clip_id": input.clip_id, "render_a": input.render_a, "render_b": input.render_b, "image": store.relativize(&image) }),
+        })?;
+    }
+    Ok(QcCompareOutput {
+        clip_id: input.clip_id,
+        render_a: input.render_a,
+        render_b: input.render_b,
+        look_at: vec![image.clone()],
+        image,
+        a_verdict: a.verdict,
+        b_verdict: b.verdict,
+        diff,
+        summary,
+        dry_run: ctx.dry_run,
+        warnings,
+    })
 }
 
 /// Fix hints of every failing check, joined for an error hint.
@@ -373,6 +651,7 @@ async fn export_clip(ctx: Ctx, input: ExportInput) -> rustler_core::Result<Expor
             "clip": clip,
             "render": render,
             "qc": qc,
+            "brief": crate::brief_cmds::brief_status(&store, &clip.id),
             "source_refs": source_refs,
             "created_at": Utc::now(),
         }),

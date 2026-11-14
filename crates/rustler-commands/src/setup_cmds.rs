@@ -41,12 +41,14 @@ fn emit(ctx: &Ctx, message: &str) {
 
 /// Step 5: `models.fetch` through the freshly installed engine.
 async fn fetch_models(ctx: &Ctx, paths: &ToolPaths, models: &[String]) -> rustler_core::Result<Vec<String>> {
-    emit(ctx, "downloading whisper models");
+    emit(ctx, "downloading whisper, face (YuNet) and audio-event (YAMNet) models");
     let engine = EngineClient::spawn(paths).await?;
     let res: rustler_core::Result<FetchResult> = engine
         .call(
             "models.fetch",
-            serde_json::json!({ "whisper": models }),
+            // Pre-fetch everything the engine would otherwise download on first use, so agents
+            // in sandboxes don't hit a surprise download mid-edit.
+            serde_json::json!({ "whisper": models, "yunet": true, "yamnet": true }),
             &ctx.progress,
             &ctx.cancel,
         )

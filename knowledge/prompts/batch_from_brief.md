@@ -39,6 +39,9 @@ volume with a ≥ 70 floor. Unclear or contradictory requirements → ask before
 - Only creator named → `rustler source search --query "<creator> <topic>" --limit 10`; choose recent,
   long, public videos the brief allows. Check rights/permission requirements in the brief.
 - One project per brief: `rustler project create --name <brief-slug>`.
+- Save the rules once so every clip is checked the same way:
+  `rustler brief set --creator "<name>" --platform shorts --min-duration 20 --max-duration 60 --aspect 9:16 --caption-style hormozi-pop --credit-text "Clip from @creator" --banned-words '["sponsor"]' --required-text '["link in bio"]' --required-hashtags '["#ad"]' --required-mentions '["@creator"]'`
+  (merges into earlier values; `--replace true` starts over; `rustler brief show` prints it).
 
 ## 3. Find and rank moments across all sources
 Follow `finding-hooks`. Rank all candidates together (not per source), drop overlaps and repeats,
@@ -49,18 +52,26 @@ keep the top N that fit the length range naturally. Skip anything on the avoid l
 (`captions-and-style`) → optional pauses/music → `render preview-frame` → `render run` → `qc run` →
 **open the contact sheet** → fix (`quality-checklist`).
 
-Required on-screen text or watermark: use an overlay command if one exists (`commands list` →
-`overlay.*`); if not, report it as "to add at upload" — never claim it is in the video.
+Required on-screen text, credit or watermark: add it with `rustler overlay add-text <clip> "<text>"
+--style lower-third` (`brief check` prints the exact command). Hashtags and @mentions are not part of
+the video: they go in the post description (`rustler brief description <clip>` drafts it).
+To pick between looks, `rustler variant create <clip> --caption-styles '[...]' --layouts '[...]'`
+then `rustler variant compare --clip-ids '[...]'` and **open the grid image**.
 
 ## 5. Brief check per clip (all must be ✓ before export)
-- Duration inside range (`clip show` total; QC duration).
-- Platform format 1080×1920 (QC dimensions).
-- Caption style/script as required.
-- Required credit/tags present in the report's description/hashtags (and on-screen if required).
-- Nothing from the avoid list in speech, captions or visuals (read the clip's transcript lines).
-- QC passed; contact sheet checked.
+Run `rustler brief check <clip>`; it saves `clips/<id>/brief_check.json` and returns pass/warn/fail per
+rule with the fix commands. Apply the fixes, re-render, re-check until the status is not `fail`:
+- Duration inside the range (transition overlap already subtracted).
+- Canvas aspect, caption style and layout as required.
+- Required text present (captions, overlays or speech); credit/watermark overlay on screen.
+- Nothing from the banned list in speech, captions or overlays (whole-word, case-insensitive).
+- Hashtags/mentions are `info` items: put them in the post description.
+- QC passed (`qc run`); **contact sheet opened**.
 
-Then `rustler export clip <clip> --name <brief-slug>-<nn>-<short-title>`.
+Then `rustler render batch --all true` (add `--only-missing true` to skip finished clips) and
+`rustler export batch --all true`: it runs QC and the brief check, exports only the passing clips and
+lists the skipped ones with reasons and fixes. Single clip: `rustler export clip <clip> --name
+<brief-slug>-<nn>-<short-title>` (its report embeds the brief check).
 
 ## 6. Report
 1. Brief checklist with ✓/✗ per item for the batch.

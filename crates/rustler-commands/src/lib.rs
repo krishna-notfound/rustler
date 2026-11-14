@@ -2,10 +2,12 @@
 
 pub mod analyze_cmds;
 pub mod audio_cmds;
+pub mod brief_cmds;
 pub mod clip_cmds;
 pub mod cut_cmds;
 pub mod edit_cmds;
 pub mod extras;
+pub mod fix_cmds;
 pub mod fx_cmds;
 pub mod guide_cmds;
 pub mod highlights_cmds;
@@ -19,6 +21,7 @@ pub mod setup_cmds;
 pub mod source_cmds;
 pub mod transcript_cmds;
 pub mod understand_cmds;
+pub mod variant_cmds;
 
 use rustler_registry::Registry;
 
@@ -38,8 +41,11 @@ pub fn register_all(reg: &mut Registry) {
     overlay_cmds::register(reg);
     audio_cmds::register(reg);
     fx_cmds::register(reg);
-    layout_cmds::register(reg);
-    highlights_cmds::register(reg);
     render_cmds::register(reg);
     qc_cmds::register(reg);
+    fix_cmds::register(reg);
+    layout_cmds::register(reg);
+    highlights_cmds::register(reg);
+    brief_cmds::register(reg);
+    variant_cmds::register(reg);
 }
