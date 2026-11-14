@@ -224,11 +224,40 @@
         }
       });
     }
+    drawEffectTint(W, H);
     drawOverlays(W, H);
     drawCaption(W, H);
+    drawProgressBar(W, H);
     if (showRegions) R.regions && R.regions.drawDst && R.regions.drawDst(m.segment_id, regs);
   }
   M.draw = draw;
+
+  // Progress bar (overlay.progress_bar): fills the canvas width over the clip, on top of everything.
+  function drawProgressBar(W, H) {
+    var pb = E.progressBar;
+    if (!pb || !E.duration) return;
+    var k = W / E.clip.canvas.width;
+    var bh = Math.max(2, (pb.height || 8) * k);
+    var frac = R.clamp(E.t / E.duration, 0, 1);
+    ctx.fillStyle = pb.color || '#FFE000';
+    ctx.fillRect(0, pb.position === 'bottom' ? H - bh : 0, W * frac, bh);
+  }
+  // Effects (effect.add) are applied by the renderer; the live preview marks the active one.
+  function drawEffectTint(W, H) {
+    var fx = (E.effects || []).filter(function (f) { return E.t >= f.start && E.t < f.end; })[0];
+    if (!fx) return;
+    ctx.save();
+    if (fx.kind === 'flash') { ctx.fillStyle = 'rgba(255,255,255,.55)'; ctx.fillRect(0, 0, W, H); }
+    ctx.strokeStyle = 'rgba(255,138,61,.9)'; ctx.lineWidth = 3; ctx.setLineDash([8, 6]);
+    ctx.strokeRect(6, 6, W - 12, H - 12);
+    ctx.setLineDash([]);
+    ctx.font = '600 12px "Segoe UI", Arial, sans-serif'; ctx.fillStyle = 'rgba(0,0,0,.6)';
+    var label = 'FX ' + fx.kind + (fx.kind !== 'flash' ? ' ' + R.round(fx.amount_used || fx.amount || 0, 3) : '');
+    var tw = ctx.measureText(label).width;
+    ctx.fillRect(10, H - 30, tw + 12, 20);
+    ctx.fillStyle = '#ffb27a'; ctx.fillText(label, 16, H - 15);
+    ctx.restore();
+  }
 
   function drawCaption(W, H) {
     var cap = E.clip.captions;
@@ -237,7 +266,7 @@
     for (var i = 0; i < E.captions.length; i++) { var c = E.captions[i]; if (E.t >= c.start && E.t < c.end) { cue = c; break; } }
     if (!cue) return;
     // Mirrors rustler-captions presets (font, size = canvas width x factor, outline, active word).
-    var P = PRESETS[cap.preset] || PRESETS['clean-white'];
+    var P = PRESETS[cap.preset] || customPreset(cap.preset) || PRESETS['clean-white'];
     var k = W / E.clip.canvas.width;
     // ASS font size ~ line height; CSS px = em (ratios measured against libass renders)
     var size = E.clip.canvas.width * P.size * k / (P.font === 'anton' ? 1.7 : 1.4);
@@ -267,8 +296,8 @@
           ctx.fillStyle = P.color;
           ctx.fillRect(x - pad, yy - size * 0.95, w.w + 2 * pad, size * 1.25);
         }
-        if (P.outline) { ctx.lineWidth = P.outline * k * 2; ctx.strokeStyle = '#000'; ctx.lineJoin = 'round'; ctx.strokeText(w.t, x, yy); }
-        ctx.fillStyle = on && P.active !== 'box' ? P.color : '#fff';
+        if (P.outline) { ctx.lineWidth = P.outline * k * 2; ctx.strokeStyle = P.stroke || '#000'; ctx.lineJoin = 'round'; ctx.strokeText(w.t, x, yy); }
+        ctx.fillStyle = on && P.active !== 'box' ? P.color : (P.primary || '#fff');
         if (on && P.active === 'pop') { ctx.save(); ctx.translate(x + w.w / 2, yy); ctx.scale(1.08, 1.08); ctx.fillText(w.t, -w.w / 2, 0); ctx.restore(); }
         else ctx.fillText(w.t, x, yy);
         x += w.w + space;
@@ -282,6 +311,15 @@
     'boxed-highlight': { font: 'poppins', size: 0.058, upper: false, outline: 3, active: 'box', color: '#7B2CFF' },
     'hormozi-pop': { font: 'anton', size: 0.076, upper: true, outline: 6, active: 'pop', color: '#2BFF5E' }
   };
+  // Custom styles (caption.create_style): approximate from caption.styles (R.styleDefs); exact look = Exact frame.
+  function customPreset(name) {
+    var d = R.styleDefs && R.styleDefs[name];
+    if (!d) return null;
+    var base = PRESETS[d.base] || (/anton/i.test(d.font_family || '') ? PRESETS['bold-karaoke'] : PRESETS['clean-white']);
+    return { font: /anton/i.test(d.font_family || '') ? 'anton' : 'poppins', size: d.size_factor || base.size, upper: d.uppercase !== undefined ? !!d.uppercase : base.upper,
+      outline: d.outline !== undefined ? d.outline : base.outline, active: d.active_kind || base.active, color: d.active_colour || base.color,
+      primary: d.primary || '#fff', stroke: d.outline_colour || '#000' };
+  }
   // Index (within the cue) of the word being spoken, from the transcript words in output time.
   function activeWordIndex(cue, n) {
     if (!R.timeline || !R.timeline.outWords) return -1;

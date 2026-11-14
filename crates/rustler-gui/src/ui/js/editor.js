@@ -9,6 +9,7 @@
     return {
       clipId: clipId, data: null, clip: null, rev: 0, timeline: [], duration: 0, fps: 30,
       layout: null, sources: {}, words: {}, units: {}, captions: [], overlays: [], sfx: [], extras: {},
+      transitions: [], effects: [], progressBar: null, range: null, selFx: '', selSfx: '',
       t: 0, playing: false, selSeg: '', selRegion: '', scopeAll: null, snap: R.store('rustler.snap') !== '0',
       draft: null, redo: [], pending: 0, loading: false, extrasMtime: null, ls: {}
     };
@@ -65,6 +66,9 @@
     jobs.push(R.has('layout.show') ? R.run('layout.show', { clip_id: id }, true) : Promise.resolve(null));
     jobs.push(R.has('overlay.list') ? R.run('overlay.list', { clip_id: id }, true) : Promise.resolve(null));
     jobs.push(R.has('audio.list') ? R.run('audio.list', { clip_id: id }, true) : Promise.resolve(null));
+    jobs.push(R.has('transition.list') ? R.run('transition.list', { clip_id: id }, true) : Promise.resolve(null));
+    jobs.push(R.has('effect.list') ? R.run('effect.list', { clip_id: id }, true) : Promise.resolve(null));
+    jobs.push(R.loadStyleDefs());
     return Promise.all(jobs).then(function (res) {
       E.loading = false;
       if (!E || E.clipId !== id) return;
@@ -81,6 +85,11 @@
       E.overlays = res[2] ? R.listOf(res[2], 'overlays', 'items') : [];
       E.audioList = res[3];
       E.sfx = res[3] ? R.listOf(res[3], 'sfx', 'cues', 'items') : [];
+      E.transitionList = res[4];
+      E.transitions = res[4] && Array.isArray(res[4].transitions) ? res[4].transitions : [];
+      E.effects = res[5] && Array.isArray(res[5].effects) ? res[5].effects : [];
+      E.progressBar = res[5] ? res[5].progress_bar || null : null;
+      E.renderedDuration = res[4] ? res[4].rendered_duration : (res[3] ? res[3].rendered_duration : E.duration);
       if (E.t > E.duration) E.t = Math.max(0, E.duration - 1 / E.fps);
       if (!segById(E.selSeg)) { var m = segAt(E.t); E.selSeg = m ? m.segment_id : ''; }
       var lay = layoutOf(E.selSeg);
@@ -272,6 +281,9 @@
       revChip.textContent = 'rev ' + E.rev + '  ·  ' + R.tc(E.duration, E.fps) + '  ·  ' + E.clip.segments.length + ' seg';
     });
     on('error', function (msg) { name.textContent = msg; name.classList.add('err'); });
+    // The Assets page offers "add at the editor playhead" for this clip.
+    var lastStore = 0;
+    on('time', function (t) { var now = Date.now(); if (now - lastStore > 300 || !E.playing) { lastStore = now; R.store('rustler.playhead.' + clipId, String(R.round(t, 3))); } });
 
     document.addEventListener('keydown', onKey);
     R.onLeave(function () { document.removeEventListener('keydown', onKey); R.monitor.unmount(); E = null; });
