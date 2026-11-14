@@ -98,3 +98,6 @@ renders, checks quality, fixes problems, and delivers finished short-form clips.
   (Muse, Claude Code, Antigravity, …) does all the thinking — choosing moments, hooks, styles, judging
   quality by looking at frames/contact sheets. Rustler = local tools only (FFmpeg, yt-dlp, local
   faster-whisper, OpenCV). Provider layer (f13) and LLM-based helpers are dropped from scope.
+- 2026-11-15 (02:40): **Goal: complete everything** — the full CLI for every tool in the design, then
+  the full GUI (Premiere-style editor, built in the web GUI). CLI must be complete. No 5-hour cap.
+  Plan: `docs/superpowers/plans/2026-11-15-complete-rustler.md`.
