@@ -10,6 +10,7 @@ chrono.workspace = true
 rustler-captions.workspace = true
 rustler-core.workspace = true
 rustler-engine-bridge.workspace = true
+rustler-knowledge.workspace = true
 rustler-media.workspace = true
 rustler-registry.workspace = true
 rustler-tools.workspace = true

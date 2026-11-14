@@ -16,6 +16,7 @@ rustler-engine-bridge = { path = "crates/rustler-engine-bridge" }
 rustler-media = { path = "crates/rustler-media" }
 rustler-captions = { path = "crates/rustler-captions" }
 rustler-commands = { path = "crates/rustler-commands" }
+rustler-knowledge = { path = "crates/rustler-knowledge" }
 
 ab_glyph = "0.2.32"
 anyhow = "1.0.104"
@@ -32,6 +33,7 @@ reqwest = { version = "0.13.5", features = ["json", "stream"] }
 schemars = { version = "1.2.3", features = ["chrono04"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+serde_yaml = "0.9.34"
 sha2 = "0.11.1"
 strsim = "0.11.1"
 tar = "0.4.46"
