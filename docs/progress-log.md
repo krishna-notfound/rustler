@@ -217,3 +217,10 @@ Give Claude Code the skill: copy `skills\rustler` to `%USERPROFILE%\.claude\skil
   Known: detect-webcam rect includes a sliver of gameplay beside the facecam (nudge region); hook
   title sits over the facecam forehead at default y — agents should adjust position_y.
 - Windows PowerShell 5.1 strips quotes in JSON args → use `--input-json @file.json` (docs updated).
+- Merged docs refresh: knowledge book now 17 guides + 10 prompts covering all 118 commands (script-
+  verified, README quick start run end to end), SKILL.md/AGENTS.md/agent-integration refreshed, feature
+  files for f07b, f15, f18–f22, f25, f29.
+- `setup` now pre-fetches whisper + YuNet + YAMNet + diarization models; re-ran setup on this laptop:
+  engine updated, assets registered (7 built-in, 4 fonts, 26 SFX); `analyze speakers` works with
+  sherpa-onnx (pyannote-seg-3.0 + WeSpeaker).
+- Running: GUI integration pass [Opus], Linux/WSL validation [Sonnet].
