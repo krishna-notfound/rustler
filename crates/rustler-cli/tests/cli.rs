@@ -75,13 +75,25 @@ fn no_args_prints_help_exit_0() {
 }
 
 #[test]
-fn reserved_builtins_are_not_built_yet() {
-    for args in [vec!["mcp", "serve"], vec!["gui"]] {
-        let out = bin().args(&args).output().unwrap();
-        assert_eq!(out.status.code(), Some(3), "{args:?}");
-        let v = stdout_json(&out);
-        assert!(v["error"]["message"].as_str().unwrap().contains("not built yet"));
-    }
+fn mcp_serve_answers_initialize_even_after_project_flag() {
+    use std::io::Write;
+    use std::process::Stdio;
+    let dir = std::env::temp_dir();
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_rustler"))
+        .args(["--project", dir.to_str().unwrap(), "mcp", "serve"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}"#;
+    writeln!(child.stdin.take().unwrap(), "{init}").unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let first = String::from_utf8_lossy(&out.stdout).lines().next().unwrap_or_default().to_string();
+    let v: serde_json::Value = serde_json::from_str(&first).unwrap();
+    assert_eq!(v["id"], 1);
+    assert!(v["result"]["capabilities"]["tools"].is_object());
 }
 
 #[test]

@@ -56,8 +56,27 @@ fn main() {
 
 /// `rustler mcp serve` and `rustler gui` are long-running servers over the same registry.
 fn is_server_builtin(args: &[String]) -> bool {
-    let words: Vec<&str> = args.iter().map(String::as_str).filter(|a| !a.starts_with('-')).collect();
+    let words = positional_words(args);
     (words.first() == Some(&"mcp") && words.get(1) == Some(&"serve")) || words.first() == Some(&"gui")
+}
+
+/// Non-flag words, skipping the values of global flags that take one (`--project <dir>` etc.).
+fn positional_words(args: &[String]) -> Vec<&str> {
+    const VALUE_FLAGS: &[&str] = &["--project", "--port", "--actor", "--max-seconds", "--input-json"];
+    let mut out = Vec::new();
+    let mut skip = false;
+    for a in args {
+        if skip {
+            skip = false;
+            continue;
+        }
+        if VALUE_FLAGS.contains(&a.as_str()) {
+            skip = true;
+        } else if !a.starts_with('-') {
+            out.push(a.as_str());
+        }
+    }
+    out
 }
 
 fn flag_value(args: &[String], name: &str) -> Option<String> {
@@ -92,7 +111,7 @@ fn resolve_project(args: &[String]) -> Option<std::path::PathBuf> {
 
 /// Runs `rustler mcp serve` or `rustler gui` until the server stops; returns the exit code.
 async fn serve_builtin(args: &[String], reg: Registry) -> i32 {
-    let is_mcp = args.iter().any(|a| a == "mcp");
+    let is_mcp = positional_words(args).first() == Some(&"mcp");
     let ctx = rustler_registry::Ctx::new(resolve_project(args), resolve_home());
     let reg = std::sync::Arc::new(reg);
     let res = if is_mcp {
