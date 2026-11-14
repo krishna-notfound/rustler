@@ -226,6 +226,11 @@ pub struct ClipExtras {
     /// Crop path (keyframes of the crop's left edge) per segment id.
     #[serde(default)]
     pub crop_paths: BTreeMap<String, Vec<CropKey>>,
+    /// Every other extras key (overlays, sfx, transitions, effects, …) owned by other command
+    /// modules — carried through untouched so saving music/crop data never clobbers them.
+    #[serde(flatten, default)]
+    #[schemars(skip)]
+    pub other: serde_json::Map<String, serde_json::Value>,
 }
 
 pub(crate) fn load_extras(store: &ProjectStore, id: &ClipId) -> Result<ClipExtras> {
