@@ -35,8 +35,55 @@ async fn setup() -> Env {
     )
     .unwrap();
     std::fs::write(outside.path().join("secret.txt"), "secret").unwrap();
+    std::fs::write(proj.path().join("frame_src_a.jpg"), b"\xFF\xD8fakejpeg").unwrap();
+    std::fs::create_dir_all(proj.path().join("clips").join("clp_1")).unwrap();
+    std::fs::write(
+        proj.path().join("clips").join("clp_1").join("clip.json"),
+        r#"{"id":"clp_1","revision":7}"#,
+    )
+    .unwrap();
 
     let mut reg = Registry::new();
+    // see.frame stand-in: writes nothing, returns the jpg for source "src_a" only.
+    reg.register(typed(
+        "see.frame",
+        "fake frame",
+        &[],
+        Annotations::default(),
+        vec![],
+        |ctx: Ctx, i: Value| async move {
+            if i["source_id"] != "src_a" || !i["t"].is_number() || i["width"] != 320 {
+                return Err(rustler_core::RustlerError::new(
+                    rustler_core::ErrorCode::NotFound,
+                    "see.frame",
+                    format!("bad input {i}"),
+                ));
+            }
+            let p = ctx.project_dir.unwrap().join("frame_src_a.jpg");
+            Ok(json!({"image": p}))
+        },
+    ));
+    // A slow command that reports progress and honours cancellation.
+    reg.register(typed(
+        "fake.slow",
+        "slow",
+        &[],
+        Annotations::default(),
+        vec![],
+        |ctx: Ctx, i: Value| async move {
+            let ms = i["ms"].as_u64().unwrap_or(300);
+            ctx.progress.emit(rustler_registry::ProgressEvent {
+                stage: "work".into(),
+                pct: Some(0.5),
+                message: Some("half".into()),
+            });
+            tokio::select! {
+                _ = tokio::time::sleep(std::time::Duration::from_millis(ms)) => Ok(json!({"done": true})),
+                _ = ctx.cancel.cancelled() => Err(rustler_core::RustlerError::new(
+                    rustler_core::ErrorCode::Cancelled, "fake.slow", "cancelled")),
+            }
+        },
+    ));
     reg.register(typed(
         "fake.double",
         "Doubles a",
@@ -107,7 +154,7 @@ async fn token_required() {
 }
 
 #[tokio::test]
-async fn page_references_app_js() {
+async fn page_references_js_modules() {
     let e = setup().await;
     let t = &e.gui.token;
     let c = reqwest::Client::new();
@@ -119,16 +166,213 @@ async fn page_references_app_js() {
         .text()
         .await
         .unwrap();
-    assert!(html.contains("app.js"));
     assert!(html.contains("style.css"));
     assert!(!html.contains("__TOKEN__"));
-    let js = c
-        .get(format!("{}/app.js?t={t}", e.base))
+    assert!(!html.contains("__SCRIPTS__"));
+    let mods = rustler_gui::js_modules();
+    assert!(mods.len() >= 10, "{mods:?}");
+    // every module is referenced in load order and served as JS
+    let mut last = 0;
+    for m in &mods {
+        let at = html.find(&format!("/js/{m}?t=")).unwrap_or_else(|| panic!("{m} not in page"));
+        assert!(at > last, "{m} out of order");
+        last = at;
+        let r = c.get(format!("{}/js/{m}?t={t}", e.base)).send().await.unwrap();
+        assert_eq!(r.status(), 200, "{m}");
+        assert!(r.headers()["content-type"].to_str().unwrap().starts_with("text/javascript"));
+        assert!(!r.text().await.unwrap().trim().is_empty(), "{m} empty");
+    }
+    assert_eq!(mods[0], "core.js");
+    assert_eq!(*mods.last().unwrap(), "boot.js");
+    let core = c.get(format!("{}/js/core.js?t={t}", e.base)).send().await.unwrap().text().await.unwrap();
+    assert!(core.contains("/api/run") && core.contains("/api/jobs"));
+    // unknown module -> 404; modules need the token too
+    let r = c.get(format!("{}/js/nope.js?t={t}", e.base)).send().await.unwrap();
+    assert_eq!(r.status(), 404);
+    let r = c.get(format!("{}/js/core.js", e.base)).send().await.unwrap();
+    assert_eq!(r.status(), 401);
+}
+
+async fn jobs(c: &reqwest::Client, e: &Env) -> Vec<Value> {
+    let v: Value = c
+        .get(format!("{}/api/jobs?t={}", e.base, e.gui.token))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    v["jobs"].as_array().unwrap().clone()
+}
+
+async fn wait_job(c: &reqwest::Client, e: &Env, id: &str) -> Value {
+    for _ in 0..200 {
+        let js = jobs(c, e).await;
+        let j = js.iter().find(|j| j["id"] == id).unwrap().clone();
+        if j["status"] != "running" {
+            return j;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("job {id} did not finish");
+}
+
+#[tokio::test]
+async fn jobs_run_in_background_with_progress_and_cancel() {
+    let e = setup().await;
+    let t = &e.gui.token;
+    let c = reqwest::Client::new();
+    // start -> returns at once with a job id; progress visible while running
+    let env: Value = c
+        .post(format!("{}/api/jobs?t={t}", e.base))
+        .json(&json!({"command": "fake.slow", "input": {"ms": 400}}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(env["ok"], true, "{env}");
+    let id = env["data"]["job_id"].as_str().unwrap().to_string();
+    let mut saw_progress = false;
+    for _ in 0..50 {
+        let js = jobs(&c, &e).await;
+        let j = js.iter().find(|j| j["id"] == id.as_str()).unwrap();
+        if j["status"] == "running" && j["progress"]["stage"] == "work" {
+            assert_eq!(j["command"], "fake.slow");
+            assert!(j["result"].is_null());
+            saw_progress = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(saw_progress, "progress event never showed up on the running job");
+    let done = wait_job(&c, &e, &id).await;
+    assert_eq!(done["status"], "ok");
+    assert_eq!(done["result"]["ok"], true);
+    assert_eq!(done["result"]["data"]["done"], true);
+    assert!(done["finished_ms"].as_u64().unwrap() >= done["started_ms"].as_u64().unwrap());
+
+    // cancel a long job
+    let env: Value = c
+        .post(format!("{}/api/jobs?t={t}", e.base))
+        .json(&json!({"command": "fake.slow", "input": {"ms": 60000}}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id2 = env["data"]["job_id"].as_str().unwrap().to_string();
+    let r: Value = c
+        .post(format!("{}/api/jobs/cancel?t={t}", e.base))
+        .json(&json!({"job_id": id2}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(r["ok"], true);
+    let j = wait_job(&c, &e, &id2).await;
+    assert_eq!(j["status"], "cancelled");
+    assert_eq!(j["result"]["error"]["code"], "cancelled");
+    // cancelling a finished job -> error envelope
+    let r: Value = c
+        .post(format!("{}/api/jobs/cancel?t={t}", e.base))
+        .json(&json!({"job_id": id2}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(r["ok"], false);
+
+    // unknown command -> error envelope, no job
+    let env: Value = c
+        .post(format!("{}/api/jobs?t={t}", e.base))
+        .json(&json!({"command": "nope.nope"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(env["ok"], false);
+    assert_eq!(jobs(&c, &e).await.len(), 2);
+    // a failing command -> status error with the error envelope
+    let env: Value = c
+        .post(format!("{}/api/jobs?t={t}", e.base))
+        .json(&json!({"command": "fake.double", "input": {"a": "x"}}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let j = wait_job(&c, &e, env["data"]["job_id"].as_str().unwrap()).await;
+    assert_eq!(j["status"], "error");
+    assert_eq!(j["result"]["error"]["code"], "validation");
+    // token required
+    let r = c.get(format!("{}/api/jobs", e.base)).send().await.unwrap();
+    assert_eq!(r.status(), 401);
+}
+
+#[tokio::test]
+async fn frame_route_serves_see_frame_jpeg() {
+    let e = setup().await;
+    let t = &e.gui.token;
+    let c = reqwest::Client::new();
+    let r = c
+        .get(format!("{}/api/frame?source_id=src_a&at=1.5&w=320&t={t}", e.base))
         .send()
         .await
         .unwrap();
-    assert_eq!(js.status(), 200);
-    assert!(js.text().await.unwrap().contains("/api/run"));
+    assert_eq!(r.status(), 200);
+    assert_eq!(r.headers()["content-type"], "image/jpeg");
+    assert_eq!(r.bytes().await.unwrap().as_ref(), b"\xFF\xD8fakejpeg");
+    // command error -> 422; bad ids / times -> 400
+    let r = c
+        .get(format!("{}/api/frame?source_id=src_b&at=1&w=320&t={t}", e.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 422);
+    for q in ["source_id=..%2Fx&at=1", "source_id=src_a&at=-1", "source_id=src_a&at=abc", "at=1"] {
+        let r = c.get(format!("{}/api/frame?{q}&t={t}", e.base)).send().await.unwrap();
+        assert_eq!(r.status(), 400, "{q}");
+    }
+}
+
+#[tokio::test]
+async fn clip_state_reports_revision() {
+    let e = setup().await;
+    let t = &e.gui.token;
+    let c = reqwest::Client::new();
+    let v: Value = c
+        .get(format!("{}/api/clip_state?clip_id=clp_1&t={t}", e.base))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(v["clip_id"], "clp_1");
+    assert_eq!(v["revision"], 7);
+    assert!(v["extras_mtime_ms"].is_null());
+    let r = c
+        .get(format!("{}/api/clip_state?clip_id=clp_missing&t={t}", e.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 404);
+    let r = c
+        .get(format!("{}/api/clip_state?clip_id=..%5Cx&t={t}", e.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 400);
 }
 
 #[tokio::test]
