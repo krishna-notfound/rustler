@@ -236,7 +236,7 @@ async fn live_info_and_fetch_transcript() {
     let (_dir, ctx) = project();
     let url = std::env::var("RUSTLER_LIVE_URL").unwrap_or_else(|_| "https://www.youtube.com/watch?v=aqz-KE-bpKQ".to_string());
     let info = ok(&reg, "source.info", &ctx, json!({"url": url})).await;
-    eprintln!("INFO: {}", serde_json::to_string_pretty(&info).unwrap().chars().take(2500).collect::<String>());
+    eprintln!("INFO title={} duration={} peaks={} subtitles={} chapters={}", info["title"], info["duration"], info["heatmap_peaks"], info["subtitles"], info["chapters"]);
     assert!(!info["title"].as_str().unwrap().is_empty());
     assert!(info["duration"].as_f64().unwrap() > 0.0);
     let t = ok(&reg, "source.fetch_transcript", &ctx, json!({"url": url})).await;
