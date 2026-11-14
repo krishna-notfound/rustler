@@ -205,3 +205,15 @@ Give Claude Code the skill: copy `skills\rustler` to `%USERPROFILE%\.claude\skil
 - Running (integration): GUI integration pass (assets page, audio/effects/brief/variants/project panels
   verified against real commands) [Opus]; docs/knowledge/skill refresh for the full command set [Sonnet];
   C4 speakers [Sonnet].
+- Merged C4 speakers: analyze.speakers (sherpa-onnx + pyannote-seg-3.0 MIT + WeSpeaker Apache; heuristic
+  fallback), speaker.rename, caption.speaker_colors, crop.track_speaker. 477 Rust + 116 Python tests green
+  on branch. Registry: **118 commands**.
+- **Streamer e2e via CLI** on a synthetic stream (gameplay + Lincoln facecam top-right + speech):
+  analyze quick → highlights candidates (#1 "ask not what your country…", score 46.9) → layout
+  detect-webcam (top-right) → clip create split-vertical + hormozi-pop → overlay add-text hook →
+  audio add-sfx asset:kenney click → denoise → progress bar → punch-in effect → render (h264_nvenc,
+  18.3 s) → qc passed → brief check correctly FAILED on missing credit text → export. Contact sheet
+  inspected: facecam top / gameplay bottom, hook title first 3 s, karaoke captions, progress bar.
+  Known: detect-webcam rect includes a sliver of gameplay beside the facecam (nudge region); hook
+  title sits over the facecam forehead at default y — agents should adjust position_y.
+- Windows PowerShell 5.1 strips quotes in JSON args → use `--input-json @file.json` (docs updated).
