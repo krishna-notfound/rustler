@@ -67,3 +67,8 @@
   Opus writing `knowledge/`; Sonnet building loader + MCP prompts/resources + guide commands.
 - Running: T4 setup/doctor, T9 render compiler, bridge, knowledge content+loader, faces, edit ops,
   10a/10b commands, T11 QC.
+- User rule (2026-11-15): **all documentation lives in `docs/` and is kept updated after every merge.**
+  Planned move (after the knowledge-content agent finishes, since it reads `findings/` right now):
+  `findings/` → `docs/research/`, `features/` → `docs/features/`, `context/` → `docs/context/`; update all
+  path references + CLAUDE.md. `knowledge/` stays at repo root (it's product content embedded in the binary,
+  not project docs) but is indexed from `docs/README.md`.
