@@ -302,7 +302,7 @@
 
   // ------------------------------------------------------------ router
   R.views = {};   // id -> {label, nav, render(el, arg)}
-  R.NAV = ['project', 'sources', 'clips', 'editor', 'renders', 'activity', 'commands'];
+  R.NAV = ['project', 'sources', 'clips', 'editor', 'assets', 'brief', 'renders', 'activity', 'commands'];
   R.buildNav = function () {
     var nav = clear($('navlinks'));
     R.NAV.forEach(function (id) {
@@ -338,5 +338,136 @@
       R.setChip();
       return d;
     });
+  };
+  // ------------------------------------------------------------ shared helpers (pages + editor panels)
+  // Caption style definitions by name (caption.styles: built-in + custom), for the live canvas.
+  R.styleDefs = R.styleDefs || {};
+  R.loadStyleDefs = function () {
+    if (!R.has('caption.styles')) return Promise.resolve([]);
+    return R.run('caption.styles', {}, true).then(function (d) {
+      var list = (d && Array.isArray(d.styles)) ? d.styles : [];
+      list.forEach(function (s) { R.styleDefs[s.name] = s; });
+      return list;
+    });
+  };
+  R.loadClips = function () {
+    if (!R.has('clip.list')) return Promise.resolve([]);
+    return R.run('clip.list', {}, true).then(function (d) { return R.listOf(d, 'clips'); });
+  };
+  R.badge = function (text, kind, title) { return h('span', { class: 'badge b-' + (kind || 'none'), title: title }, text); };
+  R.statusBadge = function (st, label) {
+    var s = String(st || '').toLowerCase();
+    var k = /pass|ok|done|rendered|exported|yes/.test(s) ? 'pass' : /warn|stale|skip/.test(s) ? 'warn' : /fail|error|no/.test(s) ? 'fail' : 'none';
+    return R.badge(label || st || '-', k);
+  };
+  // A small confirm dialog (no window.confirm so the page never blocks).
+  R.confirm = function (title, text, okLabel) {
+    return new Promise(function (res) {
+      var close = null;
+      var done = function (v) { if (close) close(); res(v); };
+      close = R.modal(title, h('p', null, text), [
+        h('button', { class: 'small ghost', type: 'button', onclick: function () { done(false); } }, 'Cancel'),
+        h('button', { class: 'small primary', type: 'button', onclick: function () { done(true); } }, okLabel || 'OK')]);
+    });
+  };
+  R.copyText = function (text) {
+    var ok = function () { R.toast('Copied to the clipboard', 'good'); return true; };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text).then(ok).catch(function () { return fallback(); });
+    }
+    return Promise.resolve(fallback());
+    function fallback() {
+      var ta = h('textarea', { style: { position: 'fixed', left: '-9999px' } });
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      var r = false; try { r = document.execCommand('copy'); } catch (e) { r = false; }
+      document.body.removeChild(ta);
+      if (r) return ok();
+      R.toast('Copy failed: select the text and press Ctrl+C', 'bad');
+      return false;
+    }
+  };
+
+  // ------------------------------------------------------------ CLI lines -> commands
+  // Commands print follow-ups / fixes as `rustler <group> <action> [positional] [--flag value]`.
+  // parseCli maps such a line onto {command, input} with the same rules as the CLI (spec.positional,
+  // kebab flags -> snake keys, JSON values unless the field is a string). Lines with <placeholders>
+  // need a human value and return null.
+  function tokens(s) {
+    var out = [], cur = '', q = '', any = false;
+    for (var i = 0; i < s.length; i++) {
+      var c = s[i];
+      if (q) {
+        if (c === '\\' && q === '"' && s[i + 1] === '"') { cur += '"'; i++; continue; }
+        if (c === q) { q = ''; continue; }
+        cur += c; continue;
+      }
+      if (c === '"' || c === "'") { q = c; any = true; continue; }
+      if (/\s/.test(c)) { if (cur || any) { out.push(cur); cur = ''; any = false; } continue; }
+      cur += c;
+    }
+    if (cur || any) out.push(cur);
+    return out;
+  }
+  R.cliTokens = tokens;
+  R.parseCli = function (line) {
+    var s = String(line || '').trim().replace(/\s{2,}\(.*\)\s*$/, '').replace(/^`|`$/g, '');
+    var t = tokens(s);
+    if (t[0] !== 'rustler') return null;
+    t.shift();
+    for (var i = 0; i < t.length; i++) if (t[i] === '--project') { t.splice(i, 2); i--; }
+    if (t.length < 2) return null;
+    var name = t[0] + '.' + t[1].replace(/-/g, '_');
+    var spec = R.spec(name);
+    if (!spec) return null;
+    var rest = t.slice(2);
+    if (rest.some(function (x) { return /^<.*>$/.test(x) || /<[a-z_]+>/.test(x); })) return null;
+    var pos = [], input = {};
+    function val(key, raw) {
+      var k = R.schemaKind(name, key);
+      if (k && k.kind === 'string') return raw;
+      if (k && k.kind === 'array' && raw.charAt(0) !== '[') return raw.split(',').map(function (x) { return x.trim(); });
+      try { return JSON.parse(raw); } catch (e) { return raw; }
+    }
+    for (var j = 0; j < rest.length; j++) {
+      var tok = rest[j];
+      if (tok.indexOf('--') === 0) {
+        var key = tok.slice(2), v = null;
+        var eq = key.indexOf('=');
+        if (eq >= 0) { v = key.slice(eq + 1); key = key.slice(0, eq); }
+        key = key.replace(/-/g, '_');
+        if (v === null && j + 1 < rest.length && rest[j + 1].indexOf('--') !== 0) { v = rest[++j]; }
+        if (v === null) {
+          if (!R.hasProp(name, key) && key.indexOf('no_') === 0 && R.hasProp(name, key.slice(3))) input[key.slice(3)] = false;
+          else input[key] = true;
+        } else input[key] = val(key, v);
+      } else pos.push(tok);
+    }
+    var slots = spec.positional || [];
+    for (var p = 0; p < slots.length && p < pos.length; p++) {
+      var last = p === slots.length - 1, kd = R.schemaKind(name, slots[p]);
+      if (last && kd && kd.kind === 'array') { input[slots[p]] = pos.slice(p); break; }
+      input[slots[p]] = val(slots[p], pos[p]);
+    }
+    if (pos.length > slots.length && !(slots.length && (R.schemaKind(name, slots[slots.length - 1]) || {}).kind === 'array')) return null;
+    return { command: name, input: input };
+  };
+  // A "Run" button for a CLI line. opts.mutate(cmd, input) is used for clip edits in the editor.
+  R.cliRun = function (line, opts) {
+    var o = opts || {};
+    var p = R.parseCli(line);
+    if (!p) return h('span', { class: 'muted small', title: 'needs a value from you; run it in the CLI or the matching panel' }, 'manual');
+    return R.button(o.label || 'Run', function () {
+      var spec = R.spec(p.command) || {};
+      var long = spec.annotations && spec.annotations.long_running;
+      if (long && !o.mutate) {
+        return R.jobs.start(p.command, p.input).then(function (jid) { if (jid) { R.toast(p.command + ' started'); if (o.done) R.waitJob ? R.waitJob(jid, o.done) : null; } });
+      }
+      var run = o.mutate && p.input.clip_id ? o.mutate(p.command, p.input) : R.run(p.command, p.input);
+      return Promise.resolve(run).then(function (d) { if (d) { if (!o.mutate) R.toast(p.command + ' done', 'good'); if (o.done) o.done(d); } });
+    }, { small: true, primary: !!o.primary, title: p.command + ' ' + JSON.stringify(p.input) });
+  };
+  // A CLI line with its Run button.
+  R.cliRow = function (line, opts) {
+    return h('div', { class: 'clirow' }, h('code', { class: 'mono small' }, String(line)), R.cliRun(line, opts));
   };
 })();

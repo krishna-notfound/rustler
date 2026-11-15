@@ -55,7 +55,7 @@
     ruler = h('div', { class: 'tl-ruler' });
     playhead = h('div', { class: 'tl-playhead' }, h('i'));
     inner.appendChild(ruler);
-    [['v', 'V1', 'video segments'], ['cap', 'CAP', 'caption chunks'], ['txt', 'TXT', 'text overlays'], ['a', 'A1', 'audio: source, music bed, sfx']].forEach(function (t) {
+    [['v', 'V1', 'video segments · click a seam for a transition'], ['fx', 'FX', 'effects (punch-in, zoom-slow, shake, flash) · drag to select a range'], ['cap', 'CAP', 'caption chunks'], ['txt', 'TXT', 'text overlays'], ['a', 'A1', 'audio: source, music bed, sfx · double-click to drop the selected sound']].forEach(function (t) {
       tracks[t[0]] = h('div', { class: 'track tr-' + t[0] });
       inner.appendChild(tracks[t[0]]);
       heads.appendChild(h('div', { class: 'thead th-' + t[0], title: t[2] }, t[1]));
@@ -66,7 +66,14 @@
 
     // scrub on the ruler / empty track area
     ruler.addEventListener('pointerdown', scrubStart);
-    Object.keys(tracks).forEach(function (k) { tracks[k].addEventListener('pointerdown', function (e) { if (e.target === tracks[k]) scrubStart(e); }); });
+    Object.keys(tracks).forEach(function (k) { if (k !== 'fx') tracks[k].addEventListener('pointerdown', function (e) { if (e.target === tracks[k]) scrubStart(e); }); });
+    tracks.fx.addEventListener('pointerdown', function (e) { if (e.target === tracks.fx || e.target.classList.contains('fxrange')) rangeStart(e); });
+    tracks.a.addEventListener('dblclick', function (e) {
+      if (e.target !== tracks.a && !e.target.classList.contains('aud') && !e.target.classList.contains('music')) return;
+      var b = inner.getBoundingClientRect();
+      var t = R.clamp((e.clientX - b.left) / zoom, 0, E.duration - 0.01);
+      if (R.panels) R.panels.addArmedSfx(E, t);
+    });
     scroll.addEventListener('wheel', function (e) {
       if (!(e.ctrlKey || e.metaKey)) return;
       e.preventDefault();
@@ -131,7 +138,7 @@
     E.timeline.forEach(function (m) {
       (E.words[m.source_id] || []).forEach(function (w) {
         if (w.end <= m.src_start || w.start >= m.src_end) return;
-        out.push({ t0: m.out_start + Math.max(0, w.start - m.src_start), t1: m.out_start + Math.min(m.src_end, w.end) - m.src_start, text: w.text });
+        out.push({ t0: m.out_start + Math.max(0, w.start - m.src_start), t1: m.out_start + Math.min(m.src_end, w.end) - m.src_start, text: w.text, speaker: w.speaker });
       });
     });
     return out;
@@ -156,6 +163,8 @@
     inner.style.width = W + 'px';
     drawRuler(W);
     drawSegments();
+    drawSeams();
+    drawFx();
     drawCaptions();
     drawOverlays();
     drawAudio();
@@ -237,9 +246,13 @@
         '♫ ' + name + '  ' + (mu.volume_db !== undefined ? mu.volume_db + ' dB' : '') + (mu.duck ? '  · ducked' : '')));
     }
     (E.sfx || []).forEach(function (s) {
-      var t = typeof s.at_out_t === 'number' ? s.at_out_t : (typeof s.out_t === 'number' ? s.out_t : (typeof s.at === 'number' ? s.at : (typeof s.start === 'number' ? s.start : null)));
+      var t = typeof s.resolved_at === 'number' ? s.resolved_at : (typeof s.at === 'number' ? s.at : null);
       if (t === null) return;
-      tr.appendChild(h('div', { class: 'sfx', style: { left: X(t) + 'px' }, title: R.pretty(s) }, '• ' + String(s.name || s.file || s.asset || 'sfx').split(/[\\/]/).pop()));
+      var el = h('div', { class: 'sfx' + (E.selSfx === s.id ? ' sel' : ''), 'data-sfx': s.id, style: { left: X(t) + 'px' },
+        title: s.id + ' · ' + String(s.file || '').split(/[\\/]/).pop() + ' · ' + R.tc(t, E.fps) + ' · ' + (s.volume_db || 0) + ' dB' + (s.at_word ? ' · on word ' + s.at_word.word_index : '') + ' (drag to retime)' },
+        h('i'), String(s.file || 'sfx').split(/[\\/]/).pop().replace(/\.[a-z0-9]+$/i, ''));
+      el.addEventListener('pointerdown', function (e) { sfxDown(e, s, t, el); });
+      tr.appendChild(el);
     });
   }
   function movePlayhead() {
@@ -353,6 +366,120 @@
       var input = R.overlayRetime(o, ns, ne);
       if (!input || !R.has('overlay.edit')) { R.toast('overlay.edit cannot retime in this build', 'bad'); draw(); return; }
       E.mutate('overlay.edit', input, { toast: 'Overlay retimed' });
+    }
+    el.addEventListener('pointermove', mv); el.addEventListener('pointerup', up);
+  }
+
+  // ------------------------------------------------------------ transitions on V1 seams
+  function drawSeams() {
+    var tr = tracks.v;
+    E.timeline.slice(0, -1).forEach(function (m, i) {
+      var t = (E.transitions || []).filter(function (x) { return x.after_segment_id === m.segment_id; })[0];
+      var x = X(m.out_end);
+      if (t && t.kind !== 'cut' && t.overlap > 0) {
+        tr.appendChild(h('div', { class: 'xover', style: { left: X(m.out_end - t.overlap / 2) + 'px', width: Math.max(4, X(t.overlap)) + 'px' }, title: t.kind + ' · ' + R.round(t.overlap, 3) + ' s overlap' }));
+      }
+      var seam = h('div', { class: 'seam' + (t && t.kind !== 'cut' ? ' has' : ''), 'data-after': m.segment_id, style: { left: x + 'px' },
+        title: t ? t.kind + ' ' + t.duration + ' s (click to edit)' : 'hard cut: click to add a transition' }, t && t.kind !== 'cut' ? h('span', null, t.kind) : null);
+      seam.addEventListener('pointerdown', function (e) { e.stopPropagation(); });
+      seam.addEventListener('click', function (e) {
+        e.stopPropagation();
+        if (!R.has('transition.set')) { R.toast('transition.set is not in this build', 'bad'); return; }
+        var close = null;
+        close = R.modal('Transition after segment ' + (i + 1), h('div', null,
+          h('p', { class: 'muted small' }, 'Frame-exact xfade + acrossfade. The clip gets shorter by the overlap; captions, overlays and sfx move with the picture.'),
+          R.panels.transitionEditor(E, m.segment_id, i, function () { if (close) close(); })));
+      });
+      tr.appendChild(seam);
+    });
+  }
+
+  // ------------------------------------------------------------ FX track (effects + range selection)
+  function drawFx() {
+    var tr = R.clear(tracks.fx);
+    if (!R.has('effect.add')) { tr.appendChild(h('span', { class: 'tnote' }, 'effects: effect.* not in this build')); return; }
+    if (E.range) tr.appendChild(h('div', { class: 'fxrange', style: { left: X(E.range.start) + 'px', width: Math.max(2, X(E.range.end - E.range.start)) + 'px' }, title: 'selected range ' + R.tc(E.range.start, E.fps) + '–' + R.tc(E.range.end, E.fps) }));
+    if (!(E.effects || []).length && !E.range) tr.appendChild(h('span', { class: 'tnote' }, 'drag here to select a range, then add an effect in the Effects tab'));
+    (E.effects || []).forEach(function (f) {
+      var el = h('div', { class: 'fxbar k-' + f.kind + (E.selFx === f.id ? ' sel' : ''), 'data-fx': f.id, style: { left: X(f.start) + 'px', width: Math.max(6, X(f.end - f.start)) + 'px' },
+        title: f.id + ' · ' + f.kind + ' ' + R.tc(f.start, E.fps) + '–' + R.tc(f.end, E.fps) + ' (drag to move, edges to resize)' },
+        h('i', { class: 'trim l', 'data-e': 'l' }), h('i', { class: 'trim r', 'data-e': 'r' }), h('span', null, f.kind),
+        R.has('effect.remove') ? h('b', { class: 'x', title: 'remove', 'data-x': '1' }, '×') : null);
+      el.addEventListener('pointerdown', function (e) { fxDown(e, f, el); });
+      tr.appendChild(el);
+    });
+  }
+  function rangeStart(e) {
+    if (e.button !== 0 || !E) return;
+    e.preventDefault();
+    var b = inner.getBoundingClientRect();
+    var t0 = R.clamp((e.clientX - b.left) / zoom, 0, E.duration);
+    if (E.snap && !e.altKey) t0 = snapOut(t0, 6 / zoom);
+    var el = tracks.fx, moved = false;
+    el.setPointerCapture(e.pointerId);
+    function mv(ev) {
+      var t1 = R.clamp((ev.clientX - b.left) / zoom, 0, E.duration);
+      if (E.snap && !ev.altKey) t1 = snapOut(t1, 6 / zoom);
+      if (!moved && Math.abs(t1 - t0) * zoom < 3) return;
+      moved = true;
+      E.range = { start: Math.min(t0, t1), end: Math.max(t0, t1) };
+      drawFx();
+    }
+    function up() {
+      el.removeEventListener('pointermove', mv); el.removeEventListener('pointerup', up);
+      if (!moved) { E.range = null; drawFx(); R.monitor.seek(t0); return; }
+      if (E.onRange) E.onRange(E.range);
+      if (R.inspector) R.inspector.showTab('effects');
+    }
+    el.addEventListener('pointermove', mv); el.addEventListener('pointerup', up);
+  }
+  // No effect.edit command: moving/resizing = effect.remove + effect.add (same kind and amount).
+  function fxDown(e, f, el) {
+    if (e.button !== 0) return;
+    e.preventDefault(); e.stopPropagation();
+    if (e.target.getAttribute('data-x')) { E.mutate('effect.remove', { effect_id: f.id }, { toast: 'Removed ' + f.id }); return; }
+    var edge = e.target.getAttribute('data-e');
+    var x0 = e.clientX, moved = false, ns = f.start, ne = f.end;
+    el.setPointerCapture(e.pointerId);
+    function mv(ev) {
+      var dx = ev.clientX - x0;
+      if (!moved && Math.abs(dx) < 3) return;
+      moved = true;
+      var dt = dx / zoom;
+      if (edge === 'l') ns = R.clamp(f.start + dt, 0, f.end - 0.05);
+      else if (edge === 'r') ne = R.clamp(f.end + dt, f.start + 0.05, E.duration);
+      else { var len = f.end - f.start; ns = R.clamp(f.start + dt, 0, Math.max(0, E.duration - len)); ne = ns + len; }
+      el.style.left = X(ns) + 'px'; el.style.width = Math.max(6, X(ne - ns)) + 'px';
+    }
+    function up() {
+      el.removeEventListener('pointermove', mv); el.removeEventListener('pointerup', up);
+      if (!moved) { E.selFx = f.id; E.range = { start: f.start, end: f.end }; R.monitor.seek(f.start + 0.001); if (R.inspector) R.inspector.showTab('effects'); draw(); return; }
+      var input = { kind: f.kind, start: R.round(ns, 3), end: R.round(ne, 3) };
+      if (f.amount !== null && f.amount !== undefined) input.amount = f.amount;
+      E.mutate('effect.remove', { effect_id: f.id }, {}).then(function (d) { if (d) return E.mutate('effect.add', input, { toast: f.kind + ' moved to ' + R.tc(ns, E.fps) + '–' + R.tc(ne, E.fps) }); });
+    }
+    el.addEventListener('pointermove', mv); el.addEventListener('pointerup', up);
+  }
+
+  // ------------------------------------------------------------ sfx markers (A1)
+  function sfxDown(e, s, t, el) {
+    if (e.button !== 0) return;
+    e.preventDefault(); e.stopPropagation();
+    var x0 = e.clientX, moved = false, nt = t;
+    el.setPointerCapture(e.pointerId);
+    function mv(ev) {
+      var dx = ev.clientX - x0;
+      if (!moved && Math.abs(dx) < 3) return;
+      moved = true;
+      nt = R.clamp(t + dx / zoom, 0, E.duration - 0.01);
+      if (E.snap && !ev.altKey) nt = snapOut(nt, 6 / zoom);
+      el.style.left = X(nt) + 'px';
+      el.classList.add('dragging');
+    }
+    function up() {
+      el.removeEventListener('pointermove', mv); el.removeEventListener('pointerup', up);
+      if (!moved) { E.selSfx = s.id; R.monitor.seek(t + 0.001); if (R.inspector) R.inspector.showTab('audio'); draw(); return; }
+      R.panels.retimeSfx(E, s, nt);
     }
     el.addEventListener('pointermove', mv); el.addEventListener('pointerup', up);
   }

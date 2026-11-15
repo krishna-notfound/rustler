@@ -47,6 +47,9 @@ const JS_MODULES: &[(&str, &str)] = &[
     ("regions.js", include_str!("ui/js/regions.js")),
     ("timeline.js", include_str!("ui/js/timeline.js")),
     ("inspector.js", include_str!("ui/js/inspector.js")),
+    ("panels.js", include_str!("ui/js/panels.js")),
+    ("assets.js", include_str!("ui/js/assets.js")),
+    ("brief.js", include_str!("ui/js/brief.js")),
     ("boot.js", include_str!("ui/js/boot.js")),
 ];
 
@@ -238,24 +241,36 @@ async fn guard(State(st): State<Arc<AppState>>, req: Request, next: Next) -> Res
 
 // ---------------------------------------------------------------- static
 
+/// `RUSTLER_GUI_DEV_UI=<dir>` (the `src/ui` folder): serve the page, CSS and JS from disk on every
+/// request instead of the copies embedded at build time (UI development without rebuilding).
+fn dev_ui(rel: &str) -> Option<String> {
+    let dir = std::env::var_os("RUSTLER_GUI_DEV_UI")?;
+    std::fs::read_to_string(PathBuf::from(dir).join(rel)).ok()
+}
+
 async fn index(State(st): State<Arc<AppState>>) -> Response {
     let scripts: String = JS_MODULES
         .iter()
         .map(|(n, _)| format!("<script src=\"/js/{n}?t={}\"></script>\n", st.token))
         .collect();
-    let html = INDEX_HTML
+    let html = dev_ui("index.html")
+        .unwrap_or_else(|| INDEX_HTML.to_string())
         .replace("__SCRIPTS__", &scripts)
         .replace("__TOKEN__", &st.token);
     ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], html).into_response()
 }
 async fn js_module(axum::extract::Path(name): axum::extract::Path<String>) -> Response {
     match JS_MODULES.iter().find(|(n, _)| *n == name) {
-        Some((_, body)) => ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], *body).into_response(),
+        Some((n, body)) => {
+            let body = dev_ui(&format!("js/{n}")).unwrap_or_else(|| (*body).to_string());
+            ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], body).into_response()
+        }
         None => plain(StatusCode::NOT_FOUND, "no such module"),
     }
 }
 async fn style_css() -> Response {
-    ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], STYLE_CSS).into_response()
+    let css = dev_ui("style.css").unwrap_or_else(|| STYLE_CSS.to_string());
+    ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], css).into_response()
 }
 
 // ---------------------------------------------------------------- api
@@ -551,7 +566,13 @@ fn content_type(p: &Path) -> &'static str {
         Some("json") => "application/json",
         Some("wav") => "audio/wav",
         Some("mp3") => "audio/mpeg",
-        Some("m4a") => "audio/mp4",
+        Some("m4a") | Some("aac") => "audio/mp4",
+        Some("ogg") | Some("oga") => "audio/ogg",
+        Some("opus") => "audio/ogg; codecs=opus",
+        Some("flac") => "audio/flac",
+        Some("ttf") => "font/ttf",
+        Some("otf") => "font/otf",
+        Some("woff2") => "font/woff2",
         Some("ass") | Some("srt") | Some("vtt") | Some("ndjson") | Some("txt") => {
             "text/plain; charset=utf-8"
         }

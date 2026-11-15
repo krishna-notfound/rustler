@@ -548,3 +548,32 @@ async fn file_serving_and_events() {
     assert_eq!(ev.as_array().unwrap().len(), 1);
     assert_eq!(ev[0]["kind"], "x");
 }
+
+/// Library audio (sfx .ogg, music) under RUSTLER_HOME/assets is playable in an <audio> element on
+/// the Assets page: served from the home root with an audio content type and Range support.
+#[tokio::test]
+async fn library_audio_served_with_audio_types() {
+    let e = setup().await;
+    let t = &e.gui.token;
+    let c = reqwest::Client::new();
+    let dir = e._home.path().join("assets").join("sfx");
+    std::fs::create_dir_all(&dir).unwrap();
+    for (name, ct) in [("hit.ogg", "audio/ogg"), ("bed.flac", "audio/flac"), ("bed.mp3", "audio/mpeg"), ("f.ttf", "font/ttf")] {
+        let p = dir.join(name);
+        std::fs::write(&p, vec![1u8; 64]).unwrap();
+        let q = reqwest::Url::parse_with_params("http://x/?", [("path", p.to_str().unwrap())])
+            .unwrap()
+            .query()
+            .unwrap()
+            .to_string();
+        let r = c
+            .get(format!("{}/api/file?{q}&t={t}", e.base))
+            .header("range", "bytes=0-9")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 206, "{name}");
+        assert_eq!(r.headers().get("content-type").unwrap(), ct, "{name}");
+        assert_eq!(r.bytes().await.unwrap().len(), 10);
+    }
+}
