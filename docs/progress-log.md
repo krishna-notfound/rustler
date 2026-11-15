@@ -224,3 +224,11 @@ Give Claude Code the skill: copy `skills\rustler` to `%USERPROFILE%\.claude\skil
   engine updated, assets registered (7 built-in, 4 fonts, 26 SFX); `analyze speakers` works with
   sherpa-onnx (pyannote-seg-3.0 + WeSpeaker).
 - Running: GUI integration pass [Opus], Linux/WSL validation [Sonnet].
+- Merged GUI integration pass: new Assets page (browse/search/preview/add with required license/remove,
+  use-in-clip), Audio tab (music, denoise, segment volume, SFX markers draggable on A1), Effects tab +
+  FX track (transitions on V1 seams with overlap shown, punch-in/zoom/shake/flash ranges, progress bar),
+  caption style creator with exact preview, Brief page (form, check with fix buttons, post text),
+  Variants (create/compare/batch render/export), Project dashboard (status badges, recent projects,
+  pack/unpack), QC (fix.apply, qc.compare), Speakers (analyze/rename/colours/track active speaker).
+  Every action verified in Playwright and confirmed with a CLI read; 0 console errors; screenshots
+  .playwright-mcp/gi-*.png.
