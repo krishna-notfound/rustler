@@ -272,13 +272,13 @@ pub async fn setup(
         }
     }
     if opts.assets {
-        emit("filling the asset library (built-in styles, fonts, CC0 SFX)");
+        emit("filling the asset library (built-in styles, fonts, CC0 SFX, CC0 music)");
         match assets::install(paths, force, progress).await {
             Ok(r) => {
                 report.notes.extend(r.warnings.iter().cloned());
                 let c = Component {
                     name: "assets".into(),
-                    version: format!("{} built-in, {} fonts, {} sfx", r.builtins, r.fonts, r.sfx),
+                    version: format!("{} built-in, {} fonts, {} sfx, {} music", r.builtins, r.fonts, r.sfx, r.music),
                     path: assets::assets_root(&paths.home),
                     sha256: None,
                 };

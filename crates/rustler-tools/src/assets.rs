@@ -1,7 +1,7 @@
 //! Asset library storage (`<root>/manifest.json` + files) and the setup step that fills the global
 //! library (`~/.rustler/assets/`): built-in caption styles and layouts, the installed OFL fonts and a
-//! curated subset of two CC0 Kenney sound packs. Every entry carries license metadata; nothing
-//! without a verified license is ever registered.
+//! curated subset of two CC0 Kenney sound packs and a curated set of FreePD CC0 music tracks. Every
+//! entry carries license metadata; nothing without a verified license is ever registered.
 
 use crate::download::{download, sha256_file};
 use crate::paths::ToolPaths;
@@ -270,6 +270,9 @@ pub struct AssetsReport {
     pub builtins: usize,
     pub fonts: usize,
     pub sfx: usize,
+    /// CC0 music tracks registered (FreePD).
+    #[serde(default)]
+    pub music: usize,
     /// Non-fatal problems (a pack that could not be fetched or verified, ...).
     pub warnings: Vec<String>,
 }
@@ -465,8 +468,118 @@ async fn fetch_pack(
     Ok(out)
 }
 
-/// `rustler setup` step: built-in styles/layouts, installed fonts, Kenney CC0 SFX. Idempotent;
-/// a network failure only adds a warning. No music is fetched (no verifiably CC0, login-free source).
+// ---------------------------------------------------------------------------------------------
+// CC0 music (FreePD)
+// ---------------------------------------------------------------------------------------------
+
+/// License string of the FreePD music entries.
+pub const LICENSE_FREEPD: &str = "CC0-1.0 / public domain (FreePD)";
+
+/// FreePD closed in 2025 (the live site now only shows a closure notice), so the license statement and the
+/// tracks are read from the Internet Archive capture of 2024-12-31, addressed by that exact timestamp
+/// (`id_` = the original bytes without Wayback's page rewriting). The track bytes are pinned by sha256.
+const FREEPD_SNAPSHOT: &str = "20241231";
+/// Where the license statement is read (the FreePD home page, archived).
+const FREEPD_LICENSE_PAGE: &str = "https://web.archive.org/web/20241231id_/https://freepd.com/";
+/// The sentence FreePD's home page carried; registration is refused unless the page says it.
+const FREEPD_LICENSE_TEXT: &str = "licensed cc0 1.0 universal public domain dedication";
+
+/// A curated track: (file name on freepd.com/music/, display name, composer, mood tags, seconds, sha256).
+struct Music(&'static str, &'static str, &'static str, &'static [&'static str], u32, &'static str);
+
+const MUSIC: &[Music] = &[
+    Music("Happy Whistling Ukulele", "Happy Whistling Ukulele", "Rafael Krux", &["upbeat", "happy", "ukulele"], 123, "ed4059c8fba8673d657e85175ff54eaa32cef9e43f688f164bef585e6e65cf15"),
+    Music("Inventing Flight", "Inventing Flight", "Bryan Teoh", &["upbeat", "inspiring", "bright"], 142, "916e736efa3caed4ea8534e727670dbac41af0fb44f00fa667aebaab9b2b6407"),
+    Music("3 am West End", "3 am West End", "statusq", &["chill", "lofi", "groove"], 291, "590bb9833cfb0d6610a6ac00093f9b3d062d604863d6e44bdac61d526d33cab8"),
+    Music("Martini Sunset", "Martini Sunset", "Anonymous", &["chill", "lofi", "jazzy"], 174, "b9d12b5d59c187e07316cab61e82ccbea0f48f2f64a3e8062abbf1861acc7add"),
+    Music("Soundtrack From the Starcourt Mall", "Starcourt Mall", "Bryan Teoh", &["chill", "lofi", "retro"], 217, "9199da36aefbe7974a75ad22084768ec77c1a98e14ac14ce36f193ece668b867"),
+    Music("Night Attack", "Night Attack", "Rafael Krux", &["dramatic", "dark", "action"], 153, "aa52288cee980cbc8da8ffc087de6f92499a5a4130db6feab3f83d774501784c"),
+    Music("Epic Boss Battle", "Epic Boss Battle", "Rafael Krux", &["epic", "dramatic", "battle"], 170, "9ea1753ae8bdf665e2b7011c9dd115bf764146d75004301a08a5efc7e6d7eaa7"),
+    Music("Heroic Adventure", "Heroic Adventure", "Rafael Krux", &["epic", "triumphant", "uplifting"], 143, "41355a9625e8ee15d678c1c8c512636b6610a750f61b79820b53286a0dc3836a"),
+    Music("Llama in Pajama", "Llama in Pajama", "Rafael Krux", &["funny", "quirky", "comedy"], 97, "3016ae15b98ea952cd0ccc1bd42c9596d4e78968fed8dc96c6ee6d375c1ed988"),
+    Music("Rush", "Rush", "Rafael Krux", &["funny", "fast", "comedy"], 134, "060122428ce637a4ade01ba7b24178e7aff0bd97657ecb24aab2faf2c1ca4fc2"),
+    Music("Busybody", "Busybody", "Bryan Teoh", &["funny", "frantic", "comedy"], 86, "5170e23bc9a24f870b896965832c268e87db18418bd1ca9aa361ef5f52d67f98"),
+];
+
+fn music_id(m: &Music) -> String {
+    format!("music-freepd-{}", slug(m.1))
+}
+
+fn url_encode(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+/// True when `page` (the FreePD home page text) carries the CC0 dedication sentence.
+fn freepd_page_says_cc0(page: &str) -> bool {
+    let flat = page.split_whitespace().collect::<Vec<_>>().join(" ").to_ascii_lowercase();
+    flat.contains(FREEPD_LICENSE_TEXT)
+}
+
+/// Checks the FreePD license statement, then downloads the curated tracks into `<root>/music/freepd/`
+/// (each verified against its pinned sha256) and returns their manifest entries. A track that cannot be
+/// fetched is skipped with a warning; nothing is registered if the license check fails.
+pub async fn fetch_freepd_music(
+    root: &Path,
+    have: &[String],
+    progress: &ProgressSink,
+    warnings: &mut Vec<String>,
+) -> Result<Vec<AssetEntry>> {
+    let page = crate::download::fetch_text(FREEPD_LICENSE_PAGE).await.map_err(|e| {
+        RustlerError::new(ErrorCode::Provider, "setup.assets", format!("FreePD license page: {e}"))
+            .hint("`rustler setup --no-assets` skips the music library")
+            .retryable()
+    })?;
+    if !freepd_page_says_cc0(&page) {
+        return Err(RustlerError::new(
+            ErrorCode::Provider,
+            "setup.assets",
+            "the FreePD home page does not state the CC0 1.0 dedication; music not registered",
+        ));
+    }
+    let dest_rel = "music/freepd";
+    let mut out = Vec::new();
+    for m in MUSIC {
+        let id = music_id(m);
+        let rel = format!("{dest_rel}/{}.mp3", slug(m.1));
+        let file = root.join(&rel);
+        if have.contains(&id) && file.is_file() {
+            continue;
+        }
+        let url = format!("https://web.archive.org/web/{FREEPD_SNAPSHOT}id_/https://freepd.com/music/{}.mp3", url_encode(m.0));
+        if let Err(e) = download(&url, &file, Some(m.5), progress, "setup.assets").await {
+            warnings.push(format!("FreePD {}: {e}", m.1));
+            continue;
+        }
+        out.push(AssetEntry {
+            id,
+            kind: AssetKind::Music,
+            name: format!("{} ({})", m.1, m.2),
+            path: rel,
+            tags: m.3.iter().map(|t| (*t).to_string()).chain(["freepd".to_string(), "cc0".to_string(), format!("{}s", m.4)]).collect(),
+            license: LICENSE_FREEPD.into(),
+            license_url: Some(CC0_URL.into()),
+            source_url: Some(format!("https://freepd.com/music/{}.mp3", url_encode(m.0))),
+            attribution: Some(format!(
+                "{} via FreePD, CC0 1.0 (credit optional). freepd.com closed in 2025; file from the Internet Archive capture {FREEPD_SNAPSHOT}, sha256 pinned",
+                m.2
+            )),
+            added_at: now_rfc3339(),
+            sha256: m.5.to_string(),
+        });
+    }
+    Ok(out)
+}
+
+/// `rustler setup` step: built-in styles/layouts, installed fonts, Kenney CC0 SFX, FreePD CC0 music. Idempotent;
+/// a network failure only adds a warning.
 pub async fn install(paths: &ToolPaths, force: bool, progress: &ProgressSink) -> Result<AssetsReport> {
     let root = assets_root(&paths.home);
     std::fs::create_dir_all(&root).map_err(|e| err(format!("create {}: {e}", root.display())))?;
@@ -512,6 +625,26 @@ pub async fn install(paths: &ToolPaths, force: bool, progress: &ProgressSink) ->
             Err(e) => report.warnings.push(format!("Kenney {label}: {e}")),
         }
     }
+
+    let have: Vec<String> =
+        load_manifest(&root).iter().filter(|e| e.kind == AssetKind::Music).map(|e| e.id.clone()).collect();
+    if force || have.len() < MUSIC.len() {
+        let mut warnings = Vec::new();
+        match fetch_freepd_music(&root, if force { &[] } else { &have }, progress, &mut warnings).await {
+            Ok(entries) => {
+                update_manifest(&root, |m| {
+                    for e in entries {
+                        upsert(m, e);
+                    }
+                    Ok(())
+                })?;
+                emit("registered FreePD music (CC0)".into(), 0.95);
+            }
+            Err(e) => warnings.push(format!("FreePD music: {e}")),
+        }
+        report.warnings.extend(warnings);
+    }
+    report.music = load_manifest(&root).iter().filter(|e| e.kind == AssetKind::Music).count();
     Ok(report)
 }
 
@@ -561,6 +694,43 @@ mod tests {
         })
         .unwrap();
         assert_eq!(load_manifest(d.path()), first);
+    }
+
+    #[test]
+    fn freepd_curation_is_sane() {
+        assert!((10..=14).contains(&MUSIC.len()));
+        let mut ids: Vec<String> = MUSIC.iter().map(music_id).collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), MUSIC.len());
+        for m in MUSIC {
+            assert_eq!(m.5.len(), 64, "{}", m.0);
+            assert!(m.3.len() >= 3);
+        }
+        assert_eq!(url_encode("3 am West End"), "3%20am%20West%20End");
+        assert!(freepd_page_says_cc0("This music is all licensed\n CC0 1.0 Universal Public Domain Dedication."));
+        assert!(!freepd_page_says_cc0("FreePD.com - Site Closed. Public Domain music"));
+    }
+
+    /// Network: license check + download of all curated tracks into a temp library, sha256 pinned.
+    /// `cargo test -p rustler-tools freepd_music_network -- --ignored --nocapture`
+    #[tokio::test]
+    #[ignore]
+    async fn freepd_music_network() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = assets_root(tmp.path());
+        let mut warnings = Vec::new();
+        let entries = fetch_freepd_music(&root, &[], &ProgressSink::noop(), &mut warnings).await.unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(entries.len(), MUSIC.len());
+        for e in &entries {
+            assert_eq!(e.kind, AssetKind::Music);
+            assert_eq!(e.license, LICENSE_FREEPD);
+            assert!(e.source_url.as_deref().unwrap().starts_with("https://freepd.com/music/"));
+            let f = entry_file(&root, e).unwrap();
+            assert_eq!(sha256_file(&f).unwrap(), e.sha256);
+            assert!(std::fs::metadata(&f).unwrap().len() > 100_000);
+        }
     }
 
     #[test]
