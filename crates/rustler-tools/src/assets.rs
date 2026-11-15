@@ -519,7 +519,21 @@ fn url_encode(s: &str) -> String {
 
 /// True when `page` (the FreePD home page text) carries the CC0 dedication sentence.
 fn freepd_page_says_cc0(page: &str) -> bool {
-    let flat = page.split_whitespace().collect::<Vec<_>>().join(" ").to_ascii_lowercase();
+    // drop HTML tags (the live sentence wraps "CC0 1.0 Universal" in a link), then normalise whitespace
+    let mut text = String::with_capacity(page.len());
+    let mut in_tag = false;
+    for c in page.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => {
+                in_tag = false;
+                text.push(' ');
+            }
+            _ if !in_tag => text.push(c),
+            _ => {}
+        }
+    }
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ").to_ascii_lowercase();
     flat.contains(FREEPD_LICENSE_TEXT)
 }
 
@@ -716,6 +730,9 @@ mod tests {
         }
         assert_eq!(url_encode("3 am West End"), "3%20am%20West%20End");
         assert!(freepd_page_says_cc0("This music is all licensed\n CC0 1.0 Universal Public Domain Dedication."));
+        assert!(freepd_page_says_cc0(
+            "<P>This music is all licensed <A TARGET=\"blank\" HREF=\"https://creativecommons.org/publicdomain/zero/1.0/legalcode\">CC0 1.0 Universal</A> Public Domain Dedication."
+        ));
         assert!(!freepd_page_says_cc0("FreePD.com - Site Closed. Public Domain music"));
     }
 
