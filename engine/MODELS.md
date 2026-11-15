@@ -151,3 +151,17 @@ voices but can split one speaker in two.
 1. Verify the license from the upstream repo (not a mirror's tag alone) and that the file downloads without
    a login. 2. Pin the URL to a commit/tag and record the sha256 here and in the code. 3. Verify the hash in
    code before use. 4. Add a note to `THIRD_PARTY_NOTICES.md` and `docs/research/00-license-and-dependency-inventory.md`.
+
+## SFace (face recognition, who is who across cuts)
+
+Used by `speakers.active` (`crop track-speaker`) to tell whether the face in a close-up is the same
+person as one of the small faces in a wide shot, so the crop can follow the right person across cuts.
+
+- `face_recognition_sface_2021dec.onnx`, OpenCV Zoo (https://github.com/opencv/opencv_zoo/tree/main/models/face_recognition_sface),
+  repository file `LICENSE` is **Apache-2.0** (read 2026-11-15). The training-data provenance of the weights was not checked.
+  URL https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx
+  sha256 `0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79` (38,696,353 bytes; verified by the downloader).
+- Downloaded to `$RUSTLER_HOME/models/sface/` on first use. Optional: when it cannot be downloaded the
+  analysis still runs, faces are just not linked across cuts (the result carries a warning).
+- Measured on real footage (wide shot, faces 55-75 px wide, vs a 146 px close-up): same person 0.54-0.75
+  cosine, different people 0.06-0.24 (OpenCV's same-person threshold is 0.363). Rustler links tracks at >= 0.40.

@@ -67,7 +67,7 @@ rustler crop track-face clp_X --segment-id seg_Y  # one segment
 Detects faces at ~4 fps on the proxy, smooths the path (median + One-Euro filter + dead zone) and
 drives the crop's x position. Use it when the speaker moves or sits off-centre. Check the contact
 sheet afterwards: face inside the frame in every tile, no jumps. With two faces it follows the
-dominant one; if it swings between people, go back to a fixed `focus_x` or `blur-fit`.
+dominant one; if it swings between people, use `crop track-speaker` (below) or a fixed `focus_x` / `blur-fit`.
 
 ### Following the active speaker (podcasts and interviews: `crop track-speaker`)
 
@@ -80,22 +80,35 @@ rustler crop track-speaker clp_X                  # all center-crop segments
 rustler crop track-speaker clp_X --segment-id seg_Y
 ```
 
-For each speaker turn it looks at the mouth movement (frame difference in the lower part of every
-face) and picks the face that moves while that speaker talks. The crop then pans to that face
-(about 0.2 s before the first word; turns shorter than 0.6 s such as "mm-hm" never move it).
-Read `segments[].turns[]` in the result: `face_id` counts faces left to right, `reason` says why:
+Pass `--num-speakers 2` for an interview: the automatic count is a guess (it counts a voice only when
+it is clearly different from the others and has several seconds of speech). Check the timeline in the
+result against the transcript before going on; a host who only asks short questions is easy to lose.
 
-- `mouth-motion`: clear winner. Trust it.
-- `speaker-map`: motion was unclear in this turn, but this speaker's mouth moved in other turns on
-  that face.
+The crop tracks *people*, not boxes: faces are recognised across cuts (wide shot, close-up, wide shot
+again keep one `face_id`; `face_id` counts people left to right). For each speaker turn it picks the
+person like this, strongest evidence first (read `segments[].turns[]`, `reason` says which):
+
+- `only-face`: one person is on screen during the turn (a close-up); the crop follows them.
+- `face-id`: several people on screen, but the speaker is linked to one person because that person is
+  alone on screen (close-up) during that speaker's turns. This is what makes wide shots with tiny faces work.
+- `elimination`: the only unclaimed person left for the only unclaimed speaker.
+- `mouth-motion`: clear winner by lip movement (frame difference in the lower face). Only used on faces at
+  least 7 % of the frame wide; on the 4-6 % faces of a wide two-shot lip movement is noise and is ignored.
+- `speaker-map`: motion was unclear in this turn, but this speaker's mouth moved in other turns on that face.
 - `dominant`: ambiguous, the largest face was used. Look at the tiles for this turn. If it is wrong
   (profile views, tiny faces, sunglasses), use `blur-fit`, or split the clip at the turn and set
   `focus_x` per segment.
-- `only-face`: one face was ever visible; the same as `crop track-face`.
 
-Limits: it follows whoever the diarization says is talking, so check `analyze speakers` first
-(crosstalk is attributed to one speaker). Cutaways and graphics without a face hold the last
-position. Re-run it after trimming a clip: the crop path belongs to the segment's time range.
+The crop pans about 0.2 s before the first word; turns shorter than 1 s ("mm-hm", "yeah") never move it.
+When the chosen person is not on screen after a cut (a reaction shot, the other camera), the crop
+follows the largest face that is on screen instead of holding a position from the old shot; with no face
+at all (a graphic) it holds the last position.
+
+Limits: it follows whoever the diarization says is talking, so check `analyze speakers` first (two
+voices that sound alike in a reverberant hall can be merged or the first words of a turn can land on the
+wrong speaker; crosstalk is attributed to one speaker). Re-run it after trimming a clip: the crop path
+belongs to the segment's time range. The first run downloads a 38 MB face-recognition model; offline it
+still works but faces are not linked across cuts (a warning says so).
 
 ## 4. split-vertical for streamers (webcam top / gameplay bottom)
 

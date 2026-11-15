@@ -10,7 +10,8 @@
 //! * `clips/<id>/extras.json` key `speaker_colors` (`caption.speaker_colors`): the renderer then
 //!   writes speaker-coloured captions (`rustler_captions::write_ass_colored`).
 //! * `crop.track_speaker` follows the ACTIVE speaker: the engine's `speakers.active` gives face
-//!   boxes with a mouth-motion score per sample; this module correlates that with the turns.
+//!   boxes per sample (a person id that survives cuts, and a mouth-motion score); this module links
+//!   speakers to people (close-ups, elimination, mouth movement on big faces) and builds the crop path.
 
 use crate::analyze_cmds::spawn_engine;
 use crate::clip_cmds::{load_transcript, tracking_crop_width, transcript_rel};
@@ -38,7 +39,7 @@ pub const COLORS_KEY: &str = "speaker_colors";
 /// Words further than this from every turn stay unlabelled.
 const NEAREST_TURN_SECONDS: f64 = 0.5;
 /// Turns shorter than this do not move the crop (backchannels such as "mm-hm").
-const MIN_TURN_SECONDS: f64 = 0.6;
+const MIN_TURN_SECONDS: f64 = 1.0;
 /// The crop starts moving this long before the speaker's first word (a cut slightly early reads natural).
 const SWITCH_LEAD_SECONDS: f64 = 0.2;
 /// A lost face keeps its last box for this long.
@@ -49,8 +50,22 @@ const MIN_PRESENCE: f64 = 0.3;
 const MIN_SPEAK: f64 = 0.3;
 /// Best face must beat the runner-up by this much, else the choice is "ambiguous".
 const MIN_MARGIN: f64 = 0.15;
+/// Mouth movement is only believed on faces at least this wide (share of the frame width): on the
+/// 4-6 % faces of a wide two-shot the lips are ~10 px and the "motion" is head and codec noise.
+const MIN_MOTION_FACE_WIDTH: f64 = 0.07;
 /// Face sampling rate for `speakers.active`.
 const ACTIVE_FPS: f64 = 5.0;
+/// A person needs this many close-up samples (only one face on screen) before a close-up can say
+/// who they are.
+const SOLO_MIN_SAMPLES: usize = 5;
+/// Share of a person's close-up samples that must fall in one speaker's turns to link them.
+const IDENTITY_SHARE: f64 = 0.6;
+/// A person on screen for fewer samples than this is a false detection, not a candidate for elimination.
+const MIN_PERSON_SAMPLES: usize = 10;
+/// Within one shot a briefly lost face keeps its last box this long; a lost face in a new shot does not.
+const SAME_SHOT_HOLD_SECONDS: f64 = 1.5;
+/// Faces of two samples are "the same shot" when one person sits within this distance (frame widths).
+const SHOT_MATCH_DX: f64 = 0.12;
 
 /// Colours used for `S1, S2, ...` when the caller gives none (readable on dark video, distinct).
 const PALETTE: [&str; 8] = ["#FFE000", "#5EE0FF", "#7CFF6B", "#FF7AC8", "#FFA040", "#B48CFF", "#FF5A5A", "#FFFFFF"];
@@ -349,6 +364,9 @@ pub struct ActiveFace {
     pub speak: f64,
     #[serde(default)]
     pub motion: f64,
+    /// Positional track (one face in one shot); `id` is the person, linked across cuts by appearance.
+    #[serde(default)]
+    pub track: u32,
 }
 
 impl ActiveFace {
@@ -402,8 +420,9 @@ pub struct TurnChoice {
     pub score: f64,
     /// Lead over the runner-up face.
     pub margin: f64,
-    /// `mouth-motion`, `speaker-map` (the face this speaker owns in other turns), `dominant`
-    /// (ambiguous: the largest face), `only-face`, `short-turn`, `no-face`.
+    /// `only-face` (one person on screen), `face-id` (linked through close-ups), `elimination`
+    /// (the only person left), `mouth-motion`, `speaker-map` (the face this speaker owns in other
+    /// turns), `dominant` (ambiguous: the largest face), `short-turn`, `no-face`.
     pub reason: String,
 }
 
@@ -413,6 +432,7 @@ struct FaceStat {
     speak: f64,
     area: f64,
     cx: f64,
+    w: f64,
 }
 
 fn samples_in(samples: &[ActiveSample], start: f64, end: f64) -> impl Iterator<Item = &ActiveSample> {
@@ -431,6 +451,7 @@ fn turn_stats(samples: &[ActiveSample], start: f64, end: f64) -> (usize, BTreeMa
             e.speak += f.speak;
             e.area += f.area();
             e.cx += f.cx();
+            e.w += f.w;
         }
     }
     (n, m)
@@ -444,7 +465,7 @@ fn present_faces(samples: &[ActiveSample], t: &SpeakerTurn) -> Vec<(u32, FaceSta
         .filter(|(_, s)| n > 0 && s.n as f64 / n as f64 >= MIN_PRESENCE)
         .map(|(id, s)| {
             let k = s.n as f64;
-            (id, FaceStat { n: s.n, speak: s.speak / k, area: s.area / k, cx: s.cx / k })
+            (id, FaceStat { n: s.n, speak: s.speak / k, area: s.area / k, cx: s.cx / k, w: s.w / k })
         })
         .collect()
 }
@@ -457,7 +478,7 @@ fn speaker_face_map(samples: &[ActiveSample], turns: &[SpeakerTurn]) -> BTreeMap
         let mut acc: BTreeMap<u32, (f64, usize)> = BTreeMap::new();
         for t in long.iter().filter(|t| pred(t)) {
             for s in samples_in(samples, t.start, t.end) {
-                for f in &s.faces {
+                for f in s.faces.iter().filter(|f| f.w >= MIN_MOTION_FACE_WIDTH) {
                     let e = acc.entry(f.id).or_default();
                     e.0 += f.speak;
                     e.1 += 1;
@@ -505,13 +526,106 @@ pub fn dominant_face(samples: &[ActiveSample]) -> Option<u32> {
     area.into_iter().max_by(|a, b| a.1.total_cmp(&b.1)).map(|(id, _)| id)
 }
 
+/// The one face of a close-up: the only face, or one at least 3x the area of the next (the rest
+/// being false detections in the background).
+fn solo_face(s: &ActiveSample) -> Option<&ActiveFace> {
+    let mut by_area: Vec<&ActiveFace> = s.faces.iter().collect();
+    by_area.sort_by(|a, b| b.area().total_cmp(&a.area()));
+    match by_area.as_slice() {
+        [] => None,
+        [only] => Some(only),
+        [first, second, ..] => (first.area() >= 3.0 * second.area()).then_some(*first),
+    }
+}
+
+/// Who is who, from close-ups: a person whose close-ups fall (>= 60 %) in one speaker's turns is
+/// that speaker. An edit cuts to whoever talks, so the face alone on screen is the speaker's.
+/// Reaction shots of the listener dilute this, so the strongest link wins each speaker. This is what
+/// ties a speaker to a face in wide shots where the faces are too small for mouth movement.
+fn identity_map(samples: &[ActiveSample], turns: &[SpeakerTurn]) -> BTreeMap<String, u32> {
+    let long: Vec<&SpeakerTurn> = turns.iter().filter(|t| t.end - t.start >= MIN_TURN_SECONDS).collect();
+    let mut counts: BTreeMap<(u32, String), usize> = BTreeMap::new();
+    let mut solo_total: BTreeMap<u32, usize> = BTreeMap::new();
+    for t in &long {
+        for s in samples_in(samples, t.start, t.end) {
+            if let Some(f) = solo_face(s) {
+                *counts.entry((f.id, t.speaker.clone())).or_default() += 1;
+                *solo_total.entry(f.id).or_default() += 1;
+            }
+        }
+    }
+    let mut cands: Vec<(f64, u32, String)> = Vec::new(); // (weight, person, speaker)
+    for (&person, &n) in &solo_total {
+        if n < SOLO_MIN_SAMPLES {
+            continue;
+        }
+        let best = counts.iter().filter(|((p, _), _)| *p == person).max_by_key(|(_, c)| **c);
+        if let Some(((_, sp), &c)) = best {
+            let share = c as f64 / n as f64;
+            if share >= IDENTITY_SHARE {
+                cands.push((c as f64 * share, person, sp.clone()));
+            }
+        }
+    }
+    cands.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let mut map = BTreeMap::new();
+    let mut taken: Vec<u32> = Vec::new();
+    for (_, person, sp) in cands {
+        if !map.contains_key(&sp) && !taken.contains(&person) {
+            taken.push(person);
+            map.insert(sp, person);
+        }
+    }
+    map
+}
+
+/// How a speaker's face was found, strongest first.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum OwnerSource {
+    /// Linked through close-ups ([`identity_map`]).
+    Identity,
+    /// The only unclaimed person left for the only unclaimed speaker.
+    Elimination,
+    /// Mouth movement in the speaker's turns ([`speaker_face_map`]).
+    Motion,
+}
+
+/// Speaker -> person: close-up identity first, then mouth movement, then elimination.
+fn owner_map(samples: &[ActiveSample], turns: &[SpeakerTurn]) -> BTreeMap<String, (u32, OwnerSource)> {
+    let mut owner: BTreeMap<String, (u32, OwnerSource)> = BTreeMap::new();
+    for (sp, f) in identity_map(samples, turns) {
+        owner.insert(sp, (f, OwnerSource::Identity));
+    }
+    for (sp, f) in speaker_face_map(samples, turns) {
+        if !owner.contains_key(&sp) && !owner.values().any(|(p, _)| *p == f) {
+            owner.insert(sp, (f, OwnerSource::Motion));
+        }
+    }
+    let mut speakers: Vec<&str> = turns.iter().filter(|t| t.end - t.start >= MIN_TURN_SECONDS).map(|t| t.speaker.as_str()).collect();
+    speakers.sort();
+    speakers.dedup();
+    let unmapped: Vec<&str> = speakers.into_iter().filter(|s| !owner.contains_key(*s)).collect();
+    let mut seen: BTreeMap<u32, usize> = BTreeMap::new();
+    for s in samples {
+        for f in &s.faces {
+            *seen.entry(f.id).or_default() += 1;
+        }
+    }
+    let free: Vec<u32> = seen.into_iter().filter(|(id, n)| *n >= MIN_PERSON_SAMPLES && !owner.values().any(|(p, _)| p == id)).map(|(id, _)| id).collect();
+    if let ([sp], [person]) = (unmapped.as_slice(), free.as_slice()) {
+        owner.insert((*sp).to_string(), (*person, OwnerSource::Elimination));
+    }
+    owner
+}
+
 /// Picks the active face for every turn. `turns` must be merged (see [`merge_turns`]) and sorted.
 ///
-/// A turn's face is the one whose mouth moves most during it, when that is clear (score >= 0.3
-/// and a lead of 0.15 over the runner-up). Otherwise the face that moves when this speaker talks
-/// in the other turns; otherwise the dominant (largest) face, reported as ambiguous.
+/// Order of evidence for a turn with several faces on screen: the person the speaker was linked to
+/// through close-ups (`face-id`) or by elimination (`elimination`); a clear winner by mouth movement
+/// (score >= 0.3 and a lead of 0.15; `mouth-motion`); the face that moves when this speaker talks in
+/// other turns (`speaker-map`); the dominant (largest) face, reported as ambiguous (`dominant`).
 pub fn choose_faces(samples: &[ActiveSample], turns: &[SpeakerTurn]) -> Vec<TurnChoice> {
-    let owner = speaker_face_map(samples, turns);
+    let owner = owner_map(samples, turns);
     let dominant = dominant_face(samples);
     let mut out: Vec<TurnChoice> = Vec::new();
     for t in turns {
@@ -540,11 +654,14 @@ pub fn choose_faces(samples: &[ActiveSample], turns: &[SpeakerTurn]) -> Vec<Turn
         let (best_id, best) = ranked[0];
         let second = ranked.get(1).map_or(0.0, |r| r.1.speak);
         c.margin = round(best.speak - second, 3);
+        let mine = owner.get(&t.speaker).filter(|(f, _)| faces.iter().any(|x| x.0 == *f)).copied();
         let pick: (u32, &str) = if faces.len() == 1 {
             (best_id, "only-face")
-        } else if best.speak >= MIN_SPEAK && best.speak - second >= MIN_MARGIN {
+        } else if let Some((f, src)) = mine.filter(|(_, src)| *src != OwnerSource::Motion) {
+            (f, if src == OwnerSource::Identity { "face-id" } else { "elimination" })
+        } else if best.w >= MIN_MOTION_FACE_WIDTH && best.speak >= MIN_SPEAK && best.speak - second >= MIN_MARGIN {
             (best_id, "mouth-motion")
-        } else if let Some(&f) = owner.get(&t.speaker).filter(|f| faces.iter().any(|x| x.0 == **f)) {
+        } else if let Some((f, _)) = mine {
             (f, "speaker-map")
         } else {
             let dom = faces
@@ -586,29 +703,65 @@ pub fn choose_faces(samples: &[ActiveSample], turns: &[SpeakerTurn]) -> Vec<Turn
     out
 }
 
+/// True when `now` looks like the same camera shot as `prev`: some person is on screen in both at
+/// nearly the same place and size. A cut to a close-up or to the other camera breaks this.
+fn same_shot(prev: &ActiveSample, now: &ActiveSample) -> bool {
+    if prev.faces.is_empty() || now.faces.is_empty() {
+        return true; // nothing to compare: a dropout is not a cut
+    }
+    now.faces.iter().any(|a| {
+        prev.faces.iter().any(|b| a.id == b.id && (a.cx() - b.cx()).abs() <= SHOT_MATCH_DX && a.w.max(b.w) <= 1.5 * a.w.min(b.w).max(1e-6))
+    })
+}
+
 /// One face per sample: the active speaker's face at that time (the crop path then follows it).
 /// The switch to a turn's face happens [`SWITCH_LEAD_SECONDS`] early; turns without a decided face
-/// and gaps between turns keep the previous face; a face that leaves the frame keeps its last box
-/// for [`FACE_HOLD_SECONDS`]. Without any decision the dominant face is followed.
+/// and gaps between turns keep the previous face. When the chosen person is not on screen:
+/// * within the same shot (a detection dropout) their last box is kept for [`SAME_SHOT_HOLD_SECONDS`];
+/// * after a cut (a reaction shot, the other camera) the largest face that *is* on screen is
+///   followed, because a crop position from the old shot means nothing in the new one;
+/// * with no face at all (a graphic) the last box is kept for [`FACE_HOLD_SECONDS`].
+/// Without any decision the dominant face is followed.
 pub fn speaker_face_samples(samples: &[ActiveSample], choices: &[TurnChoice]) -> Vec<FaceSample> {
     let fallback = dominant_face(samples);
-    let mut last_box: BTreeMap<u32, (f64, FaceBox)> = BTreeMap::new();
+    // person -> (time, box, shot number)
+    let mut last_box: BTreeMap<u32, (f64, FaceBox, u32)> = BTreeMap::new();
     let mut current: Option<u32> = choices.iter().find_map(|c| c.face_id).or(fallback);
+    let mut shot = 0u32;
+    let mut prev_faces: Option<&ActiveSample> = None;
     let mut out = Vec::with_capacity(samples.len());
     for s in samples {
+        if let Some(prev) = prev_faces {
+            if !same_shot(prev, s) {
+                shot += 1;
+            }
+        }
+        if !s.faces.is_empty() {
+            prev_faces = Some(s);
+        }
         if let Some(c) = choices.iter().rev().find(|c| c.start - SWITCH_LEAD_SECONDS <= s.t) {
             if let Some(id) = c.face_id {
                 current = Some(id);
             }
         }
         for f in &s.faces {
-            last_box.insert(f.id, (s.t, FaceBox { x: f.x, y: f.y, w: f.w, h: f.h, score: f.score }));
+            last_box.insert(f.id, (s.t, FaceBox { x: f.x, y: f.y, w: f.w, h: f.h, score: f.score }, shot));
         }
-        let faces = current
-            .and_then(|id| last_box.get(&id))
-            .filter(|(t, _)| s.t - t <= FACE_HOLD_SECONDS)
-            .map(|(_, b)| vec![*b])
-            .unwrap_or_default();
+        let target = current.and_then(|id| last_box.get(&id));
+        let faces = match target {
+            Some((t, b, _)) if *t == s.t => vec![*b],
+            _ if !s.faces.is_empty() => match target {
+                Some((t, b, sh)) if *sh == shot && s.t - t <= SAME_SHOT_HOLD_SECONDS => vec![*b],
+                _ => s
+                    .faces
+                    .iter()
+                    .max_by(|a, b| a.area().total_cmp(&b.area()))
+                    .map(|f| vec![FaceBox { x: f.x, y: f.y, w: f.w, h: f.h, score: f.score }])
+                    .unwrap_or_default(),
+            },
+            Some((t, b, _)) if s.t - t <= FACE_HOLD_SECONDS => vec![*b],
+            _ => Vec::new(),
+        };
         out.push(FaceSample { t: s.t, faces });
     }
     out
@@ -617,7 +770,7 @@ pub fn speaker_face_samples(samples: &[ActiveSample], choices: &[TurnChoice]) ->
 /// Smoothing for speaker-following crops: quicker than `crop.track_face` so a change of speaker
 /// is a short pan, not a drift.
 pub fn speaker_smooth() -> SmoothParams {
-    SmoothParams { median_window: 3, min_cutoff: 2.0, beta: 0.05, dead_zone: 0.02, max_speed: 1.6 }
+    SmoothParams { median_window: 3, min_cutoff: 2.0, beta: 0.05, dead_zone: 0.02, max_speed: 1.6, hold_keys: true }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1225,7 +1378,7 @@ mod tests {
     // --- active-speaker choice -------------------------------------------------------------
 
     fn face(id: u32, cx: f64, speak: f64) -> ActiveFace {
-        ActiveFace { x: cx - 0.075, y: 0.2, w: 0.15, h: 0.3, score: 0.9, id, speak, motion: speak / 10.0 }
+        ActiveFace { x: cx - 0.075, y: 0.2, w: 0.15, h: 0.3, score: 0.9, id, speak, motion: speak / 10.0, track: id }
     }
 
     /// Two faces (0 left at 0.2, 1 right at 0.8). `talking(t)` says which face moves its mouth.
@@ -1331,5 +1484,118 @@ mod tests {
         }];
         let fs = speaker_face_samples(&s, &choices);
         assert!(fs.iter().all(|f| f.faces.len() == 1 && (f.faces[0].x + f.faces[0].w / 2.0 - 0.8).abs() < 1e-9));
+    }
+
+    // --- real two-person footage (public-domain White House fireside chat, Wikimedia Commons) -----
+    //
+    // `vance_wide_active.json` is the recorded `speakers.active` output (5 fps) of a 95 s excerpt:
+    // a wide two-shot (host left, guest right, faces ~4 % of the frame width, mouth movement is
+    // noise at that size) with cuts to a close-up of the guest. `vance_wide_turns.json` is the
+    // recorded `speakers.diarize` result (S1 = guest, S2 = host).
+
+    #[derive(Deserialize)]
+    struct Fixture {
+        samples: Vec<ActiveSample>,
+    }
+
+    fn real_fixture() -> (Vec<ActiveSample>, Vec<SpeakerTurn>) {
+        let f: Fixture = serde_json::from_str(include_str!("../tests/fixtures/speakers/vance_wide_active.json")).unwrap();
+        let t: Vec<SpeakerTurn> = serde_json::from_str(include_str!("../tests/fixtures/speakers/vance_wide_turns.json")).unwrap();
+        (f.samples, merge_turns(&t))
+    }
+
+    #[test]
+    fn real_footage_close_ups_identify_the_guest_and_elimination_the_host() {
+        let (samples, turns) = real_fixture();
+        let owner = owner_map(&samples, &turns);
+        let (guest, src) = owner["S1"];
+        assert_eq!(src, OwnerSource::Identity, "{owner:?}");
+        let (host, src) = owner["S2"];
+        assert_eq!(src, OwnerSource::Elimination, "{owner:?}");
+        assert_ne!(guest, host);
+        let c = choose_faces(&samples, &turns);
+        let host_turn = c.iter().find(|c| c.speaker == "S2" && c.end - c.start > 10.0).expect("host turn");
+        assert_eq!(host_turn.face_id, Some(host), "{c:?}");
+        assert!(host_turn.face_x.unwrap() < 0.35, "the host sits on the left: {host_turn:?}");
+        let guest_turn = c.iter().find(|c| c.speaker == "S1" && c.end - c.start > 10.0).unwrap();
+        assert_eq!(guest_turn.face_id, Some(guest));
+    }
+
+    /// Share of 1-second samples (inside `truth` spans: start, end, person id) where the person's
+    /// face centre is inside the crop (interpolated like the renderer does).
+    fn crop_hit_rate(samples: &[ActiveSample], keys: &[rustler_media::facepath::CropKey], crop_w: f64, truth: &[(f64, f64, u32)]) -> f64 {
+        let at = |t: f64| {
+            let k = keys.partition_point(|k| k.t <= t);
+            if k == 0 {
+                keys[0].x
+            } else if k == keys.len() {
+                keys[k - 1].x
+            } else {
+                let (a, b) = (keys[k - 1], keys[k]);
+                a.x + (b.x - a.x) * (t - a.t) / (b.t - a.t)
+            }
+        };
+        let face_cx = |id: u32, t: f64| {
+            samples
+                .iter()
+                .filter(|s| (s.t - t).abs() <= 1.0)
+                .min_by(|a, b| (a.t - t).abs().total_cmp(&(b.t - t).abs()))
+                .and_then(|s| s.faces.iter().find(|f| f.id == id))
+                .map(|f| f.cx())
+        };
+        let (mut hit, mut n) = (0, 0);
+        for &(a, b, id) in truth {
+            let mut t = a + 0.5;
+            while t < b {
+                n += 1;
+                if let Some(cx) = face_cx(id, t) {
+                    let x = at(t);
+                    if cx >= x + 0.02 && cx <= x + crop_w - 0.02 {
+                        hit += 1;
+                    }
+                }
+                t += 1.0;
+            }
+        }
+        hit as f64 / n as f64
+    }
+
+    #[test]
+    fn real_footage_the_crop_sits_on_the_talking_person() {
+        let (samples, turns) = real_fixture();
+        let choices = choose_faces(&samples, &turns);
+        let keys = crop_keys(&speaker_face_samples(&samples, &choices), 0.3164, &speaker_smooth());
+        let owner = owner_map(&samples, &turns);
+        let (guest, host) = (owner["S1"].0, owner["S2"].0);
+        // Truth from the transcript and the frames: host speaks 17.2-39.8 s, guest 8.3-16.5 s and 41-95 s.
+        let rate = crop_hit_rate(&samples, &keys, 0.3164, &[(8.3, 16.5, guest), (17.2, 39.8, host), (41.0, 95.0, guest)]);
+        assert!(rate >= 0.9, "crop contained the speaker in only {:.0}% of samples: {keys:?}", rate * 100.0);
+        // Without the hold keys the crop drifts for seconds before each move and the rate collapses.
+        let drifting = SmoothParams { hold_keys: false, ..speaker_smooth() };
+        let keys = crop_keys(&speaker_face_samples(&samples, &choices), 0.3164, &drifting);
+        let bad = crop_hit_rate(&samples, &keys, 0.3164, &[(8.3, 16.5, guest), (17.2, 39.8, host), (41.0, 95.0, guest)]);
+        assert!(bad < rate, "{bad} vs {rate}");
+    }
+
+    /// Second real excerpt (public-domain White House fireside chat, medium and very wide shots where
+    /// the camera slowly zooms, faces 2-4 % of the width, close-ups of the guest at the end):
+    /// guest speaks 0-6 s and 46-105 s, host 6-45 s.
+    #[test]
+    fn real_footage_medium_two_shot_with_zooms() {
+        let f: Fixture = serde_json::from_str(include_str!("../tests/fixtures/speakers/boyle_medium_active.json")).unwrap();
+        let t: Vec<SpeakerTurn> = serde_json::from_str(include_str!("../tests/fixtures/speakers/boyle_medium_turns.json")).unwrap();
+        let (samples, turns) = (f.samples, merge_turns(&t));
+        let owner = owner_map(&samples, &turns);
+        let (guest, host) = (owner["S1"].0, owner["S2"].0);
+        assert_ne!(guest, host);
+        assert_eq!(owner["S1"].1, OwnerSource::Identity, "{owner:?}");
+        let choices = choose_faces(&samples, &turns);
+        assert!(choices.iter().all(|c| c.reason != "dominant" && c.reason != "mouth-motion"), "{choices:?}");
+        let keys = crop_keys(&speaker_face_samples(&samples, &choices), 0.3164, &speaker_smooth());
+        let rate = crop_hit_rate(&samples, &keys, 0.3164, &[(0.5, 5.7, guest), (6.3, 44.8, host), (45.8, 104.9, guest)]);
+        assert!(rate >= 0.95, "crop contained the speaker in only {:.0}% of samples: {keys:?}", rate * 100.0);
+        // The old behaviour (largest face, no identity) put the crop on the host in the first turn.
+        let first = &choices[0];
+        assert_eq!(first.face_id, Some(guest));
     }
 }

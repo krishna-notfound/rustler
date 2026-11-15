@@ -54,14 +54,14 @@ Give Claude Code the skill: copy `skills\rustler` to `%USERPROFILE%\.claude\skil
 `claude mcp add rustler -- C:\Users\krishna\Desktop\rustler\target\release\rustler.exe mcp serve`.
 Demo outputs: `%TEMP%\rustler-e2e\exports\jfk-hook.mp4`, `%TEMP%\rustler-stream\exports\stream-hook.mp4`.
 
-**Known limits / next ideas:**
-1. detect-webcam's suggested box can include a sliver of gameplay beside the facecam → nudge the region.
-2. OCR can't read Devanagari on-screen text (RapidOCR model limit).
-3. No CC0 music library (no verifiable login-free source) — add your own with `asset add --license`.
-4. Speaker colours / active-speaker crop tested on synthetic two-face video, not real podcast footage yet.
+**Known limits / next ideas (updated after the gap-closing pass):**
+1. ~~detect-webcam sliver~~ — fixed: edge-snapped facecam box (within 1 px); agents can also read boxes off `see frame --grid true`.
+2. ~~Devanagari OCR~~ — fixed: `analyze ocr --lang devanagari|auto` (PP-OCRv5 Devanagari).
+3. ~~No music~~ — agents bring any music (file / URL / audio from an imported source); optional CC0 pack via `setup run --music-pack`.
+4. Speakers: verified on real two-person White House footage (speaker in crop 97 % / 100 %). Still: the auto speaker count is a guess (pass `--num-speakers 2`), the first second of a turn can stick to the previous speaker, and very wide shots make faces small in 9:16.
 5. Windows PowerShell 5.1 strips quotes in JSON args → use `--input-json @file.json`.
-6. Tauri desktop wrapper and published GitHub release binaries / one-line installer are not done (local release build exists; the web GUI runs locally).
-
+6. ~~Desktop app / installers~~ — done: `rustler desktop` native window; release v0.1.0 with Windows + Linux builds and one-line installers (private repo → needs gh or a token).
+7. Linux desktop window needs WebKitGTK (`linux-webview` feature); Linux agents use the CLI/MCP/web GUI.
 ---
 
 ## 2026-11-15
@@ -276,3 +276,30 @@ Demo outputs: `%TEMP%\rustler-e2e\exports\jfk-hook.mp4`, `%TEMP%\rustler-stream\
   setup) tested in temp dirs on Windows + WSL (118 commands). docs/install.md.
 - FreePD closed in 2025 → opt-in `setup run --music-pack` pulls 11 CC0 tracks from the Internet Archive
   capture (license sentence verified, sha256 pinned). **Not installed by default** (agent brings any music).
+
+## 2026-11-15 (~10:00) - speaker framing on real two-person footage (branch `speaker-real-footage`)
+- **Media (no login, public domain, `docs/test-media.md`):** two White House fireside chats on Wikimedia Commons (`PD-USGov-POTUS`):
+  "Vice President Vance Holds a Fireside Chat" (95 s excerpt: wide two-shot with faces 4-6 % of the width + cuts to a close-up) and
+  "...joins Breitbart's Matthew Boyle..." (105 s excerpt: medium/very wide shots with slow zooms, close-ups at the end).
+- **Real CLI run:** `source import` -> `analyze quick` -> `analyze speakers --num-speakers 2` -> `clip create` (center-crop) ->
+  `crop track-speaker` -> `caption speaker-colors` -> `render run --quality draft` -> `qc run` (passed) -> contact sheets and frames looked at.
+- **What broke (all reproduced with the old code, then fixed):**
+  1. Diarization put host and guest in one cluster (S1 = 96 % of the time, auto count 7 speakers). Fix: windowed-embedding re-segmentation
+     with debris folding, Viterbi smoothing and quiet-moment snapping (`engine/rustler_engine/speakers.py`). Hand-labelled Vance excerpt: 91.5 % of
+     speech time correctly attributed (old 70 %); Boyle excerpt turns within 0.3 s of the transcript; auto count 2 on both excerpts (JFK+FDR test: 2;
+     200 s guest monologue: 1). Cost: about +0.2 s per second of audio on CPU.
+  2. Faces were tracked by position; the close-up got a different id than the same person in the wide shot, and five "faces" appeared for two
+     people. Fix: SFace (OpenCV Zoo, Apache-2.0, 38 MB, sha256-checked, optional) person identity across cuts (`engine/MODELS.md`).
+  3. Mouth movement is noise on 4-6 % wide faces (left/right pick in the wide shot 60-78 % right, the host's 22 s turn at chance). Fix: only trusted on
+     faces >= 7 % wide; speaker -> person comes from close-ups (`face-id`) or elimination.
+  4. After a cut the crop kept a position from the old shot. Fix: follow the largest visible face (`speaker_face_samples`).
+  5. **Crop drift bug** (also in `crop track-face`): the path only emitted a key when it moved and the renderer interpolates linearly, so the
+     crop slid for seconds toward the next position (speaker out of the crop in 14.8-15.8 s of the Vance excerpt). Fix: `SmoothParams::hold_keys`
+     (additive; on for `crop track-speaker`, off by default so `crop track-face` is unchanged: its owner can switch it on).
+- **Numbers** (1 s samples inside hand-labelled speaking spans; speaker's face centre inside the crop window): Vance excerpt old track-speaker 33 %
+  -> new 97 % (84/87), `crop track-face` 70 %; Boyle excerpt old track-speaker 95 % (lucky: wrong for the first turn), new 100 % (102/102),
+  `crop track-face` 63 %. Captions: S1 yellow / S2 cyan checked on frames in both renders.
+- Remaining: the first seconds of a turn can land on the previous speaker when the diarizer's windows straddle a switch (Vance excerpt 5.9-7.6 s: the
+  host's one-line intro attributed to the guest); faces < 4 % of the frame width are small in the crop; the auto speaker count needs clearly different voices.
+- Tests: `cargo test -p rustler-commands --lib speaker` (15, incl. 3 fixture tests from the real runs), `cargo test -p rustler-media --test facepath`
+  (14), engine `pytest` (122 passed, 1 skipped).
