@@ -627,3 +627,86 @@ async fn detect_webcam_finds_a_corner_face_and_rejects_plain_gameplay() {
     let e = call(&reg, &ctx, "layout.detect_webcam", json!({"source_id": cam_src.id, "at": [999.0]})).await.unwrap_err();
     assert_eq!(code(&e), ErrorCode::Validation);
 }
+
+/// Pixel size of an image via ffprobe.
+fn image_size(home: &Path, img: &Path) -> (u32, u32) {
+    let ffprobe = home.join("bin").join(if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" });
+    let out = std::process::Command::new(ffprobe)
+        .args(["-v", "error", "-show_entries", "stream=width,height", "-of", "csv=p=0"])
+        .arg(img)
+        .output()
+        .expect("run ffprobe");
+    let s = String::from_utf8_lossy(&out.stdout).to_string();
+    let mut it = s.trim().split(',').map(|v| v.parse::<u32>().unwrap());
+    (it.next().unwrap(), it.next().unwrap())
+}
+
+/// testsrc2 1280x720 with the portrait scaled to 320 px wide (plus an optional white `border` px frame)
+/// overlaid with its right edge 24 px from the frame edge and its top 24 px down. Returns the true
+/// outer overlay rectangle in pixels (x0, y0, x1, y1).
+fn make_stream_with_border(home: &Path, out: &Path, portrait: &Path, border: u32) -> (u32, u32, u32, u32) {
+    let (pw, ph0) = image_size(home, portrait);
+    let w = 320u32;
+    let h = ((ph0 as f64 * w as f64 / pw as f64) / 2.0).round() as u32 * 2; // scale=320:-2 rounds to even
+    let (bw, bh) = (w + 2 * border, h + 2 * border);
+    let chain = if border > 0 {
+        format!("[1:v]scale={w}:-2,pad={bw}:{bh}:{border}:{border}:white[p];[0:v][p]overlay=W-w-24:24")
+    } else {
+        format!("[1:v]scale={w}:-2[p];[0:v][p]overlay=W-w-24:24")
+    };
+    let ok = std::process::Command::new(ffmpeg_in(home))
+        .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=30:duration=6", "-i"])
+        .arg(portrait)
+        .args(["-filter_complex", &chain, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast"])
+        .arg(out)
+        .status()
+        .expect("run ffmpeg")
+        .success();
+    assert!(ok, "fixture video failed");
+    (1280 - 24 - bw, 24, 1280 - 24, 24 + bh)
+}
+
+#[tokio::test]
+async fn detect_webcam_snaps_to_the_overlay_edges_within_1_5_percent() {
+    let Some(home) = engine_home() else { return };
+    if !ffmpeg_in(&home).is_file() || !home.join("bin").join(if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" }).is_file() {
+        eprintln!("SKIP: ffmpeg/ffprobe missing");
+        return;
+    }
+    let Some(face_img) = portrait() else {
+        eprintln!("SKIP: portrait unavailable (offline)");
+        return;
+    };
+    let (proj, store, mut ctx) = new_project();
+    ctx.home = home.clone();
+    let paths = rustler_tools::ToolPaths::from_home(&home);
+    let reg = registry();
+    for border in [0u32, 4] {
+        let video = proj.path().join(format!("snap_b{border}.mp4"));
+        let (x0, y0, x1, y1) = make_stream_with_border(&home, &video, &face_img, border);
+        let src = add_source(&store, &video, rustler_media::probe(&paths, &video).await.unwrap());
+        let r = call(&reg, &ctx, "layout.detect_webcam", json!({"source_id": src.id, "samples": 6})).await;
+        let v = match r {
+            Ok(v) => v,
+            Err(e) if e.code != ErrorCode::Validation => {
+                eprintln!("SKIP: engine/model unavailable: {e}");
+                return;
+            }
+            Err(e) => panic!("detect_webcam failed (border {border}): {e} hint={:?}", e.hint),
+        };
+        eprintln!("SNAP border={border}: webcam={} expansion={} source={} conf={}", v["webcam"], v["expansion_webcam"], v["rect_source"], v["rect_confidence"]);
+        assert_eq!(v["rect_source"], "edges", "border {border}: {v}");
+        assert!(v["rect_confidence"].as_f64().unwrap() >= 0.6);
+        let cam = &v["webcam"];
+        let (cx, cy) = (cam["x"].as_f64().unwrap(), cam["y"].as_f64().unwrap());
+        let (cx1, cy1) = (cx + cam["w"].as_f64().unwrap(), cy + cam["h"].as_f64().unwrap());
+        let truth = [x0 as f64 / 1280.0, y0 as f64 / 720.0, x1 as f64 / 1280.0, y1 as f64 / 720.0];
+        for (name, got, want) in [("left", cx, truth[0]), ("top", cy, truth[1]), ("right", cx1, truth[2]), ("bottom", cy1, truth[3])] {
+            assert!((got - want).abs() <= 0.015, "border {border}: {name} edge {got:.4} vs true {want:.4}");
+        }
+        // the old expansion is still reported for comparison and the legacy fields are unchanged
+        assert!(v["expansion_webcam"]["w"].as_f64().unwrap() > 0.0);
+        assert!(v["webcam_px"]["w"].as_i64().unwrap() > 0 && v["gameplay_px"]["w"].as_i64().unwrap() > 0);
+        assert!(v["set_layout_input"]["params"]["top"].is_object());
+    }
+}

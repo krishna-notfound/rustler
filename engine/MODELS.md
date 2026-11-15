@@ -8,6 +8,7 @@ license-checked before it was added. Models live under `$RUSTLER_HOME/models/` (
 |---|---|---|---|
 | YAMNet (ONNX export) | `audio.events` | Apache-2.0 | downloaded on first use |
 | PP-OCRv6 small det + rec (via RapidOCR) | `ocr.run` | Apache-2.0 | bundled inside the `rapidocr` wheel |
+| PP-OCRv5 Devanagari rec mobile (ONNX) | `ocr.run` `lang: devanagari\|auto` | Apache-2.0 | downloaded on first use / `models.fetch {ocr_devanagari}` / `rustler setup` |
 | YuNet `face_detection_yunet_2023mar` | `faces.track` | MIT | downloaded on first use |
 | pyannote segmentation 3.0 (sherpa-onnx ONNX) | `speakers.diarize` | MIT | downloaded on first use |
 | WeSpeaker ResNet34 (VoxCeleb, sherpa-onnx ONNX) | `speakers.diarize` | Apache-2.0 | downloaded on first use |
@@ -62,10 +63,37 @@ license-checked before it was added. Models live under `$RUSTLER_HOME/models/` (
   | `ch_ppocr_mobile_v2.0_cls_mobile.onnx` (shipped, not used: `use_cls=false`) | `e47acedf663230f8863ff1ab0e64dd2d82b838fceb5957146dab185a89d6215c` |
 
 - Scripts: the multilingual PP-OCRv6 small model reads Chinese, English and other Latin-script languages.
-  **Devanagari (Hindi) on-screen text is not supported by this model**; `analyze.ocr` says so when it
-  finds nothing.
+  **Devanagari (Hindi) on-screen text is not supported by this model**: use `lang: "devanagari"` or `"auto"`
+  (next section); `analyze.ocr` says so when the Latin pass finds nothing.
 - Speed on this laptop (CPU, 8 threads): about 0.5 s per frame at <= 1024 px wide. Unchanged frames
   are skipped by a thumbnail comparison.
+
+## PaddleOCR Devanagari recognition model (Hindi on-screen text)
+
+Used by `ocr.run` with `lang: "devanagari"` / `"auto"` (`analyze.ocr --lang ...`). Checked 2026-11-15.
+
+- Model: PaddleOCR **PP-OCRv5 Devanagari mobile recognition** model, ONNX conversion maintained by the
+  RapidOCR project (the same project and release as our `rapidocr` 3.10.0 runtime; the URL and hash below
+  are the ones listed in the wheel's `default_models.yaml`). The detection stage stays the bundled PP-OCRv6
+  detector. The character dictionary is embedded in the ONNX file's metadata (no separate dict file).
+- **License: Apache-2.0.** Evidence: the upstream model card
+  https://huggingface.co/PaddlePaddle/devanagari_PP-OCRv5_mobile_rec declares `license: apache-2.0`
+  (public, no gate); PaddleOCR is Apache-2.0 (https://github.com/PaddlePaddle/PaddleOCR/blob/main/LICENSE);
+  RapidOCR (code and the ModelScope model repository `RapidAI/RapidOCR`) is Apache-2.0 (ModelScope API
+  field `License: "Apache License 2.0"`). Training-data terms were not separately audited.
+- File (downloaded without login into `$RUSTLER_HOME/models/ocr/`, sha256 verified on every start):
+
+  | File | URL | sha256 | Size |
+  |---|---|---|---|
+  | `devanagari_PP-OCRv5_rec_mobile.onnx` | https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv5/rec/devanagari_PP-OCRv5_rec_mobile.onnx | `d6f0a906580e3fa6b324a318718f1f31f268b6ea8ef985f91c2012a37f52c91e` | 7,940,361 |
+
+  (The hash equals the `SHA256` recorded for this model in the installed `rapidocr` wheel and the bytes we
+  downloaded.) The task brief mentioned PP-OCRv3; RapidOCR's zoo offers v4 and v5 Devanagari models, v5 is
+  the newest and was used.
+- Verified on this machine: a frame rendered with ffmpeg drawtext (Noto Sans Devanagari) reading
+  `नमस्ते दोस्तों` is recognised as two lines `नमस्ते` (conf 0.95) and `दोस्तों` (conf 1.00) in about 1.5 s
+  on CPU; the Latin model returns nothing for it. Mixed frames: `auto` keeps Latin lines from the Latin
+  pass and replaces / adds Devanagari lines from the Devanagari pass.
 
 ## YuNet (face detection)
 

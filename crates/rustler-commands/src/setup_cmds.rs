@@ -48,7 +48,7 @@ async fn fetch_models(ctx: &Ctx, paths: &ToolPaths, models: &[String]) -> rustle
             "models.fetch",
             // Pre-fetch everything the engine would otherwise download on first use, so agents
             // in sandboxes don't hit a surprise download mid-edit.
-            serde_json::json!({ "whisper": models, "yunet": true, "yamnet": true, "diarization": true }),
+            serde_json::json!({ "whisper": models, "yunet": true, "yamnet": true, "diarization": true, "ocr_devanagari": true }),
             &ctx.progress,
             &ctx.cancel,
         )

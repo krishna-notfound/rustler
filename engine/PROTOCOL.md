@@ -77,7 +77,16 @@ Line-delimited JSON-RPC 2.0 over the worker's stdin/stdout. Start with
   - Errors: `validation` (missing/invalid params, video not found), `media` (cannot open video),
     `dependency_missing` (`rapidocr`/`onnxruntime` not installed). Progress: `stage: "ocr.run"`,
     `pct` = samples done / total * 100.
-  - Devanagari text is not recognised by the bundled model (Latin and Chinese scripts are).
+  - Optional `lang`: `"latin"` (default; the bundled model, Latin and Chinese), `"devanagari"` or `"auto"`.
+    `devanagari` keeps the PP-OCRv6 detector and swaps the recogniser for the PaddleOCR PP-OCRv5 Devanagari
+    model (ONNX, Apache-2.0; downloaded on first use to `$RUSTLER_HOME/models/ocr/` and sha256-verified,
+    `MODELS.md`). `auto` runs the Latin pass and, only on frames where it found no line or weak lines
+    (mean conf < 0.85 or any line < 0.7), also the Devanagari pass; per overlapping line the more
+    confident reading wins (a Devanagari reading replaces a Latin one only if it contains Devanagari and
+    beats it by > 0.03). If the Devanagari model cannot be obtained, `auto` falls back to Latin and adds a
+    `warnings` entry; `devanagari` fails with `media`. The response carries `lang` (the mode used),
+    `engine` names the models, and with `devanagari`/`auto` every line also has `lang: "latin"|"devanagari"`.
+    An unknown `lang` is `validation`.
 - `audio.events {"audio_path", "hop": 0.5, "model": "auto"|"yamnet"|"heuristic"}`
   -> `{"events": [{"start","end","label","score"}], "model": "yamnet"|"heuristic", "duration", "hop", "warnings"?: [..]}`
   - `audio_path` is a PCM WAV (the source's 16 kHz wav; other rates are resampled, stereo is mixed down;
@@ -130,3 +139,22 @@ Line-delimited JSON-RPC 2.0 over the worker's stdin/stdout. Start with
     cannot load the YuNet model). Progress: `stage: "speakers.active"`.
 - `models.fetch` also accepts `{"diarization": true}` -> adds `"diarization"` to `fetched` and `"diarization_dir"`.
 - `engine.capabilities` `packages` now also lists `sherpa_onnx` when installed.
+- `models.fetch` also accepts `{"ocr_devanagari": true}` -> adds `"ocr_devanagari"` to `fetched` and `"ocr_devanagari_path"`.
+- `overlay.find_box {"image_path": string | "video_path": string, "times": [..], "near": {"x","y","w","h"}}`
+  -> `{"rect": {"x","y","w","h"} | null, "confidence": 0..1, "source": "edges" | "none", "frames": int, "width", "height", "sides"?: {"left"|"right"|"top"|"bottom": {"support", "frame_edge"}}, "frames_supporting"?: int, "reason"?: string}`
+  - Finds the rectangle of the picture-in-picture overlay (streamer facecam) that contains the face box `near`
+    (normalized 0..1 of the frame). Input is one image (`image_path`) or up to 40 frames of a video
+    (`video_path` + `times`, seconds; frames that cannot be read are skipped, none readable = `media`).
+  - Method: Canny edges per colour channel in a window around the face (4 face widths either side, 3 face
+    heights up, 4 down), averaged over the frames (static borders survive, moving content washes out); the
+    border of each side is a straight edge line covering the face's span, and every combination is scored
+    on the full side length of the whole rectangle. A border counts when it is an edge over >= 60 % of its
+    length; the tightest rectangle whose four borders all count wins. A frame edge may stand in for a border
+    (overlay flush with a corner; `sides.<side>.frame_edge: true`, at least two borders must be real). A
+    double border (a frame around the picture) snaps to the outer line.
+  - `confidence` = 0.5 * mean border support + 0.5 * share of frames that support the rectangle alone.
+    `rect: null`, `confidence: 0`, `source: "none"` when no rectangle qualifies (`reason` says why). Callers
+    treat < 0.6 as "not found" and fall back to the face-size expansion (`layout.detect_webcam` does, and
+    reports `rect_source: "edges" | "expansion"`).
+  - Errors: `validation` (missing/invalid `near`, `times`, paths), `media` (cannot decode/open, no readable
+    frame). Progress: `stage: "overlay.find_box"`.

@@ -457,6 +457,30 @@ pub fn webcam_rect_from_face(face: &Rect) -> Rect {
     Rect { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }
 }
 
+/// Minimum `overlay.find_box` confidence for an edge-snapped webcam rect to replace the expansion.
+pub const EDGE_SNAP_MIN_CONFIDENCE: f64 = 0.6;
+
+/// Whether an edge-snapped overlay rect (from the engine's `overlay.find_box`) can be trusted as the
+/// webcam rect: confident enough, inside the frame, containing the whole face, and not implausibly
+/// large (more than 8x the face area or half the frame) or tiny (less than 1.2x the face in either
+/// direction).
+pub fn accept_snapped_rect(face: &Rect, snapped: &Rect, confidence: f64) -> bool {
+    const EPS: f64 = 0.002;
+    if !confidence.is_finite() || confidence < EDGE_SNAP_MIN_CONFIDENCE {
+        return false;
+    }
+    let (x1, y1) = (snapped.x + snapped.w, snapped.y + snapped.h);
+    let inside = snapped.x >= -EPS && snapped.y >= -EPS && x1 <= 1.0 + EPS && y1 <= 1.0 + EPS;
+    let has_face = snapped.x <= face.x + EPS
+        && snapped.y <= face.y + EPS
+        && x1 >= face.x + face.w - EPS
+        && y1 >= face.y + face.h - EPS;
+    let size_ok = snapped.w >= face.w * 1.2
+        && snapped.h >= face.h * 1.2
+        && snapped.w * snapped.h <= (face.w * face.h * 8.0).min(0.5);
+    inside && has_face && size_ok
+}
+
 /// Where a rect sits in the frame: "top-right", "bottom-left", "top-center", "left", ..., "center".
 pub fn frame_position(r: &Rect) -> String {
     let (cx, cy) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
@@ -567,6 +591,17 @@ mod region_tests {
         assert!((0.3..=0.5).contains(&split));
         let (g, clear) = gameplay_rect(&cam, split, 1920, 1080, &Canvas::default());
         assert!(clear && g.x + g.w <= cam.x + 1e-9);
+    }
+
+    #[test]
+    fn snapped_rects_are_accepted_only_when_sane() {
+        let face = r(0.83, 0.11, 0.088, 0.21);
+        let good = r(0.776, 0.028, 0.208, 0.48);
+        assert!(accept_snapped_rect(&face, &good, 0.9));
+        assert!(!accept_snapped_rect(&face, &good, 0.4), "low confidence");
+        assert!(!accept_snapped_rect(&face, &r(0.85, 0.028, 0.1, 0.48), 0.9), "cuts the face");
+        assert!(!accept_snapped_rect(&face, &r(0.5, 0.0, 0.6, 0.9), 0.9), "outside / huge");
+        assert!(!accept_snapped_rect(&face, &r(0.82, 0.1, 0.09, 0.22), 0.9), "barely larger than the face");
     }
 
     #[test]

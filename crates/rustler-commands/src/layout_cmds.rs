@@ -783,8 +783,15 @@ pub struct DetectWebcamOut {
     pub confidence: f64,
     /// Median face box.
     pub face: Rect,
-    /// Suggested webcam rect: the face expanded 2.6x wide, 2.2x tall.
+    /// Suggested webcam rect: snapped to the overlay's edges (`rect_source: "edges"`), or the face
+    /// expanded 2.6x wide, 2.2x tall (`rect_source: "expansion"`).
     pub webcam: Rect,
+    /// `edges` (borders found by `overlay.find_box`) or `expansion` (face-size guess).
+    pub rect_source: String,
+    /// Confidence of the edge snap (0..1; 0 when it was not found or the engine call failed).
+    pub rect_confidence: f64,
+    /// The face-size expansion for comparison (what `webcam` was before edge snapping).
+    pub expansion_webcam: Rect,
     pub webcam_px: PxRect,
     /// e.g. top-right.
     pub position: String,
@@ -807,6 +814,12 @@ pub struct DetectWebcamOut {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
     pub next: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct FindBoxResult {
+    rect: Option<Rect>,
+    confidence: f64,
 }
 
 #[derive(Deserialize)]
@@ -867,13 +880,14 @@ async fn layout_detect_webcam(ctx: Ctx, i: DetectWebcamIn) -> Result<DetectWebca
             }
         }
     }
-    engine.shutdown().await;
     if let Some(e) = failure {
+        engine.shutdown().await;
         return Err(e);
     }
 
     let frames_with_faces = per_sample.iter().filter(|f| !f.is_empty()).count();
     let Some(found) = layout::find_webcam_face(&per_sample) else {
+        engine.shutdown().await;
         let biggest = per_sample.iter().flatten().map(|f| f.w * f.h).fold(0.0, f64::max);
         return Err(validation(
             stage,
@@ -894,8 +908,27 @@ async fn layout_detect_webcam(ctx: Ctx, i: DetectWebcamIn) -> Result<DetectWebca
         )));
     };
 
+    // Snap the webcam rect to the overlay's borders (edges across the sampled frames); keep the
+    // face-size expansion when the edges are not convincing or the engine call fails.
+    let expansion = layout::webcam_rect_from_face(&found.face);
+    let mut warnings: Vec<String> = Vec::new();
+    let snap: Result<FindBoxResult> = engine
+        .call("overlay.find_box", json!({"video_path": video, "times": times, "near": found.face}), &ctx.progress, &ctx.cancel)
+        .await;
+    engine.shutdown().await;
+    let (webcam, rect_source, rect_confidence) = match snap {
+        Ok(FindBoxResult { rect: Some(r), confidence }) if layout::accept_snapped_rect(&found.face, &r, confidence) => (r, "edges", confidence),
+        Ok(FindBoxResult { confidence, .. }) => {
+            warnings.push(format!("no clear overlay border found (edge confidence {confidence:.2}): the webcam rect is the face expanded 2.6x2.2, which may include a sliver of gameplay; check with `see frame`"));
+            (expansion, "expansion", confidence)
+        }
+        Err(e) => {
+            warnings.push(format!("edge snapping failed ({e}): the webcam rect is the face expanded 2.6x2.2; check with `see frame`"));
+            (expansion, "expansion", 0.0)
+        }
+    };
+
     let canvas = Canvas::default();
-    let webcam = layout::webcam_rect_from_face(&found.face);
     let split = layout::split_for_webcam(&webcam, sw, sh, &canvas);
     let (gameplay, clear) = layout::gameplay_rect(&webcam, split, sw, sh, &canvas);
     let (webcam_r, gameplay_r) = (layout::round_rect(&webcam), layout::round_rect(&gameplay));
@@ -905,7 +938,7 @@ async fn layout_detect_webcam(ctx: Ctx, i: DetectWebcamIn) -> Result<DetectWebca
     // Validate through the real preset builder and collect quality warnings from it.
     let lp = LayoutParams { top: Some(webcam_r), bottom: Some(gameplay_r), split: Some(split_r), ..Default::default() };
     let built = layout::preset("split-vertical", sw, sh, &canvas, &lp)?;
-    let mut warnings: Vec<String> = built.regions.iter().flat_map(|r| layout::region_warnings(r, sw, sh, &canvas)).collect();
+    warnings.extend(built.regions.iter().flat_map(|r| layout::region_warnings(r, sw, sh, &canvas)));
     let position = layout::frame_position(&webcam);
     if position == "center" {
         warnings.push("the face is in the middle of the frame: this may be a talking head rather than a webcam overlay; check with `see frame`".to_string());
@@ -943,6 +976,9 @@ async fn layout_detect_webcam(ctx: Ctx, i: DetectWebcamIn) -> Result<DetectWebca
         confidence: found.hits as f64 / found.samples as f64,
         face: layout::round_rect(&found.face),
         webcam: webcam_r,
+        rect_source: rect_source.to_string(),
+        rect_confidence: (rect_confidence * 1000.0).round() / 1000.0,
+        expansion_webcam: layout::round_rect(&expansion),
         webcam_px: layout::rect_px(&webcam_r, sw, sh),
         position,
         gameplay: gameplay_r,
@@ -1070,7 +1106,7 @@ pub fn register(reg: &mut Registry) {
     ));
     reg.register(typed(
         "layout.detect_webcam",
-        "Find a streamer webcam overlay (small consistent face) in a source and suggest split-vertical params",
+        "Find a streamer webcam overlay (small consistent face) in a source, snap its rectangle to the overlay borders and suggest split-vertical params",
         &["source_id"],
         DETECT,
         vec![Example { description: "sample 6 frames and suggest the split", cli: "rustler layout detect-webcam src_x --clip-id clp_x" }],

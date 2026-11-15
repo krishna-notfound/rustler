@@ -102,7 +102,7 @@ rustler layout detect-webcam src_A --clip-id clp_X
 
 Samples 6 frames (`--samples N`, or exact times `--at '[120,480,900]'`), runs face detection and looks for
 a **small face (< 15 % of the frame) at the same spot in at least half the samples**. It returns the webcam
-rect (face box expanded 2.6x wide / 2.2x tall, clamped to the frame, snapped flush to a nearby edge), a
+rect, a
 gameplay rect that avoids the webcam, a `split`, and a ready-to-run line:
 
 ```
@@ -112,8 +112,14 @@ rustler clip set-layout clp_X --preset split-vertical --params '{"top":{...webca
 `set_layout_input` / `from_frame_boxes_input` in the result are the same thing as JSON. If it fails with
 "no small, consistent face" (full-frame face cam, no webcam, face not visible) pick the rect by hand with
 Steps 1-3 below. **Always check the result** with `rustler render preview-frame clp_X --out-t 1.0`: the
-suggestion is a good starting point, not a measurement (it can include a few percent of overlay border;
-nudge it, see "Adjusting regions").
+suggestion is a good starting point, not a measurement (nudge it, see "Adjusting regions").
+
+**How the webcam rect is found:** the engine's `overlay.find_box` looks for the facecam overlay's borders
+around the face (Canny edges averaged over the sampled frames, long straight lines on all four sides) and
+snaps the rect to them, so it no longer includes a sliver of gameplay beside the camera. The result says
+`rect_source: "edges"` (snapped; `rect_confidence` 0..1) or `rect_source: "expansion"` (no clear border, e.g.
+a camera with a soft or borderless edge: the rect is the face box expanded 2.6x wide / 2.2x tall and a
+warning tells you to check it); `expansion_webcam` is always the expansion for comparison.
 
 ### Step 1: find the webcam rectangle (by hand)
 

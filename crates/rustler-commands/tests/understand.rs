@@ -218,3 +218,69 @@ async fn commands_are_registered_with_schemas() {
         assert!(reg.describe(name).is_some(), "{name} not registered");
     }
 }
+
+/// 960x540 video with a Hindi greeting rendered through drawtext (Noto Sans Devanagari, shaped).
+fn make_hindi_video(path: &Path) -> bool {
+    let font_src = home().join("fonts").join("NotoSansDevanagari");
+    let Some(font) = std::fs::read_dir(&font_src).ok().and_then(|d| d.flatten().map(|e| e.path()).find(|p| p.extension().is_some_and(|x| x == "ttf"))) else {
+        eprintln!("SKIP: Noto Sans Devanagari font missing under {} (run `rustler setup`)", font_src.display());
+        return false;
+    };
+    let dir = path.parent().unwrap();
+    std::fs::copy(&font, dir.join("noto.ttf")).unwrap();
+    let vf = "drawtext=fontfile=noto.ttf:text='नमस्ते दोस्तों':fontsize=84:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2";
+    let out = Command::new(ffmpeg())
+        .current_dir(dir)
+        .args(["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-f", "lavfi", "-i", "color=c=0x203040:s=960x540:r=10:d=4"])
+        .args(["-vf", vf, "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", path.to_str().unwrap()])
+        .output()
+        .expect("spawn ffmpeg");
+    assert!(out.status.success(), "ffmpeg drawtext failed: {}", String::from_utf8_lossy(&out.stderr));
+    true
+}
+
+#[tokio::test]
+async fn ocr_lang_devanagari_and_auto_read_hindi_text() {
+    if !have_media_tools() || !have_engine() {
+        return;
+    }
+    let reg = registry();
+    let (dir, ctx) = project();
+    let video = dir.path().join("hindi.mp4");
+    if !make_hindi_video(&video) {
+        return;
+    }
+    let id = import(&reg, &ctx, &video).await;
+    let words = ["नमस्ते", "दोस्तों"];
+    let texts_of = |v: &Value| -> Vec<String> { v["texts"].as_array().unwrap().iter().map(|t| t["text"].as_str().unwrap().to_string()).collect() };
+
+    // default (latin) cannot read it, and says how to
+    let v = ok(&reg, "analyze.ocr", &ctx, json!({"source_id": id, "every": 1.0})).await;
+    assert_eq!(v["lang"], "latin");
+    let t = texts_of(&v);
+    let refs: Vec<&str> = t.iter().map(String::as_str).collect();
+    assert!(!words.iter().all(|w| fuzzy_has(&refs, w)), "latin model unexpectedly read Hindi: {t:?}");
+    if t.is_empty() {
+        assert!(v["warnings"].to_string().contains("--lang devanagari"), "{v}");
+    }
+
+    for lang in ["devanagari", "auto"] {
+        let r = run(&reg, "analyze.ocr", &ctx, json!({"source_id": id, "every": 1.0, "lang": lang})).await;
+        let v = match r {
+            Ok(v) => v,
+            Err(e) if e.code != ErrorCode::Validation => {
+                eprintln!("SKIP: Devanagari model unavailable (offline?): {e}");
+                return;
+            }
+            Err(e) => panic!("{e}"),
+        };
+        assert_eq!(v["lang"], lang);
+        let t = texts_of(&v);
+        let refs: Vec<&str> = t.iter().map(String::as_str).collect();
+        for w in words {
+            assert!(fuzzy_has(&refs, w), "lang {lang}: missing `{w}` in {t:?}");
+        }
+    }
+    // bad lang
+    expect_code(run(&reg, "analyze.ocr", &ctx, json!({"source_id": id, "lang": "klingon"})).await, ErrorCode::Validation);
+}

@@ -105,3 +105,12 @@ Weak Hinglish openers to cut: toh, matlab, haan, na, accha, dekho, yaar, bas, au
   #indianpodcast, #startupindia, #desi, niche-specific). 3-5 total.
 - Keep cultural context accurate; don't translate jokes into English in the title if the humour
   depends on Hindi.
+
+## 7. Reading Hindi on-screen text (OCR)
+
+`rustler analyze ocr src_X` reads Latin text by default and cannot read Devanagari. For Hindi titles,
+subtitles or overlays pass the script: `--lang devanagari` (Devanagari recognition model), or
+`--lang auto` (Latin first; on frames where it finds nothing or only weak text the Devanagari model also
+runs and each line keeps the more confident reading, tagged `lang: "latin" | "devanagari"`). The model
+(about 8 MB) downloads on first use and is pre-fetched by `rustler setup`. `analyze deep` accepts the same
+`--lang`. Raw OCR text stays in Devanagari.

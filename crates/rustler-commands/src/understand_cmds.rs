@@ -100,6 +100,9 @@ pub struct OcrLine {
     #[serde(rename = "box")]
     pub bbox: OcrBox,
     pub conf: f64,
+    /// `latin` | `devanagari`: which model read this line (only reported for `lang` devanagari / auto).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lang: Option<String>,
 }
 
 /// A run of samples that showed the same text: first seen at `t`, last seen at `t_end`.
@@ -125,6 +128,11 @@ pub struct OcrResult {
     pub every: f64,
     #[serde(default)]
     pub engine: String,
+    /// The language mode that was used (`latin` | `devanagari` | `auto`).
+    #[serde(default)]
+    pub lang: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Deserialize, JsonSchema, Debug)]
@@ -132,6 +140,20 @@ pub struct OcrIn {
     pub source_id: SourceId,
     /// Seconds between sampled frames (default 2.0; raised automatically on very long videos).
     pub every: Option<f64>,
+    /// Script to read: `latin` (default; Latin + Chinese), `devanagari` (Hindi on-screen text) or `auto`
+    /// (Latin first, then Devanagari on frames where Latin finds nothing or only weak text; the more
+    /// confident reading of each line wins). The Devanagari model downloads on first use.
+    pub lang: Option<String>,
+}
+
+/// Validates the `lang` argument of analyze.ocr / analyze.deep.
+fn ocr_lang(stage: &str, lang: Option<&str>) -> rustler_core::Result<&'static str> {
+    match lang.map(|l| l.trim().to_lowercase()).as_deref() {
+        None | Some("") | Some("latin") => Ok("latin"),
+        Some("devanagari") | Some("hindi") => Ok("devanagari"),
+        Some("auto") => Ok("auto"),
+        Some(other) => Err(validation(stage, format!("unknown lang \"{other}\""), "use latin, devanagari or auto")),
+    }
 }
 
 #[derive(Serialize, JsonSchema, Debug, Clone)]
@@ -169,6 +191,8 @@ pub struct OcrOut {
     pub samples: usize,
     pub every: f64,
     pub engine: String,
+    /// Language mode used: `latin` | `devanagari` | `auto`.
+    pub lang: String,
     /// Texts that were seen at least once (identical text collapsed).
     pub unique_texts: usize,
     /// First 40 unique texts by first appearance.
@@ -300,8 +324,9 @@ fn regions_from_texts(texts: &[OcrText], duration: f64) -> Vec<OcrRegion> {
 }
 
 /// Runs OCR over `every`-second samples with an already running engine and saves `ocr.json`.
-async fn ocr_with(ctx: &Ctx, store: &ProjectStore, engine: &EngineClient, source: &Source, every: Option<f64>) -> rustler_core::Result<OcrOut> {
+async fn ocr_with(ctx: &Ctx, store: &ProjectStore, engine: &EngineClient, source: &Source, every: Option<f64>, lang: Option<&str>) -> rustler_core::Result<OcrOut> {
     require_video("analyze.ocr", source)?;
+    let lang = ocr_lang("analyze.ocr", lang)?;
     let mut every = every.unwrap_or(2.0);
     if !(every > 0.0) {
         return Err(validation("analyze.ocr", "every must be greater than 0", "use seconds between sampled frames, e.g. --every 2"));
@@ -313,7 +338,7 @@ async fn ocr_with(ctx: &Ctx, store: &ProjectStore, engine: &EngineClient, source
         warnings.push(format!("long video: sampling every {every} s instead to keep OCR under {MAX_OCR_SAMPLES:.0} frames; pass --start/--end style windows via `see` for finer text checks"));
     }
     let video = video_for_ocr(store, source);
-    let res: OcrResult = engine.call("ocr.run", json!({"video_path": video, "every": every, "end": if dur > 0.0 { json!(dur) } else { json!(null) }}), &ctx.progress, &ctx.cancel).await?;
+    let res: OcrResult = engine.call("ocr.run", json!({"video_path": video, "every": every, "lang": lang, "end": if dur > 0.0 { json!(dur) } else { json!(null) }}), &ctx.progress, &ctx.cancel).await?;
     let path = rel(source, "ocr.json");
     store.write_json(&path, &res)?;
     let (texts, regions) = summarize_ocr(&res.frames, dur, every);
@@ -327,8 +352,12 @@ async fn ocr_with(ctx: &Ctx, store: &ProjectStore, engine: &EngineClient, source
         };
         format!("the source already has burned-in captions at y≈{:.2}: do not stack a second caption on that band; {hint}", r.y)
     });
+    warnings.extend(res.warnings.iter().cloned());
     if res.frames.is_empty() {
-        warnings.push("no on-screen text found (or only text the model cannot read: the OCR model reads Latin and Chinese scripts, not Devanagari)".to_string());
+        warnings.push(match lang {
+            "latin" => "no on-screen text found (or only text the Latin model cannot read: for Hindi on-screen text retry with --lang devanagari, or --lang auto)".to_string(),
+            _ => "no on-screen text found".to_string(),
+        });
     }
     log_event(ctx, store, "analyze.ocr", json!({"source_id": source.id, "unique_texts": texts.len(), "burned_in_captions": caption_band_y.is_some()}))?;
     Ok(OcrOut {
@@ -336,6 +365,7 @@ async fn ocr_with(ctx: &Ctx, store: &ProjectStore, engine: &EngineClient, source
         samples: res.samples,
         every,
         engine: res.engine,
+        lang: if res.lang.is_empty() { lang.to_string() } else { res.lang.clone() },
         unique_texts: texts.len(),
         texts: texts.into_iter().take(40).collect(),
         regions,
@@ -352,12 +382,13 @@ pub async fn ocr(ctx: Ctx, input: OcrIn) -> rustler_core::Result<Outcome<OcrOut>
     let store = ctx.store()?;
     let source = load_source_checked(&store, &input.source_id)?;
     require_video("analyze.ocr", &source)?;
+    let lang = ocr_lang("analyze.ocr", input.lang.as_deref())?;
     if ctx.dry_run {
-        return Ok(Outcome::dry_run(json!({"ocr": source.id, "every": input.every.unwrap_or(2.0)})));
+        return Ok(Outcome::dry_run(json!({"ocr": source.id, "every": input.every.unwrap_or(2.0), "lang": lang})));
     }
     let paths = ToolPaths::from_home(&ctx.home);
     let engine = spawn_engine(&paths).await?;
-    let out = ocr_with(&ctx, &store, &engine, &source, input.every).await;
+    let out = ocr_with(&ctx, &store, &engine, &source, input.every, Some(lang)).await;
     engine.shutdown().await;
     Ok(Outcome::Done(out?))
 }
@@ -752,6 +783,8 @@ pub struct DeepIn {
     pub every: Option<f64>,
     /// Face samples per second (default 1).
     pub fps: Option<f64>,
+    /// OCR script: `latin` (default), `devanagari` or `auto` (see analyze.ocr).
+    pub lang: Option<String>,
 }
 
 #[derive(Serialize, JsonSchema, Debug)]
@@ -835,7 +868,7 @@ pub async fn deep(ctx: Ctx, input: DeepIn) -> rustler_core::Result<Outcome<DeepO
     let engine = spawn_engine(&paths).await?;
     let (mut ocr_out, mut events_out, mut faces_out) = (None, None, None);
     if source.probe.has_video {
-        match ocr_with(&ctx, &store, &engine, &source, input.every).await {
+        match ocr_with(&ctx, &store, &engine, &source, input.every, input.lang.as_deref()).await {
             Ok(o) => ocr_out = Some(o),
             Err(e) => warnings.push(format!("on-screen text skipped: {}", err_note(&e))),
         }
@@ -914,7 +947,7 @@ mod tests {
     use rustler_core::UnitKind;
 
     fn line(text: &str, y: f64) -> OcrLine {
-        OcrLine { text: text.to_string(), bbox: OcrBox { x: 0.1, y: y - 0.02, w: 0.6, h: 0.04 }, conf: 0.95 }
+        OcrLine { text: text.to_string(), bbox: OcrBox { x: 0.1, y: y - 0.02, w: 0.6, h: 0.04 }, conf: 0.95, lang: None }
     }
 
     fn frame(t: f64, t_end: f64, lines: Vec<OcrLine>) -> OcrFrame {

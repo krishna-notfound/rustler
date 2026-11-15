@@ -41,8 +41,9 @@ rustler layout detect-webcam src_X --clip-id clp_X
 ```
 
 It samples 6 frames (`--samples N`, or `--at '[120,480,900]'`), finds a **small face (< 15 % of the frame)
-at the same spot in at least half of them** and returns: the webcam rect (`face` expanded and snapped
-to the nearest edge), a `gameplay` rect that avoids the webcam, a `split`, `confidence`
+at the same spot in at least half of them** and returns: the webcam rect (snapped to the overlay's borders
+found by edge detection: `rect_source: "edges"`; when no clear border exists it falls back to the face
+expanded 2.6x2.2, `rect_source: "expansion"`), a `gameplay` rect that avoids the webcam, a `split`, `confidence`
 (`face_hits / samples`), and ready-to-run `commands`, including the exact set-layout line. Run that
 line:
 
@@ -51,8 +52,8 @@ rustler clip set-layout clp_X --preset split-vertical --params '{"top":{...webca
 rustler render preview-frame clp_X --out-t 1.0        # LOOK
 ```
 
-The rect can include a **sliver of gameplay or overlay border** around the facecam: always check the
-preview and nudge (`layout edit-region clp_X top --nudge '{"dw":-0.02,"dh":-0.02}'`; on Windows PowerShell 5.1
+With `rect_source: "expansion"` the rect can include a **sliver of gameplay or overlay border** around the
+facecam; even when snapped, always check the preview and nudge (`layout edit-region clp_X top --nudge '{"dw":-0.02,"dh":-0.02}'`; on Windows PowerShell 5.1
 quote JSON via `--input-json @file.json`, see `troubleshooting`).
 
 If it fails with "no small, consistent face": the webcam may be hidden in those samples, the face is
