@@ -40,6 +40,9 @@ pub struct SetupOptions {
     /// Fill the global asset library (`~/.rustler/assets`): built-in styles, fonts, CC0 SFX.
     /// Skip with `--no-assets`.
     pub assets: bool,
+    /// Also download the optional CC0 music pack (11 FreePD tracks, about 50 MB). Off by default and never part
+    /// of the default setup: the agent adds any music it wants with `asset add`. Enable with `--music-pack`.
+    pub music_pack: bool,
 }
 
 impl Default for SetupOptions {
@@ -50,6 +53,7 @@ impl Default for SetupOptions {
             whisper_models: vec!["small".to_string()],
             force: false,
             assets: true,
+            music_pack: false,
         }
     }
 }
@@ -272,13 +276,17 @@ pub async fn setup(
         }
     }
     if opts.assets {
-        emit("filling the asset library (built-in styles, fonts, CC0 SFX)");
-        match assets::install(paths, force, progress).await {
+        emit(if opts.music_pack {
+            "filling the asset library (built-in styles, fonts, CC0 SFX, optional CC0 music pack)"
+        } else {
+            "filling the asset library (built-in styles, fonts, CC0 SFX)"
+        });
+        match assets::install_with(paths, force, opts.music_pack, progress).await {
             Ok(r) => {
                 report.notes.extend(r.warnings.iter().cloned());
                 let c = Component {
                     name: "assets".into(),
-                    version: format!("{} built-in, {} fonts, {} sfx", r.builtins, r.fonts, r.sfx),
+                    version: format!("{} built-in, {} fonts, {} sfx, {} music", r.builtins, r.fonts, r.sfx, r.music),
                     path: assets::assets_root(&paths.home),
                     sha256: None,
                 };

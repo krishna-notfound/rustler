@@ -68,12 +68,22 @@ Rules:
 `rustler asset list --kind sfx`, `rustler asset search whoosh --kind sfx` and `rustler asset show <id>`
 (duration, codec) browse the library; every entry shows its `license`, `source_url` and `attribution`.
 `rustler setup` fills it with a curated subset of Kenney's CC0 sound packs (clicks, pops, swipes/whooshes,
-impacts, about 26 files). **No music is bundled**: there is no verifiably CC0, login-free music source,
-so add your own with a license:
+impacts, about 26 files). **No music is bundled and none is installed by default**: music is the user's
+choice, so bring any track you are allowed to use and register it with a license:
 
 ```text
 rustler asset add bed.mp3 --kind music --license "CC-BY-4.0" --attribution "Artist - Track" --source-url https://...
 rustler audio add-music <clip_id> asset:music-bed        # `asset:<id>` can replace the file path
+```
+
+An optional starter pack of 11 CC0 tracks (FreePD: upbeat, chill/lo-fi, dramatic, epic, funny) is available
+only on request: `rustler setup run --music-pack` (about 50 MB, license page checked first, sha256 pinned).
+Then browse by mood and use it by id:
+
+```text
+rustler asset list --kind music --tag upbeat           # moods: upbeat chill lofi dramatic epic funny
+rustler asset search "boss battle" --kind music
+rustler audio add-music <clip_id> --path asset:music-freepd-happy-whistling-ukulele --volume-db -18 --duck true
 ```
 
 `asset add` **refuses** a missing or placeholder license (`unknown`, `n/a`...) and never fetches anything.
