@@ -42,6 +42,8 @@ rustler setup run --profile full   # everything: all analyzers, models, SFX pack
   OCR, YAMNet, diarization, CUDA libraries and the SFX pack are opt-in (`--with ...`). `doctor run` shows
   `profile` and `optional_features[]` with the `enable` command for each. Asking for a feature that is not
   installed exits 4 with the exact command in `hint`; heavy models download on first use or with the same flag.
+- An NVIDIA GPU alone does not change a lite install: transcription runs on the CPU until you add the CUDA
+  libraries (`rustler setup run --with cuda`, about 2 GB); `doctor run` shows `cuda available`.
 - The default whisper model is `base` (fast, small). For Hindi, accents or noisy audio use a larger one:
   `rustler analyze transcribe <src> --model small` (downloads on first use) or
   `rustler project set-settings --default-whisper-model small`.

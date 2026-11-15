@@ -98,3 +98,19 @@ def test_hide_extras_env_simulates_a_lite_install(monkeypatch):
     assert rpc.missing_modules("ocr") == list(rpc.EXTRA_MODULES["ocr"])
     feats = run_loop([req(1, "engine.capabilities")])[0]["result"]["features"]
     assert feats["ocr"]["available"] is False and feats["speakers"]["available"] is False
+
+
+def test_lite_install_on_a_gpu_machine_stays_on_cpu_without_the_cuda_libs(monkeypatch):
+    """A driver + GPU without cublas (lite install) must not select cuda: loading the model would fail."""
+    import types
+
+    from rustler_engine import transcribe
+
+    fake = types.SimpleNamespace(get_cuda_device_count=lambda: 1)
+    monkeypatch.setitem(__import__("sys").modules, "ctranslate2", fake)
+    monkeypatch.setattr(transcribe, "cuda_libs_present", lambda: False)
+    assert transcribe.cuda_available() is False
+    assert transcribe.resolve_device("auto") == ("cpu", "int8")
+    monkeypatch.setattr(transcribe, "cuda_libs_present", lambda: True)
+    assert transcribe.cuda_available() is True
+    assert transcribe.resolve_device("auto") == ("cuda", "float16")
