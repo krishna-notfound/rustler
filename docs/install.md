@@ -31,7 +31,7 @@ Without either, the installer stops with `{"step":"auth","status":"error",...}` 
 
 ```powershell
 # with gh logged in: fetch the installer from the private repo and run it
-gh api repos/krishna-notfound/rustler/contents/scripts/install.ps1?ref=release/v0.1.0 -H "Accept: application/vnd.github.raw" > $env:TEMP\rustler-install.ps1
+gh api repos/krishna-notfound/rustler/contents/scripts/install.ps1 -H "Accept: application/vnd.github.raw" > $env:TEMP\rustler-install.ps1
 powershell -ExecutionPolicy Bypass -File $env:TEMP\rustler-install.ps1
 # or, from a checkout of the repo:  powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 ```
@@ -46,10 +46,10 @@ Installs into `%USERPROFILE%\.rustler\app` (override `RUSTLER_INSTALL_DIR`), add
 
 ```sh
 # with gh logged in
-gh api repos/krishna-notfound/rustler/contents/scripts/install.sh?ref=release/v0.1.0 -H "Accept: application/vnd.github.raw" | bash
+gh api repos/krishna-notfound/rustler/contents/scripts/install.sh -H "Accept: application/vnd.github.raw" | bash
 # with a token instead of gh
 curl -fsSL -H "Authorization: Bearer $RUSTLER_TOKEN" -H "Accept: application/vnd.github.raw" \
-  https://api.github.com/repos/krishna-notfound/rustler/contents/scripts/install.sh?ref=release/v0.1.0 | bash
+  https://api.github.com/repos/krishna-notfound/rustler/contents/scripts/install.sh | bash
 # pass flags:  ... | bash -s -- --no-setup --version v0.1.0
 ```
 
@@ -59,7 +59,7 @@ Installs into `~/.rustler/app` (override `RUSTLER_INSTALL_DIR` / `--dir`), symli
 `sha256sum`; no compiler.
 
 Until the `release/v0.1.0` branch is merged to the default branch (`master`), the installers are read from that
-branch (`?ref=release/v0.1.0` above); after the merge drop the `?ref=...` part.
+branch (`` above); after the merge drop the `?ref=...` part.
 
 ## What the installers print
 

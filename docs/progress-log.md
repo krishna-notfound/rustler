@@ -269,3 +269,10 @@ Demo outputs: `%TEMP%\rustler-e2e\exports\jfk-hook.mp4`, `%TEMP%\rustler-stream\
   read the webcam/gameplay box edges, `layout from-frame-boxes`, verify with `--regions-of`. No model
   runs. Verified on the stream demo (facecam read off the grid as x 0.775–0.985, y 0.02–0.50; the
   regions view exposed the old box cutting the facecam's bottom). Guides updated.
+- Merged **release v0.1.0 + installers**: https://github.com/krishna-notfound/rustler/releases/tag/v0.1.0
+  (private) — rustler-v0.1.0-windows-x64.zip (rustler.exe + rustler-desktop.exe + skills + docs) and
+  rustler-v0.1.0-linux-x64.tar.gz (CLI, glibc ≥ 2.30 → Ubuntu 20.04+), SHA256SUMS. `scripts/install.ps1`
+  / `install.sh` (gh or RUSTLER_TOKEN/GITHUB_TOKEN; sha256 check; ~/.rustler/app; PATH; skill copy;
+  setup) tested in temp dirs on Windows + WSL (118 commands). docs/install.md.
+- FreePD closed in 2025 → opt-in `setup run --music-pack` pulls 11 CC0 tracks from the Internet Archive
+  capture (license sentence verified, sha256 pinned). **Not installed by default** (agent brings any music).
