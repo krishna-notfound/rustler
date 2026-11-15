@@ -1,52 +1,67 @@
 # Progress Log
 
-## ★ STATUS AT END OF THE 5-HOUR AUTONOMOUS BUILD (2026-11-15) — read this first
+## ★ CURRENT STATUS — COMPLETE BUILD (2026-11-15, morning) — read this first
 
-**Working now (tested for real on this laptop):**
-- `rustler setup` / `rustler doctor` → installs/detects FFmpeg (libass), yt-dlp, uv + Python engine (CUDA),
-  whisper `small`, fonts into `~/.rustler`; doctor = ready, NVENC/QSV/libx264.
-- Full clip pipeline through the CLI (e2e passed): project → import (file or URL) → analyze quick
-  (transcript + units, scenes, loudness/silences, highlight signals) → transcript get/search → see
-  frame/tiles/preview → clip create by **unit ids + --expect-text** → layouts (center-crop, blur-fit,
-  split-vertical) → 4 caption styles (bold-karaoke, clean-white, boxed-highlight, hormozi-pop) + SRT →
-  music bed with ducking → face-tracked crop (`crop track-face`) → render (one NVENC encode) → QC (12
-  checks + contact sheet) → export (mp4 + report.json + srt).
-- YouTube **scan-first**: `source info` (chapters, most-replayed peaks), `source fetch-transcript`
-  (captions without download), `source import --sections` (downloads only chosen minutes). Verified on a
-  20-min TED talk.
-- Edit commands with undo: trim, split, delete/move segment, set-range, remove-pauses, remove-words,
-  history list/undo/restore.
-- Hinglish: Devanagari → Latin romanization ("क्या scene है" → "kya scene hai").
-- **MCP server** `rustler mcp serve`: 55 tools, 8 workflow prompts, 14 resources (guides, commands,
-  project state); frames come back as images for vision agents.
-- **Knowledge book**: 13 guides + 8 prompts (`rustler guide list|show|search`, `rustler prompt list|show`).
-- **Simple GUI** `rustler gui`: projects, sources, clips, renders (player + QC + contact sheet), activity,
-  generic command runner. Verified in a browser.
-- Agent onboarding: `skills/rustler/SKILL.md` (Claude Code), `skills/rustler/AGENTS.md` (others),
-  `docs/agent-integration.md`.
-- Tests: last full Rust run 308 passed / 1 failed (an outdated test, since replaced; CLI suite then 26/26); Python engine 85 passed. Fixes made after that run were re-tested per crate only. Run `cargo test --workspace` to re-confirm.
-- Binary: `target\debug\rustler.exe` (debug build). The release build was stopped by Claude Code because the laptop ran low on memory — run `cargo build --release -p rustler-cli` when the machine is free. The debug binary predates the last knowledge-book wording fix (rebuild to embed it).
+**Everything in the design is implemented and working** (CLI first, then the full GUI), except the
+items explicitly dropped by the user (AI API integrations / provider layer). Windows (this laptop) and
+Linux (WSL Ubuntu, no-GPU path) both verified.
 
-**How to try it (PowerShell):**
+**CLI — 118 commands** (`rustler commands list`), grouped:
+- Setup & discovery: `setup run`, `doctor run`, `help`, `commands list|describe`, `guide list|show|search`, `prompt list|show`
+- Projects: `project create|show|open|list|status|pack|unpack|set-permissions|set-settings`
+- Sources: `source import (file|URL|--sections)|info|fetch-transcript|search|list|show`
+- Understanding: `analyze quick|transcribe|scenes|audio|deep|ocr|events|faces|speakers`, `transcript get|search|read-window`, `see frame|tiles|preview`, `highlights signals|candidates`, `speaker rename`
+- Clips & editing: `clip create|add-segment|set-layout|set-captions|show|list`, `edit trim|split|delete-segment|move-segment|set-range|remove-pauses|remove-words|refine`, `history list|undo|restore`
+- Layout & framing: `layout show|add-region|edit-region|remove-region|reorder|presets|list-presets|save-preset|apply-preset|delete-preset|detect-webcam|from-frame-boxes`, `crop track-face|track-speaker|clear`
+- Captions & overlays: `caption set|styles|list-styles|create-style|export-srt|speaker-colors`, `overlay add-text|list|edit|remove|progress-bar`
+- Audio & FX: `audio add-music|remove-music|add-sfx|remove-sfx|denoise|volume|list`, `transition set|list|clear`, `effect add|list|remove`
+- Output & quality: `render run|preview-frame|batch`, `qc run|compare`, `fix suggest|apply`, `export clip|batch`
+- Business: `brief set|show|clear|check|description`, `variant create|list|compare`
+- Assets: `asset list|search|show|add|remove`
+- Servers: `mcp serve` (119 MCP tools, 10 prompts, guides as resources, images to vision agents), `gui`
+
+**GUI** (`rustler gui`): Premiere-style editor — source panel with draggable region boxes (webcam/gameplay
+split, detect webcam), 9:16 live program + exact libass frame, multi-track timeline (V/FX/CAP/TXT/A1,
+trim with word snap, split, reorder, transitions on seams, effect ranges, SFX markers), inspector tabs
+(Clip, Layout, Captions + style creator, Overlays, Audio, Effects, QC + fixes, Render queue, Brief,
+Variants, History), Assets page, Brief page, Project dashboard (status/pack/unpack), Sources (transcript,
+highlights, understand: OCR/events/faces/speakers), Activity feed, generic Commands runner. Live sync with
+agent edits. Every action verified in a browser and confirmed with CLI reads.
+
+**Knowledge for agents:** 17 guides + 10 workflow prompts (`knowledge/`), embedded in the binary and served
+over CLI and MCP; `skills/rustler/SKILL.md` (Claude Code) and `AGENTS.md` (others); `docs/agent-integration.md`.
+
+**Tests:** last complete Rust runs all green — 477 passed / 0 failed (speakers branch with master merged, and again on
+Linux), 434 on the audio/FX branch; changes merged after those (GUI integration, Linux packaging fix, hook-seam
+tweak, setup model prefetch) passed their own crate tests (gui 9/9, overlay, cli, knowledge). The final whole-
+workspace run on Windows was stopped by Claude Code for low memory after 189 passed / 0 failed — re-run
+`cargo test --workspace` when the laptop is idle (close WSL first: `wsl --shutdown`). Python engine: 116 passed, 1 skipped.
+Linux (WSL): 477 Rust tests passed, engine 114 passed; setup/doctor/full flow/MCP/GUI verified — see `docs/linux.md`.
+
+**Real end-to-end runs (all through the CLI, contact sheets inspected):**
+- Talk clip: import → analyze → search → tiles → clip by unit ids + expect-text → blur-fit + karaoke → NVENC render → QC 12/12 → export.
+- YouTube scan-first on a 20-min TED talk: info (chapters, most-replayed peaks) → captions without download → import 40 s section.
+- Streamer clip: detect-webcam (facecam top-right) → split-vertical → hook title → Kenney SFX via `asset:` → denoise → progress bar → punch-in → render → QC pass → brief check (correctly caught missing credit) → export.
+- Transitions: split + dissolve → render → QC duration check passes with the shortened timeline.
+
+**How to use it now (PowerShell):**
 ```
 cd C:\Users\krishna\Desktop\rustler
-.\target\debug\rustler.exe doctor
-.\target\debug\rustler.exe help
+.\target\debug\rustler.exe doctor run            # release build: cargo build --release -p rustler-cli (when RAM is free)
 .\target\debug\rustler.exe guide show start-here
-.\target\debug\rustler.exe --project $env:TEMP\rustler-e2e gui     # opens the demo project in the browser
+.\target\debug\rustler.exe --project $env:TEMP\rustler-stream gui    # streamer demo project in the editor
 ```
-Demo clip from the e2e run: `%TEMP%\rustler-e2e\exports\jfk-hook.mp4`.
-Give Claude Code the skill: copy `skills\rustler` to `%USERPROFILE%\.claude\skills\rustler`, then add MCP:
-`claude mcp add rustler -- <path>\rustler.exe mcp serve`.
+Give Claude Code the skill: copy `skills\rustler` to `%USERPROFILE%\.claude\skills\rustler`; MCP:
+`claude mcp add rustler -- C:\Users\krishna\Desktop\rustler\target\debug\rustler.exe mcp serve`.
+Demo outputs: `%TEMP%\rustler-e2e\exports\jfk-hook.mp4`, `%TEMP%\rustler-stream\exports\stream-hook.mp4`.
 
-**Known gaps / next steps (in order):**
-1. Two-pass loudnorm (single pass lands ~-15.9 LUFS on half-silent clips; QC warns).
-2. Live test of `crop track-face` on a real talking-head video (unit-tested; engine path tested separately).
-3. Linux run (cloud agents like Muse) — code paths exist, not executed on Linux yet.
-4. Not built (deferred by the 5-hour scope): Tauri Premiere-style editor, highlight helpers, briefs/variants,
-   asset library, transitions/effects, SFX, speakers/diarization. Multi-region layouts exist via presets +
-   layout params; free-form region editing commands are not built yet.
-5. GitHub release binaries + one-line installer for agents on other machines.
+**Known limits / next ideas:**
+1. detect-webcam's suggested box can include a sliver of gameplay beside the facecam → nudge the region.
+2. OCR can't read Devanagari on-screen text (RapidOCR model limit).
+3. No CC0 music library (no verifiable login-free source) — add your own with `asset add --license`.
+4. Speaker colours / active-speaker crop tested on synthetic two-face video, not real podcast footage yet.
+5. Windows PowerShell 5.1 strips quotes in JSON args → use `--input-json @file.json`.
+6. Tauri desktop wrapper and GitHub release binaries / one-line installer are not done (the web GUI runs locally).
 
 ---
 
