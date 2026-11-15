@@ -10,6 +10,7 @@ Read this file first when resuming work, then `progress-log.md`.
 | `superpowers/specs/2026-11-15-rustler-design.md` | **System design** (architecture, contracts, feature slices) — approved |
 | `superpowers/plans/2026-11-15-slice1-first-real-clip.md` | **Implementation plan** (Slice 1 + 5-hour scope) |
 | `agent-brief.md` | Rules every implementation agent reads first (toolchain, ownership, commits) |
+| `MUSE.md` | **Give Rustler to Muse / any cloud agent: token, install, copy-paste prompt** |
 | `agent-integration.md` | How to give an agent Rustler: CLI on PATH, MCP config per agent, Claude Code skill, sample session |
 | `linux.md` | Running Rustler on Linux x86_64 without a GPU (cloud agents): install, build (incl. no-root zig route), setup, doctor, measured timings, known limits |
 | `install.md` | Installing prebuilt release binaries (Windows zip, Linux tar.gz) with `scripts/install.ps1` / `scripts/install.sh`: private-repo token/`gh` auth, flags, manual download, how a release is cut |

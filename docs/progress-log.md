@@ -354,3 +354,9 @@ Demo outputs: `%TEMP%\rustler-e2e\exports\jfk-hook.mp4`, `%TEMP%\rustler-stream\
   235 s → 15.8 s, repeat info 0.1 s; YouTube part of a flow ~14 min → ~3.7 min.
 - New `transcript import <src|url> --file …` (VTT/SRT/json3/words/lines): agents bring transcripts from
   their own tools; 0.24 s; section time shift verified on the TED section. Registry: 119 commands.
+- Merged lightweight-by-default (lite setup 0.37 GB venv + 0.14 GB models vs ~2.5 GB before; heavy
+  extras opt-in with `--with`; QC face checks opt-in; analyze quick --transcribe auto reuses captions;
+  music/SFX from any file/URL/source). Pushed.
+- **docs/MUSE.md**: how to give Rustler to Muse (token, install.sh, guides, copy-paste prompt). User is
+  travelling; Muse will operate Rustler. Running: release v0.1.1 build (Windows + Linux) and the real
+  5-clip trial on the Vinh Giang × Raj Shamani podcast → GitHub release `clips-trial-1`.
