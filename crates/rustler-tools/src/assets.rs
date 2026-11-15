@@ -534,7 +534,7 @@ pub async fn fetch_freepd_music(
 ) -> Result<Vec<AssetEntry>> {
     let page = crate::download::fetch_text(FREEPD_LICENSE_PAGE).await.map_err(|e| {
         RustlerError::new(ErrorCode::Provider, "setup.assets", format!("FreePD license page: {e}"))
-            .hint("`rustler setup --no-assets` skips the music library")
+            .hint("the music pack is optional (`rustler setup run --music-pack`); add your own music with `rustler asset add`")
             .retryable()
     })?;
     if !freepd_page_says_cc0(&page) {
@@ -578,9 +578,16 @@ pub async fn fetch_freepd_music(
     Ok(out)
 }
 
-/// `rustler setup` step: built-in styles/layouts, installed fonts, Kenney CC0 SFX, FreePD CC0 music. Idempotent;
-/// a network failure only adds a warning.
+/// `rustler setup` step without the optional music pack: see [`install_with`].
 pub async fn install(paths: &ToolPaths, force: bool, progress: &ProgressSink) -> Result<AssetsReport> {
+    install_with(paths, force, false, progress).await
+}
+
+/// `rustler setup` step: built-in styles/layouts, installed fonts, Kenney CC0 SFX and, only when `music_pack`
+/// is true (`rustler setup run --music-pack`, off by default), the curated FreePD CC0 music. Rustler ships
+/// no fixed music: the agent brings any track with `asset add`/`--path`. Idempotent; a network failure only
+/// adds a warning.
+pub async fn install_with(paths: &ToolPaths, force: bool, music_pack: bool, progress: &ProgressSink) -> Result<AssetsReport> {
     let root = assets_root(&paths.home);
     std::fs::create_dir_all(&root).map_err(|e| err(format!("create {}: {e}", root.display())))?;
     let mut report = AssetsReport::default();
@@ -628,7 +635,7 @@ pub async fn install(paths: &ToolPaths, force: bool, progress: &ProgressSink) ->
 
     let have: Vec<String> =
         load_manifest(&root).iter().filter(|e| e.kind == AssetKind::Music).map(|e| e.id.clone()).collect();
-    if force || have.len() < MUSIC.len() {
+    if music_pack && (force || have.len() < MUSIC.len()) {
         let mut warnings = Vec::new();
         match fetch_freepd_music(&root, if force { &[] } else { &have }, progress, &mut warnings).await {
             Ok(entries) => {
