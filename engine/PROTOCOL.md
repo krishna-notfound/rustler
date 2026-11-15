@@ -12,6 +12,9 @@ Line-delimited JSON-RPC 2.0 over the worker's stdin/stdout. Start with
 - Success: `{"jsonrpc":"2.0","id":N,"result":{...}}`.
 - Error: `{"jsonrpc":"2.0","id":N,"error":{"code":-32000,"message":"...","data":{"kind":"..."}}}`
   with `kind` one of `dependency_missing` | `media` | `validation` | `internal`.
+  `data` may also carry `"hint"` (what the user can run) and `"extra"` (the optional install extra that
+  is missing: `ocr` | `audio-events` | `speakers`); for `dependency_missing` on an optional feature the
+  hint is ``run `rustler setup run --with <extra>` ...`` and the Rust bridge surfaces it verbatim.
   Protocol-level failures use the standard JSON-RPC codes: `-32700` parse error (`id` null),
   `-32600` invalid request, `-32601` method not found; these also carry `data.kind = "validation"`.
 - Progress notifications (no `id` of their own, emitted before the response of request N):
@@ -21,7 +24,11 @@ Line-delimited JSON-RPC 2.0 over the worker's stdin/stdout. Start with
 ## Methods
 
 - `engine.ping {}` -> `{"version": "<pkg version>", "python": "3.11.x"}`
-- `engine.capabilities {}` -> `{"cuda": bool, "packages": {"faster_whisper": "x.y", ...}}`
+- `engine.capabilities {}` -> `{"cuda": bool, "packages": {"faster_whisper": "x.y", ...}, "features": {"ocr"|"audio-events"|"speakers": {"available": bool, "missing": [module, ...]}}}`
+  (`features` = the optional install extras, see `pyproject.toml`; the base install has none of them required).
+- Optional extras: `ocr.run` needs `ocr`; `audio.events` with `model: "yamnet"` needs `audio-events`; `speakers.diarize`
+  with `model: "sherpa"` needs `speakers`. Without the extra they fail `dependency_missing` (+ hint). With `model: "auto"`
+  the last two fall back to their heuristic and add the enable hint to `warnings`.
 - `transcribe.run {"audio_path", "model", "language": "auto"|"en"|"hi", "device": "auto"|"cpu"|"cuda", "parts_dir", "chunk_seconds": 600, "max_seconds": null|int}`
   -> `{"language", "words": [{"text","start","end","conf"}], "complete": bool}`
   - `language` / `device` / `chunk_seconds` / `max_seconds` are optional with the defaults shown.

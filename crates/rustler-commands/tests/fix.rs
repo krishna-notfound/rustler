@@ -148,8 +148,14 @@ impl Fx {
         self.store.load_clip(&self.clip_id.parse().unwrap()).unwrap()
     }
 
+    /// Default QC: cheap, no engine (face checks are off).
     async fn qc(&self, render_id: &str) -> Value {
         self.ok("qc.run", json!({"clip_id": self.clip_id, "render_id": render_id, "allow_fail": true})).await
+    }
+
+    /// QC with the engine face checks (`--faces`).
+    async fn qc_faces(&self, render_id: &str) -> Value {
+        self.ok("qc.run", json!({"clip_id": self.clip_id, "render_id": render_id, "allow_fail": true, "faces": true})).await
     }
 }
 
@@ -222,7 +228,13 @@ async fn caption_over_face_warns_and_suggests_a_position() {
     let Some(p) = portrait() else { return };
     let Some(f) = fixture(true).await else { return };
     let rid = f.attach_render(|out, d| make_render(&f.ffmpeg, out, d, Some((&p, OVER_CAPTIONS.0, OVER_CAPTIONS.1))));
-    let r = f.qc(&rid).await;
+    // default QC is cheap: the face checks are off and say how to turn them on
+    let cheap = f.qc(&rid).await;
+    let off = check(&cheap, "caption_over_face");
+    assert_eq!(off["status"], "pass", "{off}");
+    assert_eq!(off["value"], json!({"skipped": "off by default \u{2014} look at the contact sheet, or run qc run --faces"}));
+    assert!(off["fix_hint"].as_str().unwrap().contains("--faces"));
+    let r = f.qc_faces(&rid).await;
     dump(&r);
     let c = check(&r, "caption_over_face");
     assert_eq!(c["status"], "warn", "{c}");
@@ -246,7 +258,7 @@ async fn face_cut_off_warns_when_the_face_sits_on_the_frame_edge() {
     let Some(f) = fixture(true).await else { return };
     // portrait pushed left so part of the face is off-screen; vertically well above the captions
     let rid = f.attach_render(|out, d| make_render(&f.ffmpeg, out, d, Some((&p, "-0.40*w", "H*0.30-0.35*h"))));
-    let r = f.qc(&rid).await;
+    let r = f.qc_faces(&rid).await;
     dump(&r);
     let c = check(&r, "face_cut_off");
     assert_eq!(c["status"], "warn", "{c}");
@@ -260,7 +272,17 @@ async fn engine_missing_degrades_to_a_skipped_warning_never_a_failure() {
     // throwaway home: ffmpeg only, no uv, no engine
     let Some(f) = fixture(false).await else { return };
     let rid = f.attach_render(|out, d| make_render(&f.ffmpeg, out, d, None));
+    // default: never touches the engine, face checks pass with an info value
     let r = f.qc(&rid).await;
+    assert_eq!(r["passed"], true, "{}", r["verdict"]);
+    assert!(!r["verdict"].as_str().unwrap().contains("face"), "face checks must not warn by default: {}", r["verdict"]);
+    for name in ["caption_over_face", "face_visible_ratio", "face_cut_off"] {
+        let c = check(&r, name);
+        assert_eq!(c["status"], "pass", "{name}");
+        assert!(c["value"]["skipped"].as_str().unwrap().starts_with("off by default"), "{name}");
+    }
+    // --faces with the engine down: skipped warning, never a failure
+    let r = f.qc_faces(&rid).await;
     dump(&r);
     assert_eq!(r["passed"], true, "{}", r["verdict"]);
     for name in ["caption_over_face", "face_visible_ratio", "face_cut_off"] {
@@ -313,7 +335,7 @@ async fn fix_suggest_orders_failures_before_warnings_and_runs_qc_when_needed() {
             ],
         )
     });
-    let s = f.ok("fix.suggest", json!({"clip_id": f.clip_id, "render_id": rid})).await;
+    let s = f.ok("fix.suggest", json!({"clip_id": f.clip_id, "render_id": rid, "faces": true})).await;
     assert_eq!(s["ran_qc"], true, "no report existed, so QC ran first");
     let list = s["suggestions"].as_array().unwrap();
     eprintln!("{}", serde_json::to_string_pretty(list).unwrap());
@@ -345,6 +367,44 @@ async fn fix_suggest_orders_failures_before_warnings_and_runs_qc_when_needed() {
 }
 
 #[tokio::test]
+async fn fix_suggest_default_qc_is_engine_free_and_has_no_face_suggestions() {
+    let Some(f) = fixture(false).await else { return };
+    let rid = f.attach_render(|out, d| {
+        run_ffmpeg(
+            &f.ffmpeg,
+            &[
+                "-f".into(), "lavfi".into(), "-i".into(), format!("color=c=black:size=1080x1920:rate=30:duration={d:.3}"),
+                "-f".into(), "lavfi".into(), "-i".into(), format!("sine=frequency=440:sample_rate=48000:duration={d:.3}"),
+                "-t".into(), format!("{d:.3}"),
+                "-c:v".into(), "libx264".into(), "-preset".into(), "ultrafast".into(), "-pix_fmt".into(), "yuv420p".into(),
+                "-c:a".into(), "aac".into(), out.to_string_lossy().into_owned(),
+            ],
+        )
+    });
+    let s = f.ok("fix.suggest", json!({"clip_id": f.clip_id, "render_id": rid})).await;
+    assert_eq!(s["ran_qc"], true);
+    let list = s["suggestions"].as_array().unwrap();
+    assert_eq!(list[0]["check"], "black_frames");
+    for x in list {
+        assert_ne!(x["commands"][0], "rustler doctor", "no engine-skipped suggestions by default: {x}");
+        assert!(!["caption_over_face", "face_visible_ratio", "face_cut_off"].contains(&x["check"].as_str().unwrap()), "{x}");
+    }
+}
+
+#[tokio::test]
+async fn qc_faces_project_setting_turns_the_face_checks_on() {
+    let Some(f) = fixture(false).await else { return };
+    let s = f.ok("project.set_settings", json!({"qc_faces": true})).await;
+    assert_eq!(s["qc_faces"], true);
+    let rid = f.attach_render(|out, d| make_render(&f.ffmpeg, out, d, None));
+    let r = f.qc(&rid).await; // no --faces flag, setting is on; engine is down in this fixture
+    let c = check(&r, "caption_over_face");
+    assert_eq!(c["value"], json!({"skipped": "engine unavailable"}), "{c}");
+    let s = f.ok("project.set_settings", json!({"qc_faces": false})).await;
+    assert_eq!(s["qc_faces"], false);
+}
+
+#[tokio::test]
 async fn fix_suggest_and_apply_move_the_captions_off_the_face() {
     if !engine_available() {
         return;
@@ -352,7 +412,7 @@ async fn fix_suggest_and_apply_move_the_captions_off_the_face() {
     let Some(p) = portrait() else { return };
     let Some(f) = fixture(true).await else { return };
     let rid = f.attach_render(|out, d| make_render(&f.ffmpeg, out, d, Some((&p, OVER_CAPTIONS.0, OVER_CAPTIONS.1))));
-    let s = f.ok("fix.suggest", json!({"clip_id": f.clip_id, "render_id": rid})).await;
+    let s = f.ok("fix.suggest", json!({"clip_id": f.clip_id, "render_id": rid, "faces": true})).await;
     let list = s["suggestions"].as_array().unwrap();
     eprintln!("{}", serde_json::to_string_pretty(list).unwrap());
     let cap = list.iter().find(|x| x["check"] == "caption_over_face").expect("caption_over_face suggestion");
@@ -380,7 +440,7 @@ async fn fix_suggest_and_apply_move_the_captions_off_the_face() {
 
     let before = f.clip();
     assert!((before.captions.position_y - 0.70).abs() < 1e-9);
-    let a = f.ok("fix.apply", json!({"clip_id": f.clip_id, "render_id": rid, "rerender": false})).await;
+    let a = f.ok("fix.apply", json!({"clip_id": f.clip_id, "render_id": rid, "rerender": false, "faces": true})).await;
     eprintln!("{a}");
     let after = f.clip();
     assert!((after.captions.position_y - suggested).abs() < 1e-9, "{} vs {suggested}", after.captions.position_y);
@@ -441,6 +501,9 @@ async fn qc_compare_writes_a_labelled_side_by_side_image() {
     let a = f.attach_render(|out, d| make_render(&f.ffmpeg, out, d, Some((&p, OVER_CAPTIONS.0, OVER_CAPTIONS.1))));
     // B: the same face moved well above the captions
     let b = f.attach_render(|out, d| make_render(&f.ffmpeg, out, d, Some((&p, "(W-w)/2", "H*0.25-0.35*h"))));
+    // qc.compare reuses saved reports: run the face checks first
+    f.qc_faces(&a).await;
+    f.qc_faces(&b).await;
     let r = f.ok("qc.compare", json!({"clip_id": f.clip_id, "render_a": a, "render_b": b})).await;
     eprintln!("{}", r["summary"]);
     let img = PathBuf::from(r["image"].as_str().unwrap());

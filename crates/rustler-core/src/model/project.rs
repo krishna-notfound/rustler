@@ -45,13 +45,16 @@ impl Default for Permissions {
     }
 }
 
-/// Default: 1080x1920@30 canvas, Latin captions, whisper model "small".
+/// Default: 1080x1920@30 canvas, Latin captions, whisper model "base" (the lite install fetches it; switch with `project set-settings`).
 #[derive(Serialize, Deserialize, JsonSchema, Clone, PartialEq, Debug)]
 #[serde(default)]
 pub struct ProjectSettings {
     pub canvas: Canvas,
     pub caption_script: CaptionScript,
     pub default_whisper_model: String,
+    /// Run the engine face checks (`caption_over_face`, `face_visible_ratio`, `face_cut_off`) in every
+    /// `qc run`. Off by default (they spawn the Python engine); `qc run --faces` does it once.
+    pub qc_faces: bool,
 }
 
 impl Default for ProjectSettings {
@@ -59,7 +62,8 @@ impl Default for ProjectSettings {
         Self {
             canvas: Canvas::default(),
             caption_script: CaptionScript::Latin,
-            default_whisper_model: "small".to_string(),
+            default_whisper_model: "base".to_string(),
+            qc_faces: false,
         }
     }
 }

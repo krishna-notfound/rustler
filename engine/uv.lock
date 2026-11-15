@@ -891,17 +891,29 @@ dependencies = [
     { name = "indic-transliteration" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-    { name = "onnxruntime" },
     { name = "opencv-python-headless" },
-    { name = "rapidocr" },
     { name = "scenedetect" },
-    { name = "sherpa-onnx" },
 ]
 
 [package.optional-dependencies]
+audio-events = [
+    { name = "onnxruntime" },
+]
 cuda = [
     { name = "nvidia-cublas-cu12" },
     { name = "nvidia-cudnn-cu12" },
+]
+full = [
+    { name = "onnxruntime" },
+    { name = "rapidocr" },
+    { name = "sherpa-onnx" },
+]
+ocr = [
+    { name = "onnxruntime" },
+    { name = "rapidocr" },
+]
+speakers = [
+    { name = "sherpa-onnx" },
 ]
 
 [package.dev-dependencies]
@@ -916,13 +928,17 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.4.6" },
     { name = "nvidia-cublas-cu12", marker = "extra == 'cuda'", specifier = "<12.9" },
     { name = "nvidia-cudnn-cu12", marker = "extra == 'cuda'" },
-    { name = "onnxruntime", specifier = ">=1.32.0" },
+    { name = "onnxruntime", marker = "extra == 'audio-events'", specifier = ">=1.32.0" },
+    { name = "onnxruntime", marker = "extra == 'full'", specifier = ">=1.32.0" },
+    { name = "onnxruntime", marker = "extra == 'ocr'", specifier = ">=1.32.0" },
     { name = "opencv-python-headless", specifier = ">=5.0.0.93" },
-    { name = "rapidocr", specifier = ">=3.10.0" },
+    { name = "rapidocr", marker = "extra == 'full'", specifier = ">=3.10.0" },
+    { name = "rapidocr", marker = "extra == 'ocr'", specifier = ">=3.10.0" },
     { name = "scenedetect", specifier = ">=0.7.3" },
-    { name = "sherpa-onnx", specifier = ">=2.0.1" },
+    { name = "sherpa-onnx", marker = "extra == 'full'", specifier = ">=2.0.1" },
+    { name = "sherpa-onnx", marker = "extra == 'speakers'", specifier = ">=2.0.1" },
 ]
-provides-extras = ["full", "cuda"]
+provides-extras = ["ocr", "audio-events", "speakers", "cuda", "full"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=9.2.0" }]

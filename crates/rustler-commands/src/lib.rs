@@ -13,6 +13,7 @@ pub mod fx_cmds;
 pub mod guide_cmds;
 pub mod highlights_cmds;
 pub mod layout_cmds;
+pub mod media_ref;
 pub mod overlay_cmds;
 pub mod project_cmds;
 pub mod qc_cmds;

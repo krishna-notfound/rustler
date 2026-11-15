@@ -67,14 +67,26 @@ Rules:
 
 `rustler asset list --kind sfx`, `rustler asset search whoosh --kind sfx` and `rustler asset show <id>`
 (duration, codec) browse the library; every entry shows its `license`, `source_url` and `attribution`.
-`rustler setup` fills it with a curated subset of Kenney's CC0 sound packs (clicks, pops, swipes/whooshes,
-impacts, about 26 files). **No music is bundled and none is installed by default**: music is the user's
-choice, so bring any track you are allowed to use and register it with a license:
+A curated subset of Kenney's CC0 sound packs (clicks, pops, swipes/whooshes, impacts, about 26 files) is
+**opt-in**: `rustler setup run --with sfx-pack` (included in `--profile full`). **No music is bundled and
+nothing is fixed**: you add whatever you want, from any of these sources:
 
 ```text
 rustler asset add bed.mp3 --kind music --license "CC-BY-4.0" --attribution "Artist - Track" --source-url https://...
-rustler audio add-music <clip_id> asset:music-bed        # `asset:<id>` can replace the file path
+rustler asset add --url https://example.org/lofi.mp3 --kind music --tags lofi     # download a direct link into the library
+rustler audio add-music <clip_id> --path asset:music-bed                         # a library asset
+rustler audio add-music <clip_id> --path D:/music/bed.mp3                        # a file, no library entry needed
+rustler audio add-music <clip_id> --path https://example.org/lofi.mp3            # a direct link (downloaded to the assets cache)
+rustler audio add-music <clip_id> --path source:src_01k...@30-75                 # reuse the audio of ANY imported video
+rustler audio add-sfx <clip_id> https://example.org/whoosh.wav --at 2.5          # same references for effects
 ```
+
+`audio add-music` / `audio add-sfx` accept a path, `asset:<id>`, an `http(s)` link (needs the project's
+network + downloads permission) or `source:<source_id>[@start-end]` (start/end in seconds or MM:SS;
+without a range the whole audio track). For `add-music` (and `asset add --kind music`) a video file or video link is reduced to its audio track; a sound effect must be an audio file or a `source:` reference.
+`asset add` does not require a license: a missing one is stored as "unspecified (added by user/agent)"
+with a warning, so clearing the rights is on you (and the user). If the license requires attribution,
+put the credit line in the clip's caption/description.
 
 An optional starter pack of 11 CC0 tracks (FreePD: upbeat, chill/lo-fi, dramatic, epic, funny) is available
 only on request: `rustler setup run --music-pack` (about 50 MB, license page checked first, sha256 pinned).
@@ -86,8 +98,6 @@ rustler asset search "boss battle" --kind music
 rustler audio add-music <clip_id> --path asset:music-freepd-happy-whistling-ukulele --volume-db -18 --duck true
 ```
 
-`asset add` **refuses** a missing or placeholder license (`unknown`, `n/a`...) and never fetches anything.
-If the license requires attribution, put the credit line in the clip's caption/description.
 `--scope project` (default inside a project) keeps the file with the project; `--scope global` is shared
 by all projects (`~/.rustler/assets`).
 

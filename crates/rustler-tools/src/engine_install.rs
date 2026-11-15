@@ -7,7 +7,7 @@
 
 use crate::paths::ToolPaths;
 use crate::run::run_streaming_with_env;
-use crate::setup::{Component, Profile};
+use crate::setup::Component;
 use include_dir::{Dir, DirEntry, File};
 use rustler_core::{ErrorCode, RustlerError};
 use rustler_registry::{ProgressEvent, ProgressSink};
@@ -148,19 +148,16 @@ pub fn uv_env(paths: &ToolPaths) -> Vec<(OsString, OsString)> {
     ]
 }
 
-/// Version string recorded in the manifest; a change (new engine code, other profile,
-/// cuda toggled) triggers a re-sync.
-pub fn expected_version(profile: Profile, cuda: bool) -> Option<String> {
+/// Version string recorded in the manifest (`<engine hash>+base` or `<hash>+ocr+speakers`); a
+/// change (new engine code, an extra added) triggers a re-sync.
+pub fn expected_version(extras: &[String]) -> Option<String> {
     let dir = embedded()?;
-    let p = match profile {
-        Profile::Lite => "lite",
-        Profile::Full => "full",
+    let suffix = if extras.is_empty() {
+        "+base".to_string()
+    } else {
+        extras.iter().map(|e| format!("+{e}")).collect::<String>()
     };
-    Some(format!(
-        "{}+{p}{}",
-        &tree_hash(dir)[..12],
-        if cuda { "+cuda" } else { "" }
-    ))
+    Some(format!("{}{suffix}", &tree_hash(dir)[..12]))
 }
 
 fn emit(progress: &ProgressSink, message: impl Into<String>) {
@@ -208,11 +205,12 @@ async fn uv_step(
     }
 }
 
-/// Extracts the engine, installs Python 3.11 and syncs the venv.
+/// Extracts the engine, installs Python 3.11 and syncs the venv with the base dependencies plus
+/// `extras` (`ocr`, `audio-events`, `speakers`, `cuda`). The sync is `--inexact`: nothing already
+/// installed is ever removed, so running a lighter profile over a fuller install is harmless.
 pub async fn install(
     paths: &ToolPaths,
-    profile: Profile,
-    cuda: bool,
+    extras: &[String],
     progress: &ProgressSink,
 ) -> rustler_core::Result<Component> {
     if !has_embedded_project() {
@@ -224,7 +222,7 @@ pub async fn install(
         .hint("rebuild rustler with the `engine/` directory present"));
     }
     let dir = embedded().expect("checked above");
-    let version = expected_version(profile, cuda).expect("embedded");
+    let version = expected_version(extras).expect("embedded");
     let hash = tree_hash(dir);
 
     emit(progress, "extracting engine");
@@ -246,7 +244,14 @@ pub async fn install(
     )
     .await?;
 
-    emit(progress, "syncing engine dependencies (this can take several minutes)");
+    emit(
+        progress,
+        if extras.is_empty() {
+            "syncing the base engine dependencies (lightweight; add heavy analyzers later with `setup run --with ocr|speakers|audio-events|cuda`)".to_string()
+        } else {
+            format!("syncing engine dependencies with extras: {} (this can take several minutes)", extras.join(", "))
+        },
+    );
     let mut args: Vec<OsString> = vec![
         "sync".into(),
         "--project".into(),
@@ -254,14 +259,12 @@ pub async fn install(
         "--python".into(),
         PYTHON_VERSION.into(),
         "--no-dev".into(),
+        // never uninstall packages that an earlier (fuller) setup added
+        "--inexact".into(),
     ];
-    if profile == Profile::Full {
+    for e in extras {
         args.push("--extra".into());
-        args.push("full".into());
-    }
-    if cuda {
-        args.push("--extra".into());
-        args.push("cuda".into());
+        args.push(e.into());
     }
     uv_step(paths, args, "sync", progress).await?;
 
@@ -286,6 +289,19 @@ pub async fn install(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "embed-engine")]
+    #[test]
+    fn version_names_the_extras() {
+        let v = |e: &[&str]| {
+            expected_version(&e.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+        };
+        if let (Some(base), Some(ocr)) = (v(&[]), v(&["ocr", "speakers"])) {
+            assert!(base.ends_with("+base"));
+            assert!(ocr.ends_with("+ocr+speakers"));
+            assert_ne!(base, ocr);
+        }
+    }
 
     #[test]
     fn exclusions() {

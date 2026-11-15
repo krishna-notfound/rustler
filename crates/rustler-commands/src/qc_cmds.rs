@@ -29,11 +29,12 @@ const STAGE: &str = "qc";
 pub fn register(reg: &mut Registry) {
     reg.register(typed(
         "qc.run",
-        "Run QC on a render (latest by default): streams, dimensions, duration, A/V sync, loudness, black/frozen video, silence, hook, caption safe zone, caption over face, face visibility, face cut off, hook text, duration for the platform (face checks need the engine and degrade to a skipped warning), plus a contact sheet you must look at. Exit 7 when it fails.",
+        "Run QC on a render (latest by default): streams, dimensions, duration, A/V sync, loudness, black/frozen video, silence, hook, caption safe zone, hook text, duration for the platform, plus a contact sheet you must look at. Cheap by default: the engine face checks (caption over face, face visible, face cut off) are off unless --faces (or project setting qc_faces) and then report pass with {\"skipped\": ...}. Exit 7 when it fails.",
         &["clip_id"],
         Annotations { long_running: true, ..Annotations::default() },
         vec![
-            Example { description: "QC the latest render of a clip", cli: "rustler qc run clp_X" },
+            Example { description: "QC the latest render of a clip (fast; look at the contact sheet)", cli: "rustler qc run clp_X" },
+            Example { description: "also run the engine face checks (starts the Python engine)", cli: "rustler qc run clp_X --faces" },
             Example {
                 description: "get the failing report as data instead of exit 7",
                 cli: "rustler qc run clp_X --allow-fail",
@@ -77,6 +78,10 @@ pub struct QcRunInput {
     /// Return a failed report as data (`passed:false`) instead of the `qc_failed` error. `--yes` does the same.
     #[serde(default)]
     pub allow_fail: bool,
+    /// Also run the engine face checks (caption over face, face visible, face cut off). Off by default so QC
+    /// stays fast; the project setting `qc_faces: true` turns it on for every run.
+    #[serde(default)]
+    pub faces: bool,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -116,10 +121,23 @@ fn tools(ctx: &Ctx) -> rustler_core::Result<ToolPaths> {
 pub(crate) async fn execute_qc(
     ctx: &Ctx,
     store: &ProjectStore,
-    mut clip: Clip,
+    clip: Clip,
     render: &RenderRecord,
     persist: bool,
 ) -> rustler_core::Result<(QcView, PathBuf)> {
+    execute_qc_with(ctx, store, clip, render, persist, false).await
+}
+
+/// [`execute_qc`] with the face checks forced on by `faces` (else only when the project setting `qc_faces` is on).
+pub(crate) async fn execute_qc_with(
+    ctx: &Ctx,
+    store: &ProjectStore,
+    mut clip: Clip,
+    render: &RenderRecord,
+    persist: bool,
+    faces: bool,
+) -> rustler_core::Result<(QcView, PathBuf)> {
+    let want_faces = faces || store.load_project().map(|p| p.settings.qc_faces).unwrap_or(false);
     let paths = tools(ctx)?;
     let font = default_font(&paths).ok_or_else(|| {
         RustlerError::new(ErrorCode::DependencyMissing, STAGE, "no font available for the contact sheet")
@@ -131,7 +149,7 @@ pub(crate) async fn execute_qc(
         std::env::temp_dir().join(format!("rustler-qc-dry-{}-{}", std::process::id(), render.id))
     };
     let render_path = store.resolve(&render.path);
-    let extras = gather_extras(ctx, store, &clip, &render_path, &paths).await;
+    let extras = gather_extras(ctx, store, &clip, &render_path, &paths, want_faces).await;
     let report = rustler_media::run_qc_with(&paths, &clip, render, &render_path, &font, &out_dir, &extras).await?;
     let v = view(report);
     let report_path = out_dir.join(format!("{}.json", render.id));
@@ -241,13 +259,15 @@ fn registry_has(name: &str) -> bool {
     reg.describe(name).is_some()
 }
 
-async fn gather_extras(ctx: &Ctx, store: &ProjectStore, clip: &Clip, render_path: &Path, paths: &ToolPaths) -> QcExtras {
+async fn gather_extras(ctx: &Ctx, store: &ProjectStore, clip: &Clip, render_path: &Path, paths: &ToolPaths, want_faces: bool) -> QcExtras {
     let raw: serde_json::Value = store
         .read_json(&crate::clip_cmds::extras_rel(&clip.id))
         .unwrap_or(serde_json::Value::Null);
-    let faces = if wants_faces(clip) && render_path.is_file() { track_faces(ctx, paths, render_path).await } else { None };
+    // The engine is only started when face checks were asked for (`--faces` / `qc_faces`).
+    let faces = if want_faces && wants_faces(clip) && render_path.is_file() { track_faces(ctx, paths, render_path).await } else { None };
     QcExtras {
         faces,
+        faces_off: !want_faces,
         overlay_starts: overlay_starts(&raw),
         first_caption_word_s: first_caption_word(store, clip),
         brief: read_brief(store),
@@ -442,7 +462,7 @@ async fn qc_run(ctx: Ctx, input: QcRunInput) -> rustler_core::Result<QcRunOutput
     let store = ctx.store()?;
     let clip = store.load_clip(&input.clip_id)?;
     let render = pick_render(&clip, input.render_id.as_ref())?;
-    let (v, report_path) = execute_qc(&ctx, &store, clip, &render, !ctx.dry_run).await?;
+    let (v, report_path) = execute_qc_with(&ctx, &store, clip, &render, !ctx.dry_run, input.faces).await?;
     let mut warnings = Vec::new();
     if ctx.dry_run {
         warnings.push("dry run: QC ran into a scratch directory; no report saved and the clip is unchanged".to_string());

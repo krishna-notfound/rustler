@@ -160,3 +160,78 @@ async fn unknown_source_is_not_found() {
     let e = expect_code(run(&reg, "analyze.quick", &ctx, json!({"source_id": "src_nope"})).await, ErrorCode::NotFound);
     assert!(e.hint.unwrap().contains("source list"));
 }
+
+/// Turns an imported local file into a "URL section" source with fetched YouTube captions on disk
+/// (what `source import URL --sections` + `source fetch-transcript` leave behind), without network.
+fn fake_url_source_with_captions(root: &std::path::Path, id: &str, url: &str, section: (f64, f64)) {
+    let sj = root.join("sources").join(id).join("source.json");
+    let mut s: Value = serde_json::from_slice(&std::fs::read(&sj).unwrap()).unwrap();
+    s["origin"] = json!({"kind": "url", "url": url, "section": {"start": section.0, "end": section.1}, "original_offset": section.0});
+    std::fs::write(&sj, serde_json::to_vec_pretty(&s).unwrap()).unwrap();
+    let pid = rustler_commands::source_cmds::pending_id(url);
+    let dir = root.join("analysis").join(&pid);
+    std::fs::create_dir_all(&dir).unwrap();
+    let words: Vec<Value> = (0..20)
+        .map(|i| json!({"i": i, "text": format!("w{i}"), "start": 95.0 + i as f64, "end": 96.0 + i as f64, "conf": null, "speaker": null}))
+        .collect();
+    let t = json!({
+        "schema": "rustler.transcript@1", "source_id": id, "language": "en", "engine": "youtube:auto",
+        "script": "latin", "words": words, "word_timing": "approximate"
+    });
+    std::fs::write(dir.join("transcript.json"), serde_json::to_vec_pretty(&t).unwrap()).unwrap();
+}
+
+#[tokio::test]
+async fn quick_transcribe_auto_reuses_fetched_captions_and_never_runs_whisper() {
+    if !have_media_tools() {
+        return;
+    }
+    let reg = registry();
+    let (dir, ctx) = project();
+    let video = dir.path().join("tone.mp4");
+    make_video(&video, 12, true);
+    let id = import(&reg, &ctx, &video).await;
+    let root = ctx.project_dir.clone().unwrap();
+    fake_url_source_with_captions(&root, &id, "https://youtu.be/captioned", (100.0, 108.0));
+
+    let q = ok(&reg, "analyze.quick", &ctx, json!({"source_id": id})).await;
+    assert_eq!(q["transcript_source"], "captions", "{q}");
+    assert_eq!(q["words"], 8, "only the section's words, {q}");
+    assert!(q["units"].as_u64().unwrap() >= 1);
+    let w = q["warnings"].to_string();
+    assert!(w.contains("fetched captions") && w.contains("approximate"), "{w}");
+    let adir = root.join("analysis").join(&id);
+    assert!(!adir.join("transcript.parts").exists(), "whisper must not have run");
+    let t: Value = serde_json::from_slice(&std::fs::read(adir.join("transcript.json")).unwrap()).unwrap();
+    assert_eq!(t["engine"], "youtube:auto");
+    assert_eq!(t["word_timing"], "approximate");
+    // shifted to the source's own timeline: the section started at 100 s
+    assert_eq!(t["words"][0]["text"], "w5");
+    assert_eq!(t["words"][0]["start"], 0.0);
+    assert_eq!(t["words"][7]["end"], 8.0);
+    assert!(adir.join("units.json").is_file());
+}
+
+#[tokio::test]
+async fn quick_transcribe_never_skips_the_transcript_and_accepts_booleans() {
+    if !have_media_tools() {
+        return;
+    }
+    let reg = registry();
+    let (dir, ctx) = project();
+    let video = dir.path().join("tone.mp4");
+    make_video(&video, 12, true);
+    let id = import(&reg, &ctx, &video).await;
+    let root = ctx.project_dir.clone().unwrap();
+    for arg in [json!("never"), json!(false), json!("false")] {
+        let q = ok(&reg, "analyze.quick", &ctx, json!({"source_id": id, "transcribe": arg})).await;
+        assert_eq!(q["transcript_source"], "none", "{q}");
+        assert_eq!(q["words"], 0);
+        assert!(q["warnings"].to_string().contains("--transcribe never"), "{q}");
+        assert!(q["peaks"].is_array(), "audio analysis still runs: {q}");
+    }
+    let adir = root.join("analysis").join(&id);
+    assert!(!adir.join("transcript.json").exists() && !adir.join("transcript.parts").exists());
+    assert!(adir.join("audio_events.json").is_file());
+    expect_code(run(&reg, "analyze.quick", &ctx, json!({"source_id": id, "transcribe": "sometimes"})).await, ErrorCode::Validation);
+}

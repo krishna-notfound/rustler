@@ -1,5 +1,49 @@
 # Progress Log
 
+## 2026-11-15 - Lite by default, heavy features opt-in (f30)
+
+User feedback: local OCR / audio-event / diarization / face-track analysis stresses cloud agents; the agent has
+vision and decides itself; music must be fully open. Nothing was removed: everything heavy is now explicit opt-in.
+
+**What changed** (details in `docs/features/f30_lite_by_default.md`):
+- `setup run` = **lite**: base engine (faster-whisper, opencv-headless, scenedetect, numpy, indic-transliteration), whisper
+  `base`, no yunet/yamnet/diarization/ocr prefetch, no SFX pack, no CUDA wheels. `--with ocr,audio-events,speakers,cuda,sfx-pack`
+  adds pieces, `--profile full` adds all (cuda only with an NVIDIA GPU), `--music-pack` is the separate opt-in FreePD pack,
+  `--no-models` skips downloads. `uv sync --inexact` + manifest `install` record: a lighter run never removes anything.
+  `doctor run` reports `profile` and `optional_features[]` with the exact enable command.
+- Missing extras fail `dependency_missing` (exit 4) with ``run `rustler setup run --with <extra>` `` (engine `RpcError.hint/extra`,
+  bridge surfaces it). `audio.events`/`speakers.diarize` auto mode still fall back to heuristics, with the hint in `warnings`.
+- `qc run --faces` / project `qc_faces` for the engine face checks; default = `pass` + `{"skipped": "off by default ..."}`;
+  `fix suggest|apply --faces`. `analyze quick --transcribe auto|always|never` (auto reuses fetched captions, no whisper).
+- Open music/assets: `asset add` license optional (+ `--url`, `source:<id>@a-b`), `audio add-music|add-sfx` accept path, `asset:`,
+  `http(s)`, `source:<id>[@a-b]` (`media_ref.rs`, cached in `<project>/assets/_cache/`).
+- Fixed on the way: `cuda_available()` was true on any NVIDIA machine even without cublas, which would have broken a lite install
+  there (CPU is now used until `--with cuda`).
+
+**Decisions / deviations to review**
+1. `ProjectSettings` (core, "frozen") changed: `default_whisper_model` default `small` -> `base` (so lite's prefetched model is the one used)
+   and a new `qc_faces: bool` (default false, serde default). Existing projects keep their saved values.
+2. `uv.lock` regenerated; `onnxruntime` is also a dependency of faster-whisper (VAD), so the `audio-events` extra adds no size
+   (kept as a named extra so the feature is reported/enabled uniformly).
+
+**Measured** (Windows, temp `RUSTLER_HOME`, `target\debug\rustler.exe setup run`, ffmpeg/yt-dlp/uv/fonts pre-copied):
+| | engine venv | models | python | wall time |
+|---|---|---|---|---|
+| lite (`setup run`) | 0.37 GB | 0.14 GB (whisper base) | 0.07 GB | 4 min 23 s (PyPI cache cold) |
+| lite + `--with ocr` | 0.42 GB | + OCR dev. model | | 45 s |
+| full without cuda (`--profile full --gpu none`) | 0.47 GB | 0.64 GB (base+small+yunet+yamnet+diarization+ocr) | 0.07 GB | 25 min (slow network; model + SFX downloads) |
+| previous install on this laptop (full + CUDA wheels) | 2.5 GB | | | |
+Lite over an existing full install: extras kept, venv size unchanged (nothing removed). The CUDA wheels (about 2 GB) are the
+real weight; they are now only installed with `--with cuda` (or `--profile full` on an NVIDIA machine).
+
+**Where the engine is started** (`EngineClient::spawn` via `spawn_engine`; all user-invoked, none implicit):
+`analyze.transcribe`, `analyze.quick` (only when it must run whisper or detect scenes; skipped transcript with `--transcribe never` or reused captions),
+`analyze.scenes`, `analyze.ocr`, `analyze.events`, `analyze.faces`, `analyze.deep` (OCR+events+faces), `analyze.speakers`,
+`crop.track_speaker`, `crop.track_face`, `layout.detect_webcam`, `source.fetch_transcript` (only to romanize Devanagari captions),
+`setup.run` (model prefetch), `doctor.run` (capabilities), and `qc.run` / `fix.suggest` / `fix.apply` / `export.clip` / `qc.compare`
+**only with `--faces` or `qc_faces: true`** (before: every QC run). `source.import`, `render.*`, `see.*`, `highlights.*` never start it.
+
+
 ## ★ CURRENT STATUS — COMPLETE BUILD (2026-11-15, morning) — read this first
 
 **Everything in the design is implemented and working** (CLI first, then the full GUI), except the

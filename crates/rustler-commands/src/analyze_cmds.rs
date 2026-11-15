@@ -8,8 +8,8 @@ use crate::project_cmds::{Outcome, log_event, mmss, validation};
 use crate::source_cmds::load_source_checked;
 use crate::transcript_cmds::{save_transcript, unit_at, units_preview};
 use rustler_core::{
-    AudioEvents, CaptionScript, ErrorCode, Project, ProjectStore, RustlerError, Scenes, Source, SourceId, Transcript,
-    Unit, Word, WordTiming,
+    AudioEvents, CaptionScript, ErrorCode, Project, ProjectStore, RustlerError, Scenes, Source, SourceId, SourceOrigin,
+    Transcript, Unit, Word, WordTiming,
 };
 use rustler_engine_bridge::EngineClient;
 use rustler_registry::{Annotations, Ctx, Example, ProgressEvent, Registry, typed};
@@ -24,16 +24,21 @@ use std::path::PathBuf;
 // ---------------------------------------------------------------------------------------
 
 /// Starts the Python engine. Development/test override: if `RUSTLER_ENGINE_PROJECT` names an
-/// engine source dir, the engine runs as `uv run --project <dir> python -m rustler_engine`
-/// instead of the venv created by `rustler setup`.
+/// engine source dir, the engine runs as `uv run --project <dir> --extra ocr --extra audio-events
+/// --extra speakers python -m rustler_engine` (every analyzer, like `--profile full`) instead of the
+/// venv created by `rustler setup`. `RUSTLER_HIDE_EXTRAS=ocr,speakers` makes the engine behave as if
+/// those extras were not installed (lite simulation).
 pub async fn spawn_engine(paths: &ToolPaths) -> rustler_core::Result<EngineClient> {
     if let Some(dir) = std::env::var_os("RUSTLER_ENGINE_PROJECT") {
         let dir = PathBuf::from(dir);
         let hf = std::env::var("HF_HOME").unwrap_or_else(|_| paths.models.join("hf").to_string_lossy().into_owned());
-        let args: Vec<String> = ["run", "--project", &dir.to_string_lossy(), "python", "-m", "rustler_engine"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+        let args: Vec<String> = [
+            "run", "--project", &dir.to_string_lossy(), "--extra", "ocr", "--extra", "audio-events", "--extra", "speakers",
+            "python", "-m", "rustler_engine",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
         return EngineClient::spawn_command(&paths.uv, &args, &dir, &[("HF_HOME".to_string(), hf)]).await;
     }
     EngineClient::spawn(paths).await
@@ -425,6 +430,37 @@ pub async fn audio(ctx: Ctx, input: AudioIn) -> rustler_core::Result<Outcome<Aud
 // analyze.quick
 // ---------------------------------------------------------------------------------------
 
+/// When `analyze.quick` runs whisper.
+#[derive(Deserialize, JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TranscribeMode {
+    /// Reuse captions fetched with `source fetch-transcript` for a URL source when they exist, else run whisper.
+    #[default]
+    Auto,
+    /// Always run whisper (also accepts `true`).
+    Always,
+    /// Never transcribe (also accepts `false`): audio + scenes only; run `analyze transcribe` later if needed.
+    Never,
+}
+
+/// Accepts `auto|always|never` and the booleans `true|false` (string or JSON bool).
+fn de_transcribe_mode<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<TranscribeMode>, D::Error> {
+    use serde::de::Error;
+    let v = Option::<serde_json::Value>::deserialize(d)?;
+    Ok(match v {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::Bool(true)) => Some(TranscribeMode::Always),
+        Some(serde_json::Value::Bool(false)) => Some(TranscribeMode::Never),
+        Some(serde_json::Value::String(s)) => Some(match s.trim().to_lowercase().as_str() {
+            "auto" => TranscribeMode::Auto,
+            "always" | "true" | "yes" | "on" | "1" => TranscribeMode::Always,
+            "never" | "false" | "no" | "off" | "0" => TranscribeMode::Never,
+            other => return Err(D::Error::custom(format!("transcribe must be auto, always or never, got `{other}`"))),
+        }),
+        Some(other) => return Err(D::Error::custom(format!("transcribe must be auto, always or never, got {other}"))),
+    })
+}
+
 #[derive(Deserialize, JsonSchema, Debug)]
 pub struct QuickIn {
     pub source_id: SourceId,
@@ -434,6 +470,11 @@ pub struct QuickIn {
     /// Re-transcribe from scratch (delete saved chunk parts).
     #[serde(default)]
     pub force: bool,
+    /// `auto` (default): for a URL source whose captions were fetched (`source fetch-transcript`) reuse them and
+    /// skip whisper; otherwise run whisper. `always` (or `true`): run whisper. `never` (or `false`): no transcript.
+    #[serde(default, deserialize_with = "de_transcribe_mode")]
+    #[schemars(with = "Option<TranscribeMode>")]
+    pub transcribe: Option<TranscribeMode>,
 }
 
 #[derive(Serialize, JsonSchema, Debug, Clone)]
@@ -454,6 +495,8 @@ pub struct QuickOut {
     pub language: Option<String>,
     pub words: usize,
     pub units: usize,
+    /// Where the transcript came from: `whisper`, `captions` (fetched YouTube captions, approximate word timing) or `none`.
+    pub transcript_source: String,
     pub scenes: Option<usize>,
     pub peaks: Vec<Peak>,
     pub silences_total: usize,
@@ -481,12 +524,73 @@ pub fn highlight_signals(ev: &AudioEvents, units: &[Unit], n: usize) -> Vec<High
         .collect()
 }
 
+/// Builds this source's transcript from captions fetched for its URL (`source fetch-transcript`), cut to the
+/// imported section and shifted to the source's own timeline. `None` when the source is not a URL source, no
+/// captions were fetched, or the source already has a whisper transcript.
+fn reuse_fetched_captions(
+    ctx: &Ctx,
+    store: &ProjectStore,
+    source: &Source,
+) -> rustler_core::Result<Option<(Transcript, Vec<Unit>)>> {
+    let SourceOrigin::Url { url, section, original_offset } = &source.origin else {
+        return Ok(None);
+    };
+    let id = source.id.to_string();
+    let own = std::path::Path::new("analysis").join(&id).join("transcript.json");
+    if let Ok(t) = store.read_json::<Transcript>(&own) {
+        if !t.engine.starts_with("youtube:") {
+            return Ok(None); // a whisper transcript exists: keep it
+        }
+    }
+    let fetched = std::path::Path::new("analysis").join(crate::source_cmds::pending_id(url)).join("transcript.json");
+    let Ok(t) = store.read_json::<Transcript>(&fetched) else {
+        return Ok(None);
+    };
+    if !t.engine.starts_with("youtube:") {
+        return Ok(None);
+    }
+    let (lo, hi) = section.map_or((0.0, f64::INFINITY), |s| (s.start, s.end));
+    let duration = source.probe.duration.max(0.0);
+    let words: Vec<Word> = t
+        .words
+        .iter()
+        .filter(|w| w.end > lo && w.start < hi)
+        .map(|w| Word {
+            i: 0,
+            text: w.text.clone(),
+            start: (w.start - original_offset).max(0.0),
+            end: (w.end - original_offset).max(0.0).min(if duration > 0.0 { duration } else { f64::INFINITY }),
+            conf: w.conf,
+            speaker: None,
+        })
+        .enumerate()
+        .map(|(i, mut w)| {
+            w.i = i as u32;
+            w
+        })
+        .collect();
+    let own_t = Transcript {
+        schema: t.schema.clone(),
+        source_id: source.id.clone(),
+        language: t.language.clone(),
+        engine: t.engine.clone(),
+        script: t.script,
+        words,
+        word_timing: WordTiming::Approximate,
+    };
+    let units = save_transcript(store, &id, &own_t)?;
+    log_event(ctx, store, "analyze.transcribed", json!({"source_id": id, "words": own_t.words.len(), "units": units.len(), "model": t.engine, "reused_captions": true}))?;
+    Ok(Some((own_t, units)))
+}
+
 pub async fn quick(ctx: Ctx, input: QuickIn) -> rustler_core::Result<Outcome<QuickOut>> {
     let store = ctx.store()?;
     let project = store.load_project()?;
     let source = load_source_checked(&store, &input.source_id)?;
     if ctx.dry_run {
-        return Ok(Outcome::dry_run(json!({"analyze_quick": source.id, "steps": ["audio", "scenes", "transcribe"], "force": input.force})));
+        let mode = input.transcribe.unwrap_or_default();
+        let steps: Vec<&str> = if mode == TranscribeMode::Never { vec!["audio", "scenes"] } else { vec!["audio", "scenes", "transcribe"] };
+        return Ok(Outcome::dry_run(json!({"analyze_quick": source.id, "steps": steps, "transcribe": format!("{mode:?}").to_lowercase(), "force": input.force})));
     }
     let paths = ToolPaths::from_home(&ctx.home);
     let id = source.id.to_string();
@@ -516,7 +620,27 @@ pub async fn quick(ctx: Ctx, input: QuickIn) -> rustler_core::Result<Outcome<Qui
     let mut resume = None;
     let mut language = None;
     let (mut words, mut unit_list): (usize, Vec<Unit>) = (0, vec![]);
-    if source.probe.has_audio {
+    let mode = input.transcribe.unwrap_or_default();
+    let mut transcript_source = "none";
+    let reused = if source.probe.has_audio && mode == TranscribeMode::Auto && !input.force {
+        reuse_fetched_captions(&ctx, &store, &source)?
+    } else {
+        None
+    };
+    if let Some((t, units)) = reused {
+        // Captions were already fetched for this URL: no whisper, no engine.
+        progress(&ctx, "quick", 0.4, "reusing fetched captions (no whisper)");
+        transcript_source = "captions";
+        language = Some(t.language.clone());
+        words = t.words.len();
+        unit_list = units;
+        warnings.push(format!(
+            "transcript reused from fetched captions ({}): word timing is approximate; run `rustler analyze transcribe {id}` for exact whisper timing",
+            t.engine
+        ));
+    } else if source.probe.has_audio && mode == TranscribeMode::Never {
+        warnings.push("transcript skipped (--transcribe never); run `rustler analyze transcribe` when you need words, or look with `rustler see tiles`".to_string());
+    } else if source.probe.has_audio {
         progress(&ctx, "quick", 0.4, "transcription");
         let tin = TranscribeIn { source_id: source.id.clone(), model: input.model, language: input.language, device: input.device, force: input.force };
         match transcribe_source(&ctx, &store, &project, &paths, &source, &tin).await {
@@ -527,6 +651,7 @@ pub async fn quick(ctx: Ctx, input: QuickIn) -> rustler_core::Result<Outcome<Qui
                 words = t.words;
                 warnings.extend(t.warnings);
                 unit_list = units;
+                transcript_source = "whisper";
             }
             Err(e) if e.code == ErrorCode::DependencyMissing => {
                 complete = false;
@@ -544,6 +669,9 @@ pub async fn quick(ctx: Ctx, input: QuickIn) -> rustler_core::Result<Outcome<Qui
     } else {
         next.push(format!("rustler see tiles {id}"));
     }
+    if mode == TranscribeMode::Never {
+        next.push(format!("rustler analyze transcribe {id}   (only if you need words)"));
+    }
     Ok(Outcome::Done(QuickOut {
         source_id: source.id.clone(),
         duration: source.probe.duration,
@@ -551,6 +679,7 @@ pub async fn quick(ctx: Ctx, input: QuickIn) -> rustler_core::Result<Outcome<Qui
         language,
         words,
         units: unit_list.len(),
+        transcript_source: transcript_source.to_string(),
         scenes: scene_count,
         peaks: top_peaks(&events, 10),
         silences_total,
@@ -593,10 +722,13 @@ pub fn register(reg: &mut Registry) {
     ));
     reg.register(typed(
         "analyze.quick",
-        "One call: audio + scenes + transcript, with loud-moment-plus-words highlight signals",
+        "One call: audio loudness + scene cuts (on the proxy) + transcript, with loud-moment-plus-words highlight signals. Light by design: --transcribe auto (default) reuses captions fetched for a URL source instead of running whisper; never skips the transcript; always forces whisper. No OCR/events/faces/speakers (those are separate, optional commands).",
         &["source_id"],
         long,
-        vec![Example { description: "First look at a new source", cli: "rustler analyze quick src_01k... --max-seconds 240" }],
+        vec![
+            Example { description: "First look at a new source", cli: "rustler analyze quick src_01k... --max-seconds 240" },
+            Example { description: "Audio + scenes only; look at frames yourself", cli: "rustler analyze quick src_01k... --transcribe never" },
+        ],
         quick,
     ));
 }

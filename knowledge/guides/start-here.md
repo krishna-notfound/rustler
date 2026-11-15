@@ -49,10 +49,35 @@ needs project permission; `long_running` may need `--max-seconds` and a rerun (s
 
 ```
 rustler doctor run            # JSON report: ffmpeg, yt-dlp, engine, encoders, fonts, ready=true/false
-rustler setup run             # installs everything into ~/.rustler (no admin, no prompts, resumable)
+rustler setup run             # installs the LITE set into ~/.rustler (no admin, no prompts, resumable)
 rustler doctor run            # confirm ready=true and that libass=true
 rustler project create --name "podcast-ep-212" --dir ./podcast-ep-212
 ```
+
+**Lite is the default, heavy analyzers are opt-in.** `setup run` installs ffmpeg, yt-dlp, the base
+Python engine (faster-whisper with the small `base` model, scene detection, face tracking, transliteration)
+and fonts. That is all the core loop needs, and it stays light enough for cloud agents. The heavy helpers
+download only when you ask for them:
+
+| Want | Command | Used by |
+|---|---|---|
+| on-screen text recognition | `rustler setup run --with ocr` | `analyze ocr`, part of `analyze deep` |
+| YAMNet laughter/applause labels | `rustler setup run --with audio-events` | `analyze events` (a light heuristic works without it) |
+| speaker diarization | `rustler setup run --with speakers` | `analyze speakers`, `crop track-speaker` (a light heuristic works without it) |
+| NVIDIA GPU transcription | `rustler setup run --with cuda` | faster `analyze transcribe` |
+| bundled CC0 sound effects | `rustler setup run --with sfx-pack` | `asset search --kind sfx` |
+| everything | `rustler setup run --profile full` | all of the above (the old full install) |
+
+`rustler doctor run` lists `optional_features` with `available` and the exact `enable` command for each.
+If you call a heavy analyzer that is not installed you get exit 4 (`dependency_missing`) and a hint such as
+``run `rustler setup run --with ocr` `` — run it once and retry. Re-running setup never removes anything.
+
+**You are the vision.** The heavy analyzers are optional helpers, not the way to understand a video:
+you can look at frames yourself (`rustler see frame`, `rustler see tiles`, `rustler see preview`), read
+the transcript, and decide which section to use. Prefer `analyze quick` (cheap) and your own eyes;
+reach for `analyze ocr|events|speakers|deep` only when seeing and reading are not enough. Nothing heavy
+runs unless you invoke it: `analyze quick` has no OCR/events/faces/speakers, and `qc run` skips the engine
+face checks unless you pass `--faces`.
 
 Pass `--project <dir>` on every later call (or set `RUSTLER_PROJECT`), unless you run commands from
 inside the project folder.

@@ -388,7 +388,7 @@ async fn kenney_zip_url(pack: &str) -> Result<String> {
     let api = format!("https://kenney.nl/download-link/{}", hex_of(&format!("assets/{pack}")));
     let net = |e: &dyn std::fmt::Display| {
         RustlerError::new(ErrorCode::Provider, "setup.assets", format!("kenney.nl {pack}: {e}"))
-            .hint("check your internet connection; `rustler setup --no-assets` skips the SFX pack")
+            .hint("check your internet connection; the SFX pack is optional (`rustler setup run --with sfx-pack`); add your own sounds with `rustler asset add`")
             .retryable()
     };
     let text = kenney_client()?
@@ -592,16 +592,17 @@ pub async fn fetch_freepd_music(
     Ok(out)
 }
 
-/// `rustler setup` step without the optional music pack: see [`install_with`].
-pub async fn install(paths: &ToolPaths, force: bool, progress: &ProgressSink) -> Result<AssetsReport> {
-    install_with(paths, force, false, progress).await
+/// `rustler setup` step without the optional music pack: see [`install_with`]. `sfx` fetches the Kenney CC0
+/// SFX packs (opt-in: `setup run --with sfx-pack` or `--profile full`).
+pub async fn install(paths: &ToolPaths, force: bool, sfx: bool, progress: &ProgressSink) -> Result<AssetsReport> {
+    install_with(paths, force, sfx, false, progress).await
 }
 
-/// `rustler setup` step: built-in styles/layouts, installed fonts, Kenney CC0 SFX and, only when `music_pack`
-/// is true (`rustler setup run --music-pack`, off by default), the curated FreePD CC0 music. Rustler ships
-/// no fixed music: the agent brings any track with `asset add`/`--path`. Idempotent; a network failure only
-/// adds a warning.
-pub async fn install_with(paths: &ToolPaths, force: bool, music_pack: bool, progress: &ProgressSink) -> Result<AssetsReport> {
+/// `rustler setup` step: built-in styles/layouts and installed fonts always; the Kenney CC0 SFX only when `sfx`
+/// (`--with sfx-pack`) and the curated FreePD CC0 music only when `music_pack` (`--music-pack`): both off by
+/// default. Rustler ships no fixed music: the agent brings any track with `asset add`/`--path`. Idempotent; a
+/// network failure only adds a warning.
+pub async fn install_with(paths: &ToolPaths, force: bool, sfx: bool, music_pack: bool, progress: &ProgressSink) -> Result<AssetsReport> {
     let root = assets_root(&paths.home);
     std::fs::create_dir_all(&root).map_err(|e| err(format!("create {}: {e}", root.display())))?;
     let mut report = AssetsReport::default();
@@ -623,6 +624,11 @@ pub async fn install_with(paths: &ToolPaths, force: bool, music_pack: bool, prog
     emit(format!("registered {} installed fonts", report.fonts), 0.2);
 
     for (i, (pack, label)) in PACKS.iter().enumerate() {
+        if !sfx {
+            // opt-in: report what an earlier run already registered, fetch nothing
+            report.sfx = load_manifest(&root).iter().filter(|e| e.kind == AssetKind::Sfx && e.id.starts_with("sfx-kenney-")).count();
+            break;
+        }
         let have = load_manifest(&root)
             .iter()
             .filter(|e| e.kind == AssetKind::Sfx && e.id.starts_with(&format!("sfx-kenney-{}-", pack.trim_end_matches("-sounds"))))

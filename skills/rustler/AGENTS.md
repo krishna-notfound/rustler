@@ -64,10 +64,19 @@ Exit codes: 0 ok, 2 usage, 3 not found, 4 missing dependency, 5 network, 6 media
 
 ```
 rustler doctor run       # ready=true?
-rustler setup run        # if not: installs ffmpeg, yt-dlp, engine, models, fonts into ~/.rustler
+rustler setup run        # if not: installs the LITE set (ffmpeg, yt-dlp, base engine, whisper base, fonts) into ~/.rustler
 rustler project create "my-clips" --dir ./my-clips
 rustler guide show start-here
 ```
+
+Setup installs the **lite** set by default (ffmpeg, yt-dlp, base engine, whisper `base`, fonts): enough for the whole
+loop and light on cloud boxes. Heavy helpers are opt-in: `rustler setup run --with ocr,speakers,audio-events,cuda,sfx-pack`
+(or `--profile full` for all); `rustler doctor run` lists `optional_features` with the exact command to enable
+each, and a heavy command that is not installed exits 4 with that command in `hint`. **You are the vision**:
+look at frames (`see frame`, `see tiles`) and read the transcript to decide; OCR/events/speakers/deep are optional
+helpers, and nothing heavy runs unless you call it (`analyze quick` is light; `qc run` skips the engine face checks
+unless `--faces`). Music/SFX are open: `audio add-music --path` takes a file, `asset:<id>`, an `http(s)` link or
+`source:<source_id>@start-end` (audio of any imported video); `asset add` needs no license (`--url` downloads).
 
 ## Discover, never guess
 

@@ -177,7 +177,7 @@ pub fn classify_ytdlp_error(stderr: &str) -> (&'static str, bool) {
     }
 }
 
-fn sha8(s: &str) -> String {
+pub(crate) fn sha8(s: &str) -> String {
     let d = Sha256::digest(s.as_bytes());
     d.iter().take(4).map(|b| format!("{b:02x}")).collect()
 }

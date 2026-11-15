@@ -27,7 +27,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from .rpc import RpcError
+from .rpc import RpcError, require_extra
 
 log = logging.getLogger("rustler_engine.ocr")
 
@@ -116,10 +116,8 @@ def _engine(lang: str = "latin"):
     if lang not in ("latin", "devanagari"):
         raise RpcError("validation", f"unknown OCR engine language: {lang}")
     if lang not in _ENGINES:
-        try:
-            from rapidocr import LangRec, OCRVersion, RapidOCR
-        except ImportError as e:
-            raise RpcError("dependency_missing", f"rapidocr is not installed: {e}") from e
+        require_extra("ocr", "on-screen text recognition (OCR)")
+        from rapidocr import LangRec, OCRVersion, RapidOCR
         threads = max(1, min(8, os.cpu_count() or 4))
         params: Dict[str, Any] = {
             "Global.use_cls": False,
@@ -287,6 +285,7 @@ def run(params: Dict[str, Any], progress: Callable[..., None]) -> Dict[str, Any]
         raise RpcError("validation", f"lang must be one of {', '.join(LANGS)}")
     if not os.path.isfile(video_path):
         raise RpcError("validation", f"video not found: {video_path}")
+    require_extra("ocr", "on-screen text recognition (OCR)")
 
     import cv2
     import numpy as np

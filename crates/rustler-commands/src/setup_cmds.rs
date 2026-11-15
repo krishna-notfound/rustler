@@ -7,7 +7,10 @@
 use rustler_core::{ErrorCode, RustlerError};
 use rustler_engine_bridge::EngineClient;
 use rustler_registry::{Annotations, Ctx, Example, ProgressEvent, Registry, typed};
-use rustler_tools::{DoctorReport, SetupOptions, SetupReport, ToolPaths, doctor, setup};
+use rustler_tools::{
+    DoctorReport, InstallPlan, SetupOptions, SetupReport, ToolPaths, doctor, installed_state, optional_features,
+    profile_name, setup,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -16,9 +19,16 @@ use serde::{Deserialize, Serialize};
 pub struct SetupOutput {
     #[serde(flatten)]
     pub report: SetupReport,
-    /// Whisper models fetched via the engine (`models.fetch`).
+    /// Models fetched via the engine (`models.fetch`): whisper plus any heavy-analyzer models you opted into.
     pub models_fetched: Vec<String>,
     pub warnings: Vec<String>,
+    /// `lite` (base engine, heavy analyzers opt-in) or `full`.
+    pub profile: String,
+    /// Optional Python extras installed in the engine venv.
+    pub extras: Vec<String>,
+    pub sfx_pack: bool,
+    /// How to add what is not installed yet.
+    pub next: Vec<String>,
 }
 
 #[derive(Deserialize, JsonSchema, Default, Debug)]
@@ -39,19 +49,30 @@ fn emit(ctx: &Ctx, message: &str) {
     });
 }
 
+/// The `models.fetch` params for a plan: whisper always (when any), heavy-analyzer models only for
+/// what the plan opted into (`--profile full`, or `--with ocr|speakers|audio-events`). Everything
+/// else downloads on first use, so a lite install stays small.
+pub fn fetch_params(plan: &InstallPlan) -> serde_json::Value {
+    let mut p = serde_json::json!({ "whisper": plan.whisper_models });
+    for (on, key) in [
+        (plan.prefetch_yunet, "yunet"),
+        (plan.prefetch_yamnet, "yamnet"),
+        (plan.prefetch_diarization, "diarization"),
+        (plan.prefetch_ocr_devanagari, "ocr_devanagari"),
+    ] {
+        if on {
+            p[key] = serde_json::Value::Bool(true);
+        }
+    }
+    p
+}
+
 /// Step 5: `models.fetch` through the freshly installed engine.
-async fn fetch_models(ctx: &Ctx, paths: &ToolPaths, models: &[String]) -> rustler_core::Result<Vec<String>> {
-    emit(ctx, "downloading whisper, face (YuNet), audio-event (YAMNet) and speaker-diarization models");
+async fn fetch_models(ctx: &Ctx, paths: &ToolPaths, plan: &InstallPlan) -> rustler_core::Result<Vec<String>> {
+    emit(ctx, &format!("downloading models: whisper {}", plan.whisper_models.join(", ")));
     let engine = EngineClient::spawn(paths).await?;
     let res: rustler_core::Result<FetchResult> = engine
-        .call(
-            "models.fetch",
-            // Pre-fetch everything the engine would otherwise download on first use, so agents
-            // in sandboxes don't hit a surprise download mid-edit.
-            serde_json::json!({ "whisper": models, "yunet": true, "yamnet": true, "diarization": true, "ocr_devanagari": true }),
-            &ctx.progress,
-            &ctx.cancel,
-        )
+        .call("models.fetch", fetch_params(plan), &ctx.progress, &ctx.cancel)
         .await;
     engine.shutdown().await;
     Ok(res?.fetched)
@@ -63,10 +84,11 @@ async fn setup_run(ctx: Ctx, opts: SetupOptions) -> rustler_core::Result<SetupOu
     let mut out = SetupOutput::default();
     out.warnings.extend(report.notes.iter().cloned());
 
-    if opts.whisper_models.is_empty() {
-        out.warnings.push("no whisper models requested; skipping model download".into());
+    let plan = report.plan.clone();
+    if plan.whisper_models.is_empty() {
+        out.warnings.push("model downloads skipped (--no-models): models are fetched on first use".into());
     } else if paths.venv_python.is_file() {
-        match fetch_models(&ctx, &paths, &opts.whisper_models).await {
+        match fetch_models(&ctx, &paths, &plan).await {
             Ok(fetched) => out.models_fetched = fetched,
             Err(e) => report.failed.push(("models".into(), e.to_string())),
         }
@@ -78,6 +100,16 @@ async fn setup_run(ctx: Ctx, opts: SetupOptions) -> rustler_core::Result<SetupOu
 
     let failed = report.failed.clone();
     out.report = report;
+    let state = installed_state(&paths);
+    out.profile = profile_name(&state).to_string();
+    out.extras = state.extras.clone();
+    out.sfx_pack = state.sfx_pack;
+    for f in optional_features(&paths, None) {
+        let have = if f.name == "sfx-pack" { state.sfx_pack } else { state.extras.contains(&f.name) };
+        if !have {
+            out.next.push(format!("rustler setup run --with {}   (opt-in: {})", f.name, f.description));
+        }
+    }
     if failed.is_empty() {
         return Ok(out);
     }
@@ -120,7 +152,10 @@ async fn doctor_run(ctx: Ctx, _input: DoctorInput) -> rustler_core::Result<Docto
         }
         .await;
         match caps {
-            Ok(v) => report.engine = Some(v),
+            Ok(v) => {
+                report.optional_features = optional_features(&paths, Some(&v));
+                report.engine = Some(v);
+            }
             Err(e) => {
                 report.missing.push(format!("engine (not responding: {})", e.message));
                 report.ready = false;
@@ -134,7 +169,7 @@ async fn doctor_run(ctx: Ctx, _input: DoctorInput) -> rustler_core::Result<Docto
 pub fn register(reg: &mut Registry) {
     reg.register(typed(
         "setup.run",
-        "Install ffmpeg, yt-dlp, uv, the Python engine, whisper models and fonts into the Rustler home (idempotent)",
+        "Install ffmpeg, yt-dlp, uv, the lightweight base Python engine, whisper `base` and fonts into the Rustler home (idempotent). Heavy analyzers are opt-in: --with ocr,audio-events,speakers,cuda,sfx-pack, or --profile full for everything. Never removes what is installed",
         &[],
         Annotations {
             network: true,
@@ -143,19 +178,27 @@ pub fn register(reg: &mut Registry) {
         },
         vec![
             Example {
-                description: "Default lite install",
-                cli: "rustler setup",
+                description: "Default lite install (base engine, whisper base, no heavy analyzers)",
+                cli: "rustler setup run",
+            },
+            Example {
+                description: "Add on-screen text recognition and speaker diarization later",
+                cli: "rustler setup run --with ocr,speakers",
+            },
+            Example {
+                description: "Everything (all analyzers, models, SFX pack; cuda if an NVIDIA GPU is found)",
+                cli: "rustler setup run --profile full",
             },
             Example {
                 description: "Also fetch the medium whisper model",
-                cli: "rustler setup --whisper-models small --whisper-models medium",
+                cli: "rustler setup run --whisper-models base --whisper-models medium",
             },
         ],
         setup_run,
     ));
     reg.register(typed(
         "doctor.run",
-        "Report installed tools, encoders (real 1-frame probes), GPU, fonts and engine capabilities",
+        "Report installed tools, encoders (real 1-frame probes), GPU, fonts, engine capabilities, the install profile and which optional heavy features (ocr, audio-events, speakers, cuda, sfx-pack) are available, with the command to enable each",
         &[],
         Annotations {
             read_only: true,
@@ -167,4 +210,30 @@ pub fn register(reg: &mut Registry) {
         }],
         doctor_run,
     ));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rustler_tools::{GpuMode, InstallState, Profile};
+
+    #[test]
+    fn lite_fetches_only_whisper_base() {
+        let plan = SetupOptions::default().plan(&InstallState::default(), false).unwrap();
+        assert_eq!(fetch_params(&plan), serde_json::json!({"whisper": ["base"]}));
+    }
+
+    #[test]
+    fn full_prefetches_every_heavy_model_and_with_only_its_own() {
+        let full = SetupOptions { profile: Profile::Full, gpu: GpuMode::None, ..Default::default() };
+        let p = fetch_params(&full.plan(&InstallState::default(), false).unwrap());
+        assert_eq!(p["yunet"], true);
+        assert_eq!(p["yamnet"], true);
+        assert_eq!(p["diarization"], true);
+        assert_eq!(p["ocr_devanagari"], true);
+        let one = SetupOptions { with: vec!["speakers".into()], ..Default::default() };
+        let p = fetch_params(&one.plan(&InstallState::default(), false).unwrap());
+        assert_eq!(p["diarization"], true);
+        assert!(p.get("yamnet").is_none() && p.get("ocr_devanagari").is_none() && p.get("yunet").is_none());
+    }
 }

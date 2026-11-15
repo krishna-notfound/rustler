@@ -838,7 +838,9 @@ async fn layout_list_presets(_ctx: Ctx, _i: EmptyIn) -> Result<LayoutPresetsOut>
 #[derive(Deserialize, JsonSchema)]
 pub struct AddMusicIn {
     pub clip_id: ClipId,
-    /// Local audio file (mp3/wav/m4a/...) or `asset:<id>` from the asset library. Looped to the clip length.
+    /// What to use as music, looped to the clip length: a local audio file (mp3/wav/m4a/...), `asset:<id>`
+    /// from the asset library, an `http(s)` link to an audio (or video) file (downloaded to the project's
+    /// assets cache), or `source:<source_id>[@start-end]` to reuse the audio of any imported video.
     pub path: PathBuf,
     /// Music gain before mixing (default -18).
     pub volume_db: Option<f64>,
@@ -864,11 +866,12 @@ fn save_extras(store: &ProjectStore, id: &ClipId, extras: &ClipExtras) -> Result
 async fn audio_add_music(ctx: Ctx, i: AddMusicIn) -> Result<MusicOut> {
     let store = ctx.store()?;
     let clip = store.load_clip(&i.clip_id)?;
-    // `asset:<id>` resolves to a library file (see asset.search --kind music).
-    let src = crate::asset_cmds::resolve_asset_path(&store, &ctx.home, &i.path.to_string_lossy())?;
-    if !src.is_file() {
+    // A local path, `asset:<id>` (see asset.search --kind music), an http(s) URL or `source:<id>[@a-b]`.
+    let resolved = crate::media_ref::resolve(&ctx, "audio.add_music", &i.path.to_string_lossy(), crate::media_ref::Want::Audio).await?;
+    let src = resolved.path.clone();
+    if !resolved.pending && !src.is_file() {
         return Err(RustlerError::new(ErrorCode::NotFound, "audio.add_music", format!("no such file: {}", src.display()))
-            .hint("pass an existing local audio file or asset:<id> (see `rustler asset search --kind music`)"));
+            .hint("pass an existing local audio file, asset:<id> (see `rustler asset search --kind music`), an http(s) link, or source:<source_id>[@start-end]"));
     }
     let path = std::path::absolute(&src).unwrap_or_else(|_| src.clone());
     let mut bed = MusicBed::new(path);
@@ -1172,10 +1175,14 @@ pub fn register(reg: &mut Registry) {
     ));
     reg.register(typed(
         "audio.add_music",
-        "Add a background music bed (ducked under speech) to a clip",
+        "Add a background music bed (ducked under speech) to a clip. --path takes anything: a file, asset:<id>, an http(s) link to an audio/video file (downloaded to the project's assets cache), or source:<source_id>[@start-end] (the audio of an imported video)",
         &["clip_id"],
         WRITE,
-        vec![Example { description: "quiet ducked bed", cli: "rustler audio add-music clp_x --path bed.mp3 --volume-db -20" }],
+        vec![
+            Example { description: "quiet ducked bed", cli: "rustler audio add-music clp_x --path bed.mp3 --volume-db -20" },
+            Example { description: "reuse the audio of an imported video (seconds or MM:SS)", cli: "rustler audio add-music clp_x --path source:src_01k...@30-75" },
+            Example { description: "music from a direct link", cli: "rustler audio add-music clp_x --path https://example.org/lofi.mp3" },
+        ],
         audio_add_music,
     ));
     reg.register(typed("audio.remove_music", "Remove the music bed from a clip", &["clip_id"], WRITE, vec![], audio_remove_music));

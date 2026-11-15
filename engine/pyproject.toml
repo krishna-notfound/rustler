@@ -3,20 +3,32 @@ name = "rustler-engine"
 version = "0.1.0"
 description = "Rustler Python worker: transcription, scene detection, transliteration over stdio JSON-RPC"
 requires-python = ">=3.11,<3.13"
+# Base = the lightweight install (`rustler setup run`, profile "lite"): transcription (faster-whisper),
+# scene detection, face tracking/crops (OpenCV headless + YuNet), transliteration. Heavy, optional analyzers
+# are extras that `rustler setup run --with <extra>` (or `--profile full`) adds on top.
 dependencies = [
     "faster-whisper>=1.2.1",
     "indic-transliteration>=2.3.82",
     "numpy>=2.4.6",
-    "onnxruntime>=1.32.0",
     "opencv-python-headless>=5.0.0.93",
-    "rapidocr>=3.10.0",
     "scenedetect>=0.7.3",
-    "sherpa-onnx>=2.0.1",
 ]
 
 [project.optional-dependencies]
-full = []
+# On-screen text (`analyze ocr`): RapidOCR + ONNX Runtime.
+ocr = ["rapidocr>=3.10.0", "onnxruntime>=1.32.0"]
+# Sound-event labels (`analyze events`): YAMNet through ONNX Runtime (faster-whisper already pulls it in for VAD).
+audio-events = ["onnxruntime>=1.32.0"]
+# Speaker diarization (`analyze speakers`): sherpa-onnx.
+speakers = ["sherpa-onnx>=2.0.1"]
+# NVIDIA GPU libraries for faster-whisper (large downloads); `--with cuda`.
 cuda = ["nvidia-cublas-cu12<12.9", "nvidia-cudnn-cu12"]
+# Everything optional except cuda (`--profile full` adds cuda only when an NVIDIA GPU is found).
+full = [
+    "rapidocr>=3.10.0",
+    "onnxruntime>=1.32.0",
+    "sherpa-onnx>=2.0.1",
+]
 
 [build-system]
 requires = ["hatchling"]

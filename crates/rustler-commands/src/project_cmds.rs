@@ -353,14 +353,17 @@ pub async fn set_permissions(ctx: Ctx, input: SetPermissionsIn) -> rustler_core:
 pub struct SetSettingsIn {
     /// `latin` (default, romanized Hinglish), `devanagari` or `as_transcribed`.
     pub caption_script: Option<CaptionScript>,
-    /// faster-whisper model name, e.g. `tiny`, `small`, `medium`.
+    /// faster-whisper model name, e.g. `tiny`, `base` (default), `small`, `medium`.
     pub default_whisper_model: Option<String>,
+    /// Run the engine face checks in every `qc run` (off by default: QC stays fast; `qc run --faces` does it once).
+    pub qc_faces: Option<bool>,
 }
 
 #[derive(Serialize, JsonSchema, Debug)]
 pub struct SettingsOut {
     pub caption_script: CaptionScript,
     pub default_whisper_model: String,
+    pub qc_faces: bool,
     pub project_revision: u64,
 }
 
@@ -368,7 +371,7 @@ pub async fn set_settings(ctx: Ctx, input: SetSettingsIn) -> rustler_core::Resul
     let store = ctx.store()?;
     if ctx.dry_run {
         return Ok(Outcome::dry_run(json!({
-            "caption_script": input.caption_script, "default_whisper_model": input.default_whisper_model,
+            "caption_script": input.caption_script, "default_whisper_model": input.default_whisper_model, "qc_faces": input.qc_faces,
         })));
     }
     let p = update_project(&store, |p| {
@@ -378,12 +381,16 @@ pub async fn set_settings(ctx: Ctx, input: SetSettingsIn) -> rustler_core::Resul
         if let Some(m) = &input.default_whisper_model {
             p.settings.default_whisper_model = m.clone();
         }
+        if let Some(q) = input.qc_faces {
+            p.settings.qc_faces = q;
+        }
         Ok(())
     })?;
-    log_event(&ctx, &store, "project.settings_set", json!({"caption_script": p.settings.caption_script, "default_whisper_model": p.settings.default_whisper_model}))?;
+    log_event(&ctx, &store, "project.settings_set", json!({"caption_script": p.settings.caption_script, "default_whisper_model": p.settings.default_whisper_model, "qc_faces": p.settings.qc_faces}))?;
     Ok(Outcome::Done(SettingsOut {
         caption_script: p.settings.caption_script,
         default_whisper_model: p.settings.default_whisper_model,
+        qc_faces: p.settings.qc_faces,
         project_revision: p.revision,
     }))
 }

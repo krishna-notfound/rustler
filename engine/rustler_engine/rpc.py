@@ -12,7 +12,7 @@ import json
 import logging
 import sys
 import traceback
-from typing import Any, Callable, Dict, TextIO
+from typing import Any, Callable, Dict, List, Optional, TextIO, Tuple
 
 log = logging.getLogger("rustler_engine.rpc")
 
@@ -27,12 +27,76 @@ KINDS = ("dependency_missing", "media", "validation", "internal")
 class RpcError(Exception):
     """An error with a protocol kind (dependency_missing | media | validation | internal)."""
 
-    def __init__(self, kind: str, message: str, code: int = SERVER_ERROR):
+    def __init__(
+        self,
+        kind: str,
+        message: str,
+        code: int = SERVER_ERROR,
+        hint: Optional[str] = None,
+        extra: Optional[str] = None,
+    ):
         super().__init__(message)
         assert kind in KINDS, kind
         self.kind = kind
         self.code = code
         self.message = message
+        self.hint = hint
+        self.extra = extra
+
+
+# Optional install extras (see engine/pyproject.toml) and the Python modules each one provides.
+# `rustler setup run --with <extra>` installs one; features that need it fail with
+# `dependency_missing` and a hint naming that command instead of a bare ImportError.
+EXTRA_MODULES: Dict[str, Tuple[str, ...]] = {
+    "ocr": ("rapidocr", "onnxruntime"),
+    "audio-events": ("onnxruntime",),
+    "speakers": ("sherpa_onnx",),
+}
+
+# Import name -> extra that ships it, for turning a stray ImportError into the same hint.
+_MODULE_EXTRA = {"rapidocr": "ocr", "sherpa_onnx": "speakers", "onnxruntime": "audio-events"}
+
+
+def enable_hint(extra: str) -> str:
+    return f"run `rustler setup run --with {extra}` (adds the optional '{extra}' extra; the base install stays lightweight)"
+
+
+def missing_modules(extra: str) -> List[str]:
+    """Modules of ``extra`` that cannot be imported (checked without importing them).
+
+    ``RUSTLER_HIDE_EXTRAS=ocr,speakers`` pretends those extras are not installed (a test hook that
+    simulates a lite install on a machine that has everything).
+    """
+    import importlib.util
+    import os
+
+    hidden = {x.strip() for x in os.environ.get("RUSTLER_HIDE_EXTRAS", "").split(",") if x.strip()}
+    if extra in hidden:
+        return list(EXTRA_MODULES[extra])
+    out = []
+    for m in EXTRA_MODULES[extra]:
+        try:
+            if importlib.util.find_spec(m) is None:
+                out.append(m)
+        except (ImportError, ValueError):
+            out.append(m)
+    return out
+
+
+def extra_available(extra: str) -> bool:
+    return not missing_modules(extra)
+
+
+def require_extra(extra: str, feature: str) -> None:
+    """Raise ``dependency_missing`` (with an enable hint) unless the optional ``extra`` is installed."""
+    missing = missing_modules(extra)
+    if missing:
+        raise RpcError(
+            "dependency_missing",
+            f"{feature} needs the optional '{extra}' install extra (not installed: {', '.join(missing)})",
+            hint=enable_hint(extra),
+            extra=extra,
+        )
 
 
 Handler = Callable[[Dict[str, Any], Callable[..., None]], Dict[str, Any]]
@@ -40,12 +104,22 @@ Handler = Callable[[Dict[str, Any], Callable[..., None]], Dict[str, Any]]
 
 def _error_obj(exc: BaseException) -> Dict[str, Any]:
     if isinstance(exc, RpcError):
-        return {"code": exc.code, "message": exc.message, "data": {"kind": exc.kind}}
+        data: Dict[str, Any] = {"kind": exc.kind}
+        if exc.hint:
+            data["hint"] = exc.hint
+        if exc.extra:
+            data["extra"] = exc.extra
+        return {"code": exc.code, "message": exc.message, "data": data}
     if isinstance(exc, ImportError):
+        data = {"kind": "dependency_missing"}
+        extra = _MODULE_EXTRA.get((getattr(exc, "name", None) or "").split(".")[0])
+        if extra:
+            data["extra"] = extra
+            data["hint"] = enable_hint(extra)
         return {
             "code": SERVER_ERROR,
             "message": f"missing Python dependency: {exc}",
-            "data": {"kind": "dependency_missing"},
+            "data": data,
         }
     return {
         "code": SERVER_ERROR,
@@ -145,7 +219,15 @@ def _capabilities(params, progress):
             packages[key] = metadata.version(dist)
         except metadata.PackageNotFoundError:
             pass
-    return {"cuda": cuda_available(), "packages": packages}
+    return {
+        "cuda": cuda_available(),
+        "packages": packages,
+        # Optional analyzers: available = the extra's modules import; `missing` lists what is absent.
+        "features": {
+            extra: {"available": extra_available(extra), "missing": missing_modules(extra)}
+            for extra in EXTRA_MODULES
+        },
+    }
 
 
 def _translit(params, progress):

@@ -19,7 +19,7 @@ failing command unchanged unless `retryable` is true.
 | 0 | — | success | still read `warnings` |
 | 2 | `usage` / `validation` | bad flags or input that doesn't make sense | `rustler commands describe <cmd>`; fix input; read `message` (e.g. "opening words do not match") |
 | 3 | `not_found` | unknown command, project, source, clip or render id | `commands list`, `source list`, `clip list`; check `--project` |
-| 4 | `dependency_missing` | ffmpeg, yt-dlp, uv, engine, model or font missing | `rustler setup run`, then `rustler doctor run` |
+| 4 | `dependency_missing` | ffmpeg, yt-dlp, uv, engine, model or font missing, **or an optional heavy analyzer that is not installed** | follow the `hint`: `rustler setup run`, or `rustler setup run --with ocr\|speakers\|audio-events\|cuda`; then `rustler doctor run` |
 | 5 | `provider` | network/download error (yt-dlp, model download) | check `retryable`; retry once after a pause; see §4 |
 | 6 | `media` | ffmpeg/ffprobe failed (corrupt file, unsupported codec, bad filter) | read the stderr tail in `message`; `see frame` the source; re-import; try `--prefer-gpu false` |
 | 7 | `qc_failed` | QC ran and at least one check failed | open the report; follow `quality-checklist` |
@@ -34,7 +34,22 @@ rustler doctor run       # ready, missing[], encoders[], libass, engine, fonts, 
 rustler setup run        # idempotent: re-running only fills gaps
 rustler setup run --force          # reinstall everything if files are corrupt
 rustler setup run --gpu none       # cloud box without GPU
+rustler setup run --with ocr,speakers   # add heavy analyzers later (lite is the default; nothing is removed)
+rustler setup run --profile full   # everything: all analyzers, models, SFX pack (+ cuda when an NVIDIA GPU is found)
 ```
+
+- **Lite vs full**: `setup run` installs the lightweight base (whisper `base`, scenes, face tracking).
+  OCR, YAMNet, diarization, CUDA libraries and the SFX pack are opt-in (`--with ...`). `doctor run` shows
+  `profile` and `optional_features[]` with the `enable` command for each. Asking for a feature that is not
+  installed exits 4 with the exact command in `hint`; heavy models download on first use or with the same flag.
+- An NVIDIA GPU alone does not change a lite install: transcription runs on the CPU until you add the CUDA
+  libraries (`rustler setup run --with cuda`, about 2 GB); `doctor run` shows `cuda available`.
+- The default whisper model is `base` (fast, small). For Hindi, accents or noisy audio use a larger one:
+  `rustler analyze transcribe <src> --model small` (downloads on first use) or
+  `rustler project set-settings --default-whisper-model small`.
+- QC is fast by default: the engine face checks (`caption_over_face`, `face_visible_ratio`, `face_cut_off`)
+  are `pass` with `{"skipped": "off by default ..."}`. Look at the contact sheet, or run `rustler qc run <clip> --faces`
+  (or `rustler project set-settings --qc-faces true`). `fix suggest --faces` / `fix apply --faces` do the same.
 
 - `ready: false` → `missing` lists what to fix. Re-run `setup run`.
 - `libass: false` → captions cannot render; setup fetched a wrong ffmpeg build. `setup run --force`.

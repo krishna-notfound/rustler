@@ -61,11 +61,32 @@ def _register_cuda_libs() -> None:
                         pass
 
 
+def cuda_libs_present() -> bool:
+    """True when the CUDA runtime libraries faster-whisper needs can be found: the pip wheels of the
+    `cuda` extra (`rustler setup run --with cuda`) or a system CUDA install. A lite install on an NVIDIA
+    machine has the driver but not these, so it must keep using the CPU instead of failing at load time."""
+    import importlib.util
+
+    try:
+        if importlib.util.find_spec("nvidia.cublas") is not None:
+            return True
+    except Exception:
+        pass
+    try:
+        import ctypes.util
+
+        names = ("cublas64_12", "cublas64_11") if sys.platform == "win32" else ("cublas",)
+        return any(ctypes.util.find_library(n) for n in names)
+    except Exception:
+        return False
+
+
 def cuda_available() -> bool:
+    """A CUDA device exists *and* its runtime libraries are usable (see :func:`cuda_libs_present`)."""
     try:
         import ctranslate2
 
-        return ctranslate2.get_cuda_device_count() > 0
+        return ctranslate2.get_cuda_device_count() > 0 and cuda_libs_present()
     except Exception:
         return False
 

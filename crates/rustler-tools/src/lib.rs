@@ -14,7 +14,10 @@ pub mod setup;
 pub mod uv_install;
 pub mod ytdlp_install;
 
-pub use doctor::{DoctorReport, EncoderStatus, ToolInfo, doctor};
+pub use doctor::{DoctorReport, EncoderStatus, OptionalFeature, ToolInfo, doctor, optional_features};
 pub use paths::{Tool, ToolPaths};
 pub use run::{run, run_streaming};
-pub use setup::{Component, GpuMode, Profile, SetupOptions, SetupReport, setup};
+pub use setup::{
+    Component, GpuMode, InstallPlan, InstallState, Profile, SetupOptions, SetupReport, installed_state,
+    profile_name, setup,
+};
