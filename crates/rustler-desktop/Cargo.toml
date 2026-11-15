@@ -1,0 +1,47 @@
+[package]
+name = "rustler-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "rustler_desktop"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rustler-desktop"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+rustler-commands.workspace = true
+rustler-core.workspace = true
+rustler-registry.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+# The window stack (wry = WebView2 / WebKitGTK, tao = window, muda = menu, rfd = dialogs).
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+rustler-gui = { version = "0.1.0", path = "../rustler-gui" }
+muda = "0.21.2"
+open = "5.4.5"
+rfd = "0.18.0"
+tao = "0.37.2"
+wry = { version = "0.57.2", features = ["devtools"] }
+
+# Linux: needs libwebkit2gtk-4.1-dev, libgtk-3-dev, libxdo-dev, so it is opt-in (docs/desktop.md).
+[target.'cfg(target_os = "linux")'.dependencies]
+rustler-gui = { version = "0.1.0", path = "../rustler-gui", optional = true }
+muda = { version = "0.21.2", optional = true }
+open = { version = "5.4.5", optional = true }
+rfd = { version = "0.18.0", optional = true }
+tao = { version = "0.37.2", optional = true }
+wry = { version = "0.57.2", features = ["devtools"], optional = true }
+
+[features]
+linux-webview = ["dep:rustler-gui", "dep:muda", "dep:open", "dep:rfd", "dep:tao", "dep:wry"]
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -12,6 +12,7 @@ Read this file first when resuming work, then `progress-log.md`.
 | `agent-brief.md` | Rules every implementation agent reads first (toolchain, ownership, commits) |
 | `agent-integration.md` | How to give an agent Rustler: CLI on PATH, MCP config per agent, Claude Code skill, sample session |
 | `linux.md` | Running Rustler on Linux x86_64 without a GPU (cloud agents): install, build (incl. no-root zig route), setup, doctor, measured timings, known limits |
+| `desktop.md` | Desktop app (`rustler desktop` / `rustler-desktop`): native window + menu hosting the same GUI (wry/tao, WebView2), why not Tauri, Linux feature gate, how it was verified |
 | `features/README.md` | Feature index f01–f29 with slices, dependencies, status |
 | `research/00-comparison-matrix.md` | Research synthesis: best source per capability, choices, gaps, assets |
 | `research/00-license-and-dependency-inventory.md` | Licenses of the 7 studied repos and their deps/assets |
