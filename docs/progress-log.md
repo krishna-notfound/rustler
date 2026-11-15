@@ -258,3 +258,9 @@ Demo outputs: `%TEMP%\rustler-e2e\exports\jfk-hook.mp4`, `%TEMP%\rustler-stream\
   gameplay sliver); `layout detect-webcam` reports rect_source edges|expansion. OCR `lang:
   latin|devanagari|auto` with PP-OCRv5 Devanagari ONNX (Apache-2.0, sha-pinned): "नमस्ते दोस्तों" read at
   0.95/1.00 confidence. Engine 131 passed. Known limits 1 + 2 closed.
+- Merged **native desktop app**: `rustler desktop` / `rustler-desktop.exe` — native "Rustler" window (wry +
+  tao, WebView2; Tauri's engine without its build tooling) hosting the same editor, native menus (File:
+  Open project / Open Recent / Quit; Edit: Undo/Redo; View: Reload/Zoom; Help), folder picker, saved
+  window state, server bound to 127.0.0.1 + token. 12 tests; release build 27.9 MB. Screenshots
+  .playwright-mcp/desktop-*.png. Linux window behind `linux-webview` feature (needs WebKitGTK).
+- Running: release binaries + installers + CC0 music (FreePD) [Sonnet]; real-footage speaker test [Sonnet].

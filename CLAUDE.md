@@ -142,7 +142,7 @@ repos/       cloned upstream repos studied in research (gitignored, read-only)
   overlays/hook titles, transitions, effects, progress bar (f18), cut refinement (f19), highlight helpers (f20), understanding v2 (f07b),
   QC v2 and fix loop (f21), brief/variants/batches (f22), asset library (f23), GUI editor (f25-f27), speakers (f29), project pack/status,
   audio post (denoise, SFX, two-pass loudnorm). 118 registry commands; `rustler commands list` is the authority.
-- **Deferred / out of scope right now:** provider layer (f13, dropped: no AI API calls), GPU throughput work (f28), Tauri desktop shell,
+- **Deferred / out of scope right now:** AI API integrations (user decision).
   voice-over, sticker/image layers.
 
 ## 9. Do Not
