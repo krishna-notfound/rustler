@@ -246,3 +246,10 @@ Demo outputs: `%TEMP%\rustler-e2e\exports\jfk-hook.mp4`, `%TEMP%\rustler-stream\
   pack/unpack), QC (fix.apply, qc.compare), Speakers (analyze/rename/colours/track active speaker).
   Every action verified in Playwright and confirmed with a CLI read; 0 console errors; screenshots
   .playwright-mcp/gi-*.png.
+
+## 2026-11-15 (~06:10) — closing the known limits
+- Stop-hook review: gaps remained against the agreed scope (Tauri/desktop app was in the design; known
+  limits listed). Now running: native desktop app wrapping the editor [Opus]; webcam edge-snap +
+  Devanagari OCR [Sonnet]; real two-person footage speaker-framing test + fixes [Sonnet].
+- Next: release binaries (Windows + Linux) on the private GitHub repo + one-line installers; CC0 music
+  (FreePD public-domain library) in setup assets.
