@@ -33,7 +33,26 @@ rustler highlights candidates src_X --count 10 --platform tiktok
 - Read the transcript around each candidate (`transcript read-window src_X 4120 4160`) and LOOK at it
   (`see tiles src_X --around "no way"`): is the webcam visible, is the game event readable?
 
-## 2. Let Rustler find the webcam
+
+## 2. Pick the webcam and gameplay boxes yourself (recommended — you can see)
+
+You are a vision model: you don't need a detector to find a facecam. Ask for a frame with a coordinate
+grid, read the box edges off the labels, and build the layout from those numbers:
+
+```bash
+rustler see frame --source-id <src> --t 30 --grid true        # 1280-wide frame with x0.1…x0.9 / y0.1…y0.9 lines
+# read it: e.g. facecam spans x 0.775–0.985, y 0.02–0.50; gameplay is the rest
+rustler layout from-frame-boxes <clip> --input-json @boxes.json
+#   boxes.json: {"clip_id":"<clip>","boxes":[{"role":"top","rect":{"x":0.775,"y":0.02,"w":0.21,"h":0.48}},
+#                                           {"role":"bottom","rect":{"x":0.0,"y":0.0,"w":0.77,"h":1.0}}]}
+rustler see frame --source-id <src> --t 30 --regions-of <clip>   # your boxes drawn on the frame with their numbers
+rustler layout edit-region <clip> <region-id> --nudge '{"dy":0.02}'  # fix anything that's off, then look again
+```
+
+Check two or three different times in the video (the facecam rarely moves, but overlays can). This costs
+only a few frame grabs — no models run. `layout detect-webcam` (next section) is an optional shortcut.
+
+## 2b. Optional shortcut: let Rustler find the webcam
 
 ```
 rustler clip create --name clutch --source-id src_X --start-unit 310 --end-unit 322 --expect-text "no way" --layout blur-fit

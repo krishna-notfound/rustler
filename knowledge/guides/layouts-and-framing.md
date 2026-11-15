@@ -11,6 +11,11 @@ tags: [layout, framing, crop, split, streamer, face-tracking, safe-zone]
 Output canvas: **1080×1920, 9:16, 30 fps**. All rectangles in Rustler are **normalised 0-1**
 `{x, y, w, h}` (x,y = top-left corner) relative to the source's display size (after rotation).
 
+
+> **Reading coordinates:** `rustler see frame --source-id <src> --t <s> --grid true` overlays a labelled
+> 0–1 grid so you can read region edges exactly; `--regions-of <clip>` draws the clip's current regions
+> with their numbers. Use these instead of guessing coordinates.
+
 ## 1. The presets
 
 | Preset | What it does | Use when | Avoid when |

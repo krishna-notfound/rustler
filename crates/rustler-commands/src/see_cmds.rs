@@ -203,6 +203,13 @@ pub struct FrameIn {
     pub clip_id: Option<ClipId>,
     /// Output time in seconds of the clip.
     pub out_t: Option<f64>,
+    /// Draw a labelled 0–1 coordinate grid (every 0.1, fine ticks every 0.05) over the source frame,
+    /// so a vision agent can read exact region coordinates for `layout from-frame-boxes` /
+    /// `layout edit-region` instead of guessing numbers. Default width becomes 1280.
+    pub grid: Option<bool>,
+    /// Also draw this clip's current regions (their source boxes, labelled) on the source frame —
+    /// to check a webcam/gameplay selection before rendering.
+    pub regions_of: Option<ClipId>,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -240,11 +247,102 @@ async fn see_frame(ctx: Ctx, i: FrameIn) -> Result<FrameOut> {
             format!("t={t:.2}s is outside the source (0..{:.2}s)", source.probe.duration),
         ));
     }
-    let width = i.width.unwrap_or(640).clamp(16, 3840);
+    let annotate = i.grid.unwrap_or(false) || i.regions_of.is_some();
+    let width = i.width.unwrap_or(if annotate { 1280 } else { 640 }).clamp(16, 3840);
     let out = analysis_see_dir(&store, &source_id)?.join(format!("frame_{}ms_w{width}.jpg", (t * 1000.0).round() as u64));
     let paths = ToolPaths::from_home(&ctx.home);
     rustler_media::frame(&paths, &viewing_media(&store, &source, false), t, width, &out).await?;
-    Ok(FrameOut { image: out, source_id: Some(source_id), t: Some(t), clip_id: None, out_t: None })
+    if !annotate {
+        return Ok(FrameOut { image: out, source_id: Some(source_id), t: Some(t), clip_id: None, out_t: None });
+    }
+    let regions = match &i.regions_of {
+        Some(cid) => {
+            let clip = store.load_clip(cid)?;
+            let seg = clip
+                .segments
+                .iter()
+                .find(|s| s.source_id == source_id && t >= s.start && t <= s.end)
+                .or_else(|| clip.segments.iter().find(|s| s.source_id == source_id))
+                .ok_or_else(|| validation("see.frame", format!("clip {cid} has no segment from {source_id}")))?;
+            seg.layout.regions.iter().map(|r| (r.id.clone(), r.src.clone())).collect()
+        }
+        None => Vec::new(),
+    };
+    let annotated = out.with_file_name(format!(
+        "frame_{}ms_w{width}_{}.jpg",
+        (t * 1000.0).round() as u64,
+        if i.regions_of.is_some() { "regions" } else { "grid" }
+    ));
+    annotate_frame(&paths, &out, &annotated, i.grid.unwrap_or(true), &regions)?;
+    Ok(FrameOut { image: annotated, source_id: Some(source_id), t: Some(t), clip_id: None, out_t: None })
+}
+
+/// Draws the 0–1 grid and/or labelled region boxes over a frame image.
+fn annotate_frame(
+    paths: &ToolPaths,
+    input: &std::path::Path,
+    output: &std::path::Path,
+    grid: bool,
+    regions: &[(String, rustler_core::Rect)],
+) -> Result<()> {
+    use ab_glyph::{FontArc, PxScale};
+    use image::Rgb;
+    use imageproc::drawing::{draw_filled_rect_mut, draw_hollow_rect_mut, draw_line_segment_mut, draw_text_mut};
+    use imageproc::rect::Rect as PxRect;
+    let err = |m: String| RustlerError::new(ErrorCode::Media, "see.frame", m);
+    let mut img = image::open(input).map_err(|e| err(format!("cannot read frame: {e}")))?.to_rgb8();
+    let (w, h) = (img.width() as f32, img.height() as f32);
+    let font = rustler_media::qc::default_font(paths)
+        .and_then(|p| std::fs::read(p).ok())
+        .and_then(|b| FontArc::try_from_vec(b).ok());
+    let scale = PxScale::from((h / 36.0).max(12.0));
+    let label = |img: &mut image::RgbImage, x: f32, y: f32, text: &str, color: Rgb<u8>| {
+        let Some(font) = &font else { return };
+        let bw = (text.len() as f32 * scale.x * 0.55 + 6.0) as u32;
+        let bh = (scale.y + 4.0) as u32;
+        let (x, y) = (x.clamp(0.0, w - bw as f32).max(0.0) as i32, y.clamp(0.0, h - bh as f32).max(0.0) as i32);
+        draw_filled_rect_mut(img, PxRect::at(x, y).of_size(bw, bh), Rgb([0, 0, 0]));
+        draw_text_mut(img, color, x + 3, y + 2, scale, font, text);
+    };
+    if grid {
+        for k in 1..20 {
+            let f = k as f32 / 20.0;
+            let major = k % 2 == 0;
+            let c = if major { Rgb([255, 255, 255]) } else { Rgb([150, 150, 150]) };
+            let (x, y) = (f * w, f * h);
+            if major {
+                // Dark halo so lines read on any background.
+                draw_line_segment_mut(&mut img, (x + 1.0, 0.0), (x + 1.0, h), Rgb([0, 0, 0]));
+                draw_line_segment_mut(&mut img, (0.0, y + 1.0), (w, y + 1.0), Rgb([0, 0, 0]));
+                draw_line_segment_mut(&mut img, (x, 0.0), (x, h), c);
+                draw_line_segment_mut(&mut img, (0.0, y), (w, y), c);
+                label(&mut img, x + 2.0, 2.0, &format!("x{:.1}", f), Rgb([255, 230, 0]));
+                label(&mut img, 2.0, y + 2.0, &format!("y{:.1}", f), Rgb([0, 230, 255]));
+            } else {
+                draw_line_segment_mut(&mut img, (x, 0.0), (x, h * 0.02), c);
+                draw_line_segment_mut(&mut img, (0.0, y), (w * 0.012, y), c);
+            }
+        }
+    }
+    let palette = [Rgb([255, 140, 0]), Rgb([0, 200, 255]), Rgb([120, 255, 80]), Rgb([255, 60, 160])];
+    for (n, (id, r)) in regions.iter().enumerate() {
+        let c = palette[n % palette.len()];
+        let (x0, y0) = ((r.x as f32 * w) as i32, (r.y as f32 * h) as i32);
+        let (bw, bh) = (((r.w as f32) * w).max(2.0) as u32, ((r.h as f32) * h).max(2.0) as u32);
+        for d in 0..3 {
+            let s = PxRect::at(x0 + d, y0 + d).of_size(bw.saturating_sub(2 * d as u32).max(1), bh.saturating_sub(2 * d as u32).max(1));
+            draw_hollow_rect_mut(&mut img, s, c);
+        }
+        label(
+            &mut img,
+            x0 as f32 + 6.0,
+            y0 as f32 + 6.0,
+            &format!("{id}: x{:.3} y{:.3} w{:.3} h{:.3}", r.x, r.y, r.w, r.h),
+            c,
+        );
+    }
+    img.save(output).map_err(|e| err(format!("cannot write annotated frame: {e}")))?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------------------------
