@@ -173,7 +173,9 @@ def _models_fetch(params, progress):
     from . import transcribe
 
     out: Dict[str, Any] = {"fetched": []}
-    if "whisper" in params or not (params.get("yunet") or params.get("yamnet") or params.get("diarization")):
+    if "whisper" in params or not (
+        params.get("yunet") or params.get("yamnet") or params.get("diarization") or params.get("ocr_devanagari")
+    ):
         out["fetched"] = transcribe.fetch_models(params, progress)["fetched"]
     if params.get("yunet"):
         from . import faces
@@ -190,6 +192,11 @@ def _models_fetch(params, progress):
 
         out["diarization_dir"] = speakers.fetch_models(progress)
         out["fetched"].append("diarization")
+    if params.get("ocr_devanagari"):
+        from . import ocr
+
+        out["ocr_devanagari_path"] = ocr.fetch_devanagari(progress)
+        out["fetched"].append("ocr_devanagari")
     return out
 
 
@@ -203,6 +210,12 @@ def _ocr_run(params, progress):
     from . import ocr
 
     return ocr.run(params, progress)
+
+
+def _overlay_find_box(params, progress):
+    from . import overlay
+
+    return overlay.find_box(params, progress)
 
 
 def _audio_events(params, progress):
@@ -233,6 +246,7 @@ def default_methods() -> Dict[str, Handler]:
         "models.fetch": _models_fetch,
         "faces.track": _faces_track,
         "ocr.run": _ocr_run,
+        "overlay.find_box": _overlay_find_box,
         "audio.events": _audio_events,
         "speakers.diarize": _speakers_diarize,
         "speakers.active": _speakers_active,
