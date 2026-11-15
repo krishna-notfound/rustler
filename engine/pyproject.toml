@@ -35,3 +35,9 @@ pythonpath = ["."]
 dev = [
     "pytest>=9.2.0",
 ]
+
+[tool.uv]
+# rapidocr depends on the GUI `opencv-python` wheel, which would install a second `cv2` over the headless one.
+# On Linux the GUI build needs libGL.so.1 / libglib at import, which minimal server images lack; keep only
+# `opencv-python-headless` there. Other platforms are unchanged.
+override-dependencies = ["opencv-python>=4.5.1.48; sys_platform != 'linux'"]
