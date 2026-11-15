@@ -271,10 +271,32 @@ def find_rect(frames: List[Any], near: Dict[str, float]) -> Dict[str, Any]:
     frac = ok_frames / len(frame_pre)
     confidence = max(0.0, min(1.0, 0.5 * (sum(sup) / 4) + 0.5 * frac))
 
-    x0 = (rx0 + L) / W
-    x1 = min(1.0, (rx0 + R + 1) / W)
-    y0 = (ry0 + T) / H
-    y1 = min(1.0, (ry0 + B + 1) / H)
+    # Sub-edge placement: the Canny line can sit on either side of the true colour step, so put each
+    # real border on the strongest step between neighbouring pixels along its whole length.
+    wins = [f[ry0:ry1, rx0:rx1].astype(np.int16) for f in frames]
+
+    def step(axis: int, k: int, lo: int, hi: int) -> float:
+        """Mean colour step between line k and k+1 (axis 1: columns, 0: rows) over span lo..hi."""
+        tot = 0.0
+        for w_ in wins:
+            if axis == 1:
+                tot += float(np.abs(w_[lo:hi, k + 1] - w_[lo:hi, k]).sum(axis=-1).mean())
+            else:
+                tot += float(np.abs(w_[k + 1, lo:hi] - w_[k, lo:hi]).sum(axis=-1).mean())
+        return tot
+
+    def boundary(axis: int, pos: int, lo: int, hi: int, limit: int) -> int:
+        ks = [k for k in range(pos - 2, pos + 2) if 0 <= k < limit - 1]
+        return max(ks, key=lambda k: step(axis, k, lo, hi)) + 1 if ks else pos
+
+    xl = L if virt[0] else boundary(1, L, T, B + 1, ww)
+    xr = R + 1 if virt[1] else boundary(1, R, T, B + 1, ww)
+    yt = T if virt[2] else boundary(0, T, L, R + 1, wh)
+    yb = B + 1 if virt[3] else boundary(0, B, L, R + 1, wh)
+    x0 = (rx0 + xl) / W
+    x1 = min(1.0, (rx0 + xr) / W)
+    y0 = (ry0 + yt) / H
+    y1 = min(1.0, (ry0 + yb) / H)
     if virt[0]:
         x0 = 0.0
     if virt[1]:
