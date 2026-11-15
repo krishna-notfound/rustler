@@ -54,11 +54,6 @@ fn main() {
 }
 
 fn fail(msg: &str) -> ! {
-    eprintln!("rustler-desktop: {msg}");
-    rfd::MessageDialog::new()
-        .set_level(rfd::MessageLevel::Error)
-        .set_title("Rustler")
-        .set_description(msg)
-        .show();
+    rustler_desktop::error_dialog(msg);
     std::process::exit(10)
 }
