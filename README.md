@@ -17,10 +17,10 @@ Prebuilt binaries (Windows x64 zip with CLI + desktop window, Linux x86_64 tar.g
 private repo. One-file installers verify SHA256, install into `~/.rustler/app` without admin/root, add `rustler` to the
 user PATH, give Claude Code the skill and run `rustler setup run`:
 ```powershell
-gh api repos/krishna-notfound/rustler/contents/scripts/install.ps1 -H "Accept: application/vnd.github.raw" > $env:TEMP\rustler-install.ps1; powershell -ExecutionPolicy Bypass -File $env:TEMP\rustler-install.ps1
+gh api repos/krishna-notfound/rustler/contents/scripts/install.ps1?ref=release/v0.1.0 -H "Accept: application/vnd.github.raw" > $env:TEMP\rustler-install.ps1; powershell -ExecutionPolicy Bypass -File $env:TEMP\rustler-install.ps1
 ```
 ```sh
-gh api repos/krishna-notfound/rustler/contents/scripts/install.sh -H "Accept: application/vnd.github.raw" | bash
+gh api repos/krishna-notfound/rustler/contents/scripts/install.sh?ref=release/v0.1.0 -H "Accept: application/vnd.github.raw" | bash
 ```
 Needs `gh auth login` or `RUSTLER_TOKEN`/`GITHUB_TOKEN` (private repo). Details, flags, manual download: [`docs/install.md`](docs/install.md).
 Music is bring-your-own (`rustler asset add`); an optional CC0 starter pack: `rustler setup run --music-pack`.

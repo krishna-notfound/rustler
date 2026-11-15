@@ -31,7 +31,7 @@ Without either, the installer stops with `{"step":"auth","status":"error",...}` 
 
 ```powershell
 # with gh logged in: fetch the installer from the private repo and run it
-gh api repos/krishna-notfound/rustler/contents/scripts/install.ps1 -H "Accept: application/vnd.github.raw" > $env:TEMP\rustler-install.ps1
+gh api repos/krishna-notfound/rustler/contents/scripts/install.ps1?ref=release/v0.1.0 -H "Accept: application/vnd.github.raw" > $env:TEMP\rustler-install.ps1
 powershell -ExecutionPolicy Bypass -File $env:TEMP\rustler-install.ps1
 # or, from a checkout of the repo:  powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 ```
@@ -46,10 +46,10 @@ Installs into `%USERPROFILE%\.rustler\app` (override `RUSTLER_INSTALL_DIR`), add
 
 ```sh
 # with gh logged in
-gh api repos/krishna-notfound/rustler/contents/scripts/install.sh -H "Accept: application/vnd.github.raw" | bash
+gh api repos/krishna-notfound/rustler/contents/scripts/install.sh?ref=release/v0.1.0 -H "Accept: application/vnd.github.raw" | bash
 # with a token instead of gh
 curl -fsSL -H "Authorization: Bearer $RUSTLER_TOKEN" -H "Accept: application/vnd.github.raw" \
-  https://api.github.com/repos/krishna-notfound/rustler/contents/scripts/install.sh | bash
+  https://api.github.com/repos/krishna-notfound/rustler/contents/scripts/install.sh?ref=release/v0.1.0 | bash
 # pass flags:  ... | bash -s -- --no-setup --version v0.1.0
 ```
 
@@ -58,12 +58,24 @@ Installs into `~/.rustler/app` (override `RUSTLER_INSTALL_DIR` / `--dir`), symli
 `~/.claude/skills/rustler` if `~/.claude` exists (override `RUSTLER_CLAUDE_DIR`). Needs `curl` (or `gh`), `tar`,
 `sha256sum`; no compiler.
 
+Until the `release/v0.1.0` branch is merged to the default branch (`master`), the installers are read from that
+branch (`?ref=release/v0.1.0` above); after the merge drop the `?ref=...` part.
+
 ## What the installers print
 
 One JSON-ish line per step on stdout, for agents to parse:
 `{"step":"auth|release|download|verify|install|path|skill|version|setup|done","status":"ok|skipped|hint|start|error","detail":"..."}`.
 Exit code is non-zero after an `error` line. Re-running is safe (idempotent): files managed by the installer are
 replaced, nothing else in the install folder is touched, PATH is not duplicated.
+
+## Verified
+
+Windows: `install.ps1 --no-setup` into a temp folder with `RUSTLER_INSTALL_DIR`, once through `gh` and once with
+`RUSTLER_TOKEN`: download, sha256, install, skill copy, `rustler.exe --version`, `commands list` = 118, second run
+idempotent. Linux (WSL Ubuntu): `install.sh --no-setup` with `RUSTLER_TOKEN` into `/tmp`: same checks, 118 commands,
+second run idempotent, no-auth run exits 1 with the auth hint. `RUSTLER_PATH_SCOPE=Process` was used for the PATH step
+in the Windows test (so the real user PATH was not touched); the default `User` scope uses
+`[Environment]::SetEnvironmentVariable` and was not exercised. `rustler setup run` through the installer was not run (`--no-setup`).
 
 ## After install
 
