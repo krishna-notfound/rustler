@@ -29,6 +29,9 @@ use wry::{NewWindowResponse, PageLoadEvent, WebContext, WebView, WebViewBuilder}
 pub const OPEN_ENV: &str = "RUSTLER_DESKTOP_OPEN";
 const RECENT_LIMIT: usize = 10;
 const BASE_TITLE: &str = "Rustler";
+/// Logical height of the title bar + menu bar + taskbar allowance, used to decide whether the
+/// remembered size fits the screen.
+const WINDOW_CHROME: f64 = 110.0;
 
 /// What to open.
 #[derive(Debug, Clone, Default)]
@@ -362,11 +365,32 @@ pub fn run(registry: Registry, opts: DesktopOptions, rt: &tokio::runtime::Handle
 
     let st = WindowState::load(&opts.home);
     let icon = Icon::from_rgba(icon::rgba(64), 64, 64).context("app icon")?;
-    let window = WindowBuilder::new()
+    // A screen too small for the remembered size (title bar and menu included) starts maximized;
+    // otherwise the window is centred on the primary monitor.
+    let mut maximized = st.maximized;
+    let mut position = None;
+    if let Some(m) = event_loop.primary_monitor() {
+        let sf = m.scale_factor();
+        let screen: LogicalSize<f64> = m.size().to_logical(sf);
+        let origin_pt: tao::dpi::LogicalPosition<f64> = m.position().to_logical(sf);
+        if st.width + 16.0 > screen.width || st.height + WINDOW_CHROME > screen.height {
+            maximized = true;
+        } else {
+            position = Some(tao::dpi::LogicalPosition::new(
+                origin_pt.x + (screen.width - st.width) / 2.0,
+                origin_pt.y + ((screen.height - st.height - WINDOW_CHROME) / 2.0).max(0.0),
+            ));
+        }
+    }
+    let mut wb = WindowBuilder::new()
         .with_title(window_title(opts.project.as_deref()))
         .with_inner_size(LogicalSize::new(st.width, st.height))
         .with_min_inner_size(LogicalSize::new(state::MIN_SIZE.0, state::MIN_SIZE.1))
-        .with_maximized(st.maximized)
+        .with_maximized(maximized);
+    if let Some(p) = position {
+        wb = wb.with_position(p);
+    }
+    let window = wb
         .with_window_icon(Some(icon))
         .build(&event_loop)
         .context("create the window")?;

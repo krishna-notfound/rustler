@@ -643,10 +643,17 @@ async fn execute(g: &Globals, rest: Vec<String>, reg: &Registry, opts: &CliOptio
     // ---- reserved built-ins -------------------------------------------------------------
     match group.as_str() {
         "help" => return Reply::Env(help_envelope(&specs)),
-        // `mcp serve` and `gui` run as servers from the binary (main.rs); here we only answer
+        // `mcp serve`, `gui` and `desktop` run from the binary (main.rs); here we only answer
         // `--help` (or a mistyped action) for them.
-        "mcp" | "gui" => {
-            let info = if group == "mcp" {
+        "mcp" | "gui" | "desktop" => {
+            let info = if group == "desktop" {
+                json!({
+                    "command": "rustler desktop",
+                    "summary": "Open the editor in a native desktop window (system webview hosting the same GUI, served in-process on 127.0.0.1 with a token). Also available as the `rustler-desktop` binary.",
+                    "flags": {"--project <dir>": "project to open", "--view <route>": "GUI route to show first, e.g. editor/<clip_id>"},
+                    "env": {"RUSTLER_DESKTOP_OPEN": "project folder to open after the page loads (same path as File > Open project...)"}
+                })
+            } else if group == "mcp" {
                 json!({
                     "command": "rustler mcp serve",
                     "summary": "Run the MCP server on stdio: every registry command as a tool, knowledge guides as resources, workflows as prompts.",

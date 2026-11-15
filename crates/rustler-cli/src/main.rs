@@ -28,6 +28,12 @@ fn main() {
         }
     };
 
+    // `rustler desktop`: the native window owns the main thread (event loop), so it runs outside
+    // `block_on`; its GUI server runs on this runtime's worker threads.
+    if is_desktop_builtin(&args) {
+        std::process::exit(run_desktop(&args, &runtime));
+    }
+
     let cancel = CancellationToken::new();
     let (out, code) = runtime.block_on(async {
         let c = cancel.clone();
@@ -64,9 +70,38 @@ fn is_server_builtin(args: &[String]) -> bool {
     (words.first() == Some(&"mcp") && words.get(1) == Some(&"serve")) || words.first() == Some(&"gui")
 }
 
+/// `rustler desktop [--project <dir>] [--view <route>]` (not with `--help`).
+fn is_desktop_builtin(args: &[String]) -> bool {
+    !args.iter().any(|a| matches!(a.as_str(), "--help" | "-h" | "--version" | "-V"))
+        && positional_words(args).first() == Some(&"desktop")
+}
+
+/// Runs the desktop app in-process over the same registry; returns the exit code.
+fn run_desktop(args: &[String], runtime: &tokio::runtime::Runtime) -> i32 {
+    let mut reg = Registry::new();
+    rustler_commands::register_all(&mut reg);
+    let opts = rustler_desktop::DesktopOptions {
+        project: resolve_project(args),
+        home: resolve_home(),
+        view: flag_value(args, "--view"),
+        open_after_load: rustler_desktop::open_env(),
+    };
+    match rustler_desktop::run(reg, opts, runtime.handle()) {
+        Ok(code) => code,
+        Err(e) => {
+            let env = Envelope::err(
+                RustlerError::new(ErrorCode::Internal, "desktop", format!("{e:#}"))
+                    .hint("the desktop app needs the WebView2 runtime (Windows) or WebKitGTK (Linux); `rustler gui` serves the same editor in a browser"),
+            );
+            output::print_stdout(&env.to_json());
+            10
+        }
+    }
+}
+
 /// Non-flag words, skipping the values of global flags that take one (`--project <dir>` etc.).
 fn positional_words(args: &[String]) -> Vec<&str> {
-    const VALUE_FLAGS: &[&str] = &["--project", "--port", "--actor", "--max-seconds", "--input-json"];
+    const VALUE_FLAGS: &[&str] = &["--project", "--port", "--actor", "--max-seconds", "--input-json", "--view"];
     let mut out = Vec::new();
     let mut skip = false;
     for a in args {
