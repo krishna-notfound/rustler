@@ -22,6 +22,7 @@ pub mod setup_cmds;
 pub mod source_cmds;
 pub mod speaker_cmds;
 pub mod transcript_cmds;
+pub mod transcript_import_cmds;
 pub mod understand_cmds;
 pub mod variant_cmds;
 
@@ -35,6 +36,7 @@ pub fn register_all(reg: &mut Registry) {
     analyze_cmds::register(reg);
     understand_cmds::register(reg);
     transcript_cmds::register(reg);
+    transcript_import_cmds::register(reg);
     see_cmds::register(reg);
     clip_cmds::register(reg);
     guide_cmds::register(reg);
