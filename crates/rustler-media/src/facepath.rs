@@ -52,6 +52,11 @@ pub struct SmoothParams {
     pub dead_zone: f64,
     /// Ceiling on crop travel in frame-widths per second.
     pub max_speed: f64,
+    /// Emit a hold key (the previous sample's position) before every move that follows a still
+    /// stretch. The render interpolates linearly between keys, so without it the crop drifted
+    /// slowly across the whole still stretch toward the next position instead of holding. Off by
+    /// default (the stepped path of a slow pan is then a smooth ramp); the speaker crop turns it on.
+    pub hold_keys: bool,
 }
 
 impl Default for SmoothParams {
@@ -62,6 +67,7 @@ impl Default for SmoothParams {
             beta: 0.02,
             dead_zone: 0.02,
             max_speed: 0.25,
+            hold_keys: false,
         }
     }
 }
@@ -90,12 +96,22 @@ pub fn crop_keys(samples: &[FaceSample], crop_w_norm: f64, params: &SmoothParams
     let crop_w = crop_w_norm.clamp(0.0, 1.0);
     let max_left = (1.0 - crop_w).max(0.0);
     let mut keys: Vec<CropKey> = Vec::new();
+    let mut prev: Option<CropKey> = None; // the previous sample's position
     for (&t, &centre) in times.iter().zip(&smoothed) {
         let x = (centre - crop_w / 2.0).clamp(0.0, max_left);
         match keys.last() {
             Some(last) if (x - last.x).abs() <= KEY_EPSILON => {}
-            _ => keys.push(CropKey { t, x }),
+            Some(last) => {
+                if params.hold_keys {
+                    if let Some(p) = prev.filter(|p| p.t > last.t) {
+                        keys.push(CropKey { t: p.t, x: last.x });
+                    }
+                }
+                keys.push(CropKey { t, x });
+            }
+            None => keys.push(CropKey { t, x }),
         }
+        prev = Some(CropKey { t, x });
     }
     keys
 }

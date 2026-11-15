@@ -243,11 +243,14 @@ def diarize_sherpa(
 
 EMBED_WINDOW = 1.5
 EMBED_HOP = 0.5
-#: Average-linkage cosine distance above which two speaker clusters are not merged (auto speaker count).
-MERGE_DISTANCE = 0.30
+#: Auto speaker count: k clusters are believed when every pair is at least this far apart (mean cosine
+#: distance between their windows) and at least MIN_SPLIT_RATIO times the spread inside any cluster.
+MIN_SPLIT_HEIGHT = 0.33
+MIN_SPLIT_RATIO = 1.3
+MAX_AUTO_SPEAKERS = 8
 #: A speaker needs at least this share of the embedded windows and this many seconds of speech.
-MIN_SPEAKER_SHARE = 0.04
-MIN_SPEAKER_SECONDS = 4.0
+MIN_SPEAKER_SHARE = 0.08
+MIN_SPEAKER_SECONDS = 3.0
 #: Cost (in cosine-similarity units) of switching speaker between two adjacent windows.
 SWITCH_PENALTY = 0.25
 #: Switch boundaries snap to the quietest moment within this many seconds.
@@ -305,12 +308,14 @@ def _embed(x, wins: List[Tuple[float, float, int]], emb: Path, progress: Callabl
     return np.stack(out)
 
 
-def cluster_embeddings(E, k: Optional[int], lo: Optional[int] = None, hi: Optional[int] = None, hop: float = EMBED_HOP):
+def cluster_embeddings(E, k: Optional[int], lo: Optional[int] = None, hi: Optional[int] = None, mass=None):
     """Average-linkage agglomerative clustering of unit vectors on cosine distance.
 
-    ``k`` fixes the cluster count. Otherwise clusters merge until the linkage distance exceeds
-    :data:`MERGE_DISTANCE`, clusters holding too little speech are folded into the nearest one,
-    and the ``lo``/``hi`` bounds are applied. Returns integer labels (0 = first window's cluster).
+    ``k`` fixes the cluster count. Otherwise the count is the largest one whose clusters are clearly apart
+    (:data:`MIN_SPLIT_HEIGHT`, :data:`MIN_SPLIT_RATIO`), clusters holding too little speech are folded into the nearest one,
+    and the ``lo``/``hi`` bounds are applied. ``mass`` is the speech time (s) each window stands
+    for (windows overlap, so this is not the window length); default 0.5 s. Returns integer labels
+    (0 = first window's cluster).
     """
     import numpy as np
 
@@ -342,12 +347,13 @@ def cluster_embeddings(E, k: Optional[int], lo: Optional[int] = None, hi: Option
             g[i].extend(g.pop(j))
         return g
 
-    min_windows = max(2, int(MIN_SPEAKER_SHARE * n), int(MIN_SPEAKER_SECONDS / hop))
+    w = np.full(n, EMBED_HOP) if mass is None else np.asarray(mass, dtype=float)
+    min_mass = max(MIN_SPEAKER_SECONDS, MIN_SPEAKER_SHARE * float(w.sum()))
 
     def fold(g: Dict[int, List[int]]) -> Dict[int, List[int]]:
         """Fold clusters with too little speech (applause, laughter, noise) into the nearest one."""
         while len(g) > 1:
-            small = [c for c, m in g.items() if len(m) < min_windows]
+            small = [c for c, m in g.items() if float(w[m].sum()) < min_mass]
             if not small:
                 break
             c = min(small, key=lambda c: len(g[c]))
@@ -358,39 +364,50 @@ def cluster_embeddings(E, k: Optional[int], lo: Optional[int] = None, hi: Option
     def avg(a: List[int], b: List[int]) -> float:
         return float(dist0[np.ix_(a, b)].mean())
 
-    if k:
-        k = max(1, min(k, n))
-        # Smallest cut that leaves k clusters of real speech once the debris is folded away.
-        g = cut(k)
-        for t in range(k, min(n, k + 12) + 1):
+    def forced(kk: int) -> Dict[int, List[int]]:
+        """``kk`` clusters of real speech: the smallest cut that leaves kk clusters with enough
+        speech once the debris (applause, laughter, noise) is folded into its nearest cluster."""
+        g = cut(kk)
+        for t in range(kk, min(n, kk + 12) + 1):
             cand = cut(t)
-            if sum(1 for m in cand.values() if len(m) >= min_windows) >= k:
+            if sum(1 for m in cand.values() if float(w[m].sum()) >= min_mass) >= kk:
                 g = cand
                 break
         g = fold(g)
-        while len(g) > k:  # more big clusters than asked: merge the closest pair
+        while len(g) > kk:  # more big clusters than asked: merge the closest pair
             ids = list(g)
             i, j = min(((a, b) for ai, a in enumerate(ids) for b in ids[ai + 1 :]), key=lambda p: avg(g[p[0]], g[p[1]]))
             g[i].extend(g.pop(j))
+        return g
+
+    def within(m: List[int]) -> float:
+        if len(m) < 2:
+            return 0.0
+        sub = dist0[np.ix_(m, m)]
+        return float(sub.sum() / (len(m) * (len(m) - 1)))
+
+    def believable(g: Dict[int, List[int]]) -> bool:
+        ids = list(g)
+        if len(ids) < 2:
+            return True
+        between = min(avg(g[a], g[b]) for ai, a in enumerate(ids) for b in ids[ai + 1 :])
+        return between >= MIN_SPLIT_HEIGHT and between >= MIN_SPLIT_RATIO * max(within(g[a]) for a in ids)
+
+    if k:
+        g = forced(max(1, min(k, n)))
     else:
-        target = 1
-        for idx, (_, _, h) in enumerate(history):
-            if h > MERGE_DISTANCE:
-                target = n - idx
+        # Speaker count: the largest k whose clusters are all clearly apart (average cosine distance
+        # between clusters vs the spread inside them); one speaker's windows also spread out a little.
+        g = forced(1)
+        for kk in range(2, min(MAX_AUTO_SPEAKERS, n) + 1):
+            cand = forced(kk)
+            if len(cand) < kk or not believable(cand):
                 break
-        g = fold(cut(target))
-        want = len(g)
-        if lo and want < lo:
-            want = min(lo, n)
-        if hi and want > hi:
-            want = hi
-        if want < len(g):
-            while len(g) > want:
-                ids = list(g)
-                i, j = min(((a, b) for ai, a in enumerate(ids) for b in ids[ai + 1 :]), key=lambda p: avg(g[p[0]], g[p[1]]))
-                g[i].extend(g.pop(j))
-        elif want > len(g):
-            g = cut(want)
+            g = cand
+        if lo and len(g) < lo:
+            g = forced(min(lo, n))
+        if hi and len(g) > hi:
+            g = forced(hi)
     labels = np.zeros(n, dtype=int)
     for lab, (_, idxs) in enumerate(sorted(g.items(), key=lambda kv: min(kv[1]))):
         labels[idxs] = lab
@@ -430,19 +447,24 @@ def smooth_labels(E, labels, penalty: float = SWITCH_PENALTY):
     return out
 
 
-def window_spans(wins: List[Tuple[float, float, int]], labels) -> List[Tuple[float, float, int]]:
-    """Each window owns the slot between the midpoints to its neighbours' centres; the first and
-    last window of a speech region own that region's edge."""
+def window_slots(wins: List[Tuple[float, float, int]]) -> List[Tuple[float, float]]:
+    """The non-overlapping slot each window owns: from the midpoint to its previous neighbour's
+    centre to the midpoint to the next one's; the first and last window of a speech region own
+    that region's edge. One entry per window (a zero-length slot is possible)."""
     centres = [(a + b) / 2.0 for a, b, _ in wins]
-    out: List[Tuple[float, float, int]] = []
+    out: List[Tuple[float, float]] = []
     for i, (a, b, ri) in enumerate(wins):
         first = i == 0 or wins[i - 1][2] != ri
         last = i + 1 == len(wins) or wins[i + 1][2] != ri
         lo = a if first else (centres[i - 1] + centres[i]) / 2.0
         hi = b if last else (centres[i] + centres[i + 1]) / 2.0
-        if hi > lo:
-            out.append((lo, hi, int(labels[i])))
+        out.append((lo, max(lo, hi)))
     return out
+
+
+def window_spans(wins: List[Tuple[float, float, int]], labels) -> List[Tuple[float, float, int]]:
+    """``(start, end, label)`` per window slot (see :func:`window_slots`), empty slots dropped."""
+    return [(lo, hi, int(labels[i])) for i, (lo, hi) in enumerate(window_slots(wins)) if hi > lo]
 
 
 def merge_runs(spans: List[Tuple[float, float, int]], min_run: float = MIN_RUN_SECONDS) -> List[List[Any]]:
@@ -512,7 +534,8 @@ def resegment(
     if not wins:
         return []
     E = _embed(x, wins, emb, progress)
-    labels = cluster_embeddings(E, num_speakers, min_speakers, max_speakers, hop)
+    mass = [hi - lo for lo, hi in window_slots(wins)]
+    labels = cluster_embeddings(E, num_speakers, min_speakers, max_speakers, mass)
     labels = smooth_labels(E, labels)
     runs = merge_runs(window_spans(wins, labels))
     _, energy = mfcc_frames(x)

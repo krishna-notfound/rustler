@@ -379,3 +379,125 @@ def test_active_mouth_motion_follows_the_speaking_face(tmp_path, portrait, yunet
     for s in out["samples"]:
         for f in s["faces"]:
             assert 0.0 <= f["speak"] <= 1.0 and f["motion"] >= 0.0 and f["score"] >= 0.6
+
+
+# --- windowed re-segmentation (cluster / smooth / merge) -------------------------------------------------
+
+
+def _load_real_embeddings():
+    import json
+
+    import numpy as np
+
+    d = json.loads((Path(__file__).parent / "fixtures" / "vance_window_embeddings.json").read_text())
+    E = np.asarray(d["emb"], dtype=np.float32)
+    E /= np.linalg.norm(E, axis=1, keepdims=True)
+    wins = [(a, b, 0) for a, b, _ in d["windows"]]
+    return E, wins, d["labels"]
+
+
+def _purity(labels, truth):
+    """Share of labelled windows whose cluster maps to their true speaker (best 2-way mapping)."""
+    import numpy as np
+
+    idx = [i for i, t in enumerate(truth) if t in ("H", "V")]
+    lab = np.asarray(labels)[idx]
+    tr = np.asarray([truth[i] == "H" for i in idx])
+    return max(float((lab == 0)[tr].sum() + (lab != 0)[~tr].sum()), float((lab != 0)[tr].sum() + (lab == 0)[~tr].sum())) / len(idx)
+
+
+def test_real_embeddings_two_similar_voices_with_applause_debris():
+    """Real 95 s excerpt: two male voices in a reverberant hall plus applause/noise windows.
+    sherpa's own clustering merged them (one speaker owned 96 % of the time); forcing two
+    clusters on the raw dendrogram split off the debris instead of the second voice."""
+    E, wins, truth = _load_real_embeddings()
+    labels = speakers.cluster_embeddings(E, 2)
+    assert sorted(set(labels.tolist())) == [0, 1]
+    assert _purity(labels, truth) >= 0.85
+    smoothed = speakers.smooth_labels(E, labels)
+    assert _purity(smoothed, truth) >= 0.9
+    spans = speakers.window_spans(wins, smoothed)
+    runs = speakers.merge_runs(spans)
+    assert len(runs) <= 9, runs  # a handful of turns, not a flickering label per window
+    assert all(r[1] - r[0] >= 1.0 or len(runs) == 1 for r in runs)
+
+
+def test_cluster_embeddings_folds_debris_and_honours_bounds():
+    import numpy as np
+
+    rng = np.random.default_rng(3)
+
+    def blob(center, n):
+        v = center + 0.15 * rng.standard_normal((n, len(center)))
+        return v / np.linalg.norm(v, axis=1, keepdims=True)
+
+    a = blob(np.array([1.0, 0, 0, 0]), 40)
+    b = blob(np.array([0, 1.0, 0, 0]), 30)
+    junk = blob(np.array([0, 0, 1.0, 0]), 3)
+    E = np.concatenate([a, b, junk])
+    labels = speakers.cluster_embeddings(E, None)
+    assert len(set(labels.tolist())) == 2  # the 3 junk windows are folded into a real cluster
+    assert len(set(speakers.cluster_embeddings(E, 2).tolist())) == 2
+    assert len(set(speakers.cluster_embeddings(E, None, hi=1).tolist())) == 1
+    assert len(set(speakers.cluster_embeddings(a, None).tolist())) == 1  # one voice stays one speaker
+
+
+def test_merge_runs_absorbs_short_backchannels_and_keeps_real_turns():
+    spans = [(0.0, 5.0, 0), (5.0, 5.4, 1), (5.4, 9.0, 0), (9.0, 14.0, 1)]
+    runs = speakers.merge_runs(spans, min_run=1.0)
+    assert [(r[0], r[1], r[2]) for r in runs] == [(0.0, 9.0, 0), (9.0, 14.0, 1)]
+
+
+def test_embedding_windows_cover_regions_and_skip_blips():
+    wins = speakers.embedding_windows([(0.0, 0.3), (1.0, 1.9), (3.0, 7.0)])
+    assert [w for w in wins if w[2] == 0] == []  # 0.3 s: skipped
+    assert [(a, b) for a, b, r in wins if r == 1] == [(1.0, 1.9)]  # shorter than a window: one window
+    long = [(a, b) for a, b, r in wins if r == 2]
+    assert long[0][0] == 3.0 and long[-1][1] == 7.0 and all(abs((b - a) - 1.5) < 1e-9 for a, b in long)
+
+
+# --- face identity across cuts ----------------------------------------------------------------------------
+
+
+def _unit(v):
+    import numpy as np
+
+    v = np.asarray(v, dtype=np.float32)
+    return v / np.linalg.norm(v)
+
+
+def test_persons_are_linked_across_a_cut_and_wide_shot_faces_stay_apart():
+    import numpy as np
+
+    host, guest = _unit([1, 0.1, 0, 0]), _unit([0, 0.1, 1, 0])
+    rng = np.random.default_rng(1)
+
+    def emb(p):
+        return _unit(p + 0.05 * rng.standard_normal(4))
+
+    samples = []
+    for i in range(30):  # wide shot: host left, guest right
+        samples.append({"t": i * 0.2, "faces": [face(0.1, 0.0, w=0.05) | {"_emb": emb(host)}, face(0.7, 0.0, w=0.05) | {"_emb": emb(guest)}]})
+    for i in range(30, 50):  # close-up of the guest, centred and big
+        samples.append({"t": i * 0.2, "faces": [face(0.4, 0.0, w=0.12) | {"_emb": emb(guest)}]})
+    for i in range(50, 70):  # back to the wide shot
+        samples.append({"t": i * 0.2, "faces": [face(0.1, 0.0, w=0.05) | {"_emb": emb(host)}, face(0.7, 0.0, w=0.05) | {"_emb": emb(guest)}]})
+    speakers.assign_tracks(samples)
+    assert len({f["track"] for s in samples for f in s["faces"]}) >= 3  # the close-up is a track of its own
+    assert speakers.link_persons(samples) == 2
+    wide_guest = {f["id"] for s in samples[:30] for f in s["faces"] if f["x"] > 0.5}
+    close_up = {f["id"] for s in samples[30:50] for f in s["faces"]}
+    wide_host = {f["id"] for s in samples[:30] for f in s["faces"] if f["x"] < 0.5}
+    assert wide_guest == close_up and wide_host.isdisjoint(close_up)
+    tracks = speakers.normalize_motion(samples)
+    assert [t["id"] for t in tracks] == [0, 1]
+    assert max(t["shots"] for t in tracks) >= 2
+
+
+def test_two_people_in_one_frame_are_never_merged_even_if_they_look_alike():
+    twin = [1.0, 0.0, 0.0, 0.0]
+    samples = [
+        {"t": i * 0.2, "faces": [face(0.1, 0.0) | {"_emb": _unit(twin)}, face(0.7, 0.0) | {"_emb": _unit(twin)}]} for i in range(10)
+    ]
+    speakers.assign_tracks(samples)
+    assert speakers.link_persons(samples) == 2

@@ -763,7 +763,7 @@ pub fn speaker_face_samples(samples: &[ActiveSample], choices: &[TurnChoice]) ->
 /// Smoothing for speaker-following crops: quicker than `crop.track_face` so a change of speaker
 /// is a short pan, not a drift.
 pub fn speaker_smooth() -> SmoothParams {
-    SmoothParams { median_window: 3, min_cutoff: 2.0, beta: 0.05, dead_zone: 0.02, max_speed: 1.6 }
+    SmoothParams { median_window: 3, min_cutoff: 2.0, beta: 0.05, dead_zone: 0.02, max_speed: 1.6, hold_keys: true }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1512,5 +1512,61 @@ mod tests {
         assert!(host_turn.face_x.unwrap() < 0.35, "the host sits on the left: {host_turn:?}");
         let guest_turn = c.iter().find(|c| c.speaker == "S1" && c.end - c.start > 10.0).unwrap();
         assert_eq!(guest_turn.face_id, Some(guest));
+    }
+
+    /// Share of 1-second samples (inside `truth` spans: start, end, person id) where the person's
+    /// face centre is inside the crop (interpolated like the renderer does).
+    fn crop_hit_rate(samples: &[ActiveSample], keys: &[rustler_media::facepath::CropKey], crop_w: f64, truth: &[(f64, f64, u32)]) -> f64 {
+        let at = |t: f64| {
+            let k = keys.partition_point(|k| k.t <= t);
+            if k == 0 {
+                keys[0].x
+            } else if k == keys.len() {
+                keys[k - 1].x
+            } else {
+                let (a, b) = (keys[k - 1], keys[k]);
+                a.x + (b.x - a.x) * (t - a.t) / (b.t - a.t)
+            }
+        };
+        let face_cx = |id: u32, t: f64| {
+            samples
+                .iter()
+                .filter(|s| (s.t - t).abs() <= 1.0)
+                .min_by(|a, b| (a.t - t).abs().total_cmp(&(b.t - t).abs()))
+                .and_then(|s| s.faces.iter().find(|f| f.id == id))
+                .map(|f| f.cx())
+        };
+        let (mut hit, mut n) = (0, 0);
+        for &(a, b, id) in truth {
+            let mut t = a + 0.5;
+            while t < b {
+                n += 1;
+                if let Some(cx) = face_cx(id, t) {
+                    let x = at(t);
+                    if cx >= x + 0.02 && cx <= x + crop_w - 0.02 {
+                        hit += 1;
+                    }
+                }
+                t += 1.0;
+            }
+        }
+        hit as f64 / n as f64
+    }
+
+    #[test]
+    fn real_footage_the_crop_sits_on_the_talking_person() {
+        let (samples, turns) = real_fixture();
+        let choices = choose_faces(&samples, &turns);
+        let keys = crop_keys(&speaker_face_samples(&samples, &choices), 0.3164, &speaker_smooth());
+        let owner = owner_map(&samples, &turns);
+        let (guest, host) = (owner["S1"].0, owner["S2"].0);
+        // Truth from the transcript and the frames: host speaks 17.2-39.8 s, guest 8.3-16.5 s and 41-95 s.
+        let rate = crop_hit_rate(&samples, &keys, 0.3164, &[(8.3, 16.5, guest), (17.2, 39.8, host), (41.0, 95.0, guest)]);
+        assert!(rate >= 0.9, "crop contained the speaker in only {:.0}% of samples: {keys:?}", rate * 100.0);
+        // Without the hold keys the crop drifts for seconds before each move and the rate collapses.
+        let drifting = SmoothParams { hold_keys: false, ..speaker_smooth() };
+        let keys = crop_keys(&speaker_face_samples(&samples, &choices), 0.3164, &drifting);
+        let bad = crop_hit_rate(&samples, &keys, 0.3164, &[(8.3, 16.5, guest), (17.2, 39.8, host), (41.0, 95.0, guest)]);
+        assert!(bad < rate, "{bad} vs {rate}");
     }
 }
