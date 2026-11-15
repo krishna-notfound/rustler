@@ -303,3 +303,10 @@ Demo outputs: `%TEMP%\rustler-e2e\exports\jfk-hook.mp4`, `%TEMP%\rustler-stream\
   host's one-line intro attributed to the guest); faces < 4 % of the frame width are small in the crop; the auto speaker count needs clearly different voices.
 - Tests: `cargo test -p rustler-commands --lib speaker` (15, incl. 3 fixture tests from the real runs), `cargo test -p rustler-media --test facepath`
   (14), engine `pytest` (122 passed, 1 skipped).
+- **YouTube speed fix** (user found it slow): yt-dlp now spends ~3 min per YouTube lookup solving a JS
+  challenge (Deno), measured 191–398 s per call; network itself is fine (~0.74 MB/s, YouTube page 1.4 s).
+  Fix: one cached lookup per video (4 h) shared by `source info`, `fetch-transcript` and
+  `import --sections` via `--load-info-json`. Measured: fetch-transcript 398 s → 10.6 s, section import
+  235 s → 15.8 s, repeat info 0.1 s; YouTube part of a flow ~14 min → ~3.7 min.
+- New `transcript import <src|url> --file …` (VTT/SRT/json3/words/lines): agents bring transcripts from
+  their own tools; 0.24 s; section time shift verified on the TED section. Registry: 119 commands.
