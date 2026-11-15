@@ -6,7 +6,7 @@
 //! removing pauses, and re-rendering. It never touches creative choices (hooks, layouts,
 //! cuts, music). Steps run through the same registry commands an agent would call.
 
-use crate::qc_cmds::{execute_qc, pick_render};
+use crate::qc_cmds::{execute_qc_with, pick_render};
 use rustler_core::{ClipId, ErrorCode, Event, ProjectStore, QcStatus, RenderId, RenderRecord, RustlerError};
 use rustler_media::qc::QcView;
 use rustler_registry::{Annotations, Ctx, Example, Registry, typed};
@@ -195,13 +195,14 @@ async fn suggest_inner(
     store: &ProjectStore,
     clip_id: &ClipId,
     render_id: Option<&RenderId>,
+    faces: bool,
 ) -> rustler_core::Result<(RenderRecord, QcView, bool, Vec<(Suggestion, Vec<Op>)>)> {
     let clip = store.load_clip(clip_id)?;
     let render = pick_render(&clip, render_id)?;
     let saved = render.qc.as_ref().and_then(|p| store.read_json::<QcView>(p).ok());
     let (v, ran) = match saved {
         Some(v) => (v, false),
-        None => (execute_qc(ctx, store, clip, &render, !ctx.dry_run).await?.0, true),
+        None => (execute_qc_with(ctx, store, clip, &render, !ctx.dry_run, faces).await?.0, true),
     };
     let s = suggest_from_report(clip_id, &v);
     Ok((render, v, ran, s))
@@ -212,6 +213,10 @@ pub struct FixSuggestInput {
     pub clip_id: ClipId,
     /// Render to look at; default the latest.
     pub render_id: Option<RenderId>,
+    /// When the render has no QC report yet, run QC with the engine face checks too (they decide
+    /// `caption_over_face` suggestions). A saved report is used as it is: run `qc run --faces` first.
+    #[serde(default)]
+    pub faces: bool,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -229,7 +234,7 @@ pub struct FixSuggestOutput {
 
 async fn fix_suggest(ctx: Ctx, input: FixSuggestInput) -> rustler_core::Result<FixSuggestOutput> {
     let store = ctx.store()?;
-    let (render, v, ran_qc, s) = suggest_inner(&ctx, &store, &input.clip_id, input.render_id.as_ref()).await?;
+    let (render, v, ran_qc, s) = suggest_inner(&ctx, &store, &input.clip_id, input.render_id.as_ref(), input.faces).await?;
     let suggestions: Vec<Suggestion> = s.into_iter().map(|(s, _)| s).collect();
     let mut next = Vec::new();
     if suggestions.iter().any(|s| s.auto_safe) {
@@ -270,6 +275,9 @@ pub struct FixApplyInput {
     /// Re-render and re-run QC after the changes (default true).
     #[serde(default = "yes")]
     pub rerender: bool,
+    /// Run the engine face checks when QC runs (needed to find/verify `caption_over_face`; starts the engine).
+    #[serde(default)]
+    pub faces: bool,
 }
 
 fn yes() -> bool {
@@ -332,7 +340,7 @@ fn fail_with(applied: &[AppliedStep], step: &str, e: RustlerError) -> RustlerErr
 
 async fn fix_apply(ctx: Ctx, input: FixApplyInput) -> rustler_core::Result<FixApplyOutput> {
     let store = ctx.store()?;
-    let (render, _view, _ran, all) = suggest_inner(&ctx, &store, &input.clip_id, input.render_id.as_ref()).await?;
+    let (render, _view, _ran, all) = suggest_inner(&ctx, &store, &input.clip_id, input.render_id.as_ref(), input.faces).await?;
     let before = store.load_clip(&input.clip_id)?;
 
     // choose suggestions
@@ -442,7 +450,7 @@ async fn fix_apply(ctx: Ctx, input: FixApplyInput) -> rustler_core::Result<FixAp
             .ok_or_else(|| RustlerError::new(ErrorCode::Internal, STAGE, "render.run returned no render_id"))?;
         applied.push(AppliedStep { command, cli, change: format!("new render {new_id}") });
         reg
-            .dispatch("qc.run", json!({ "clip_id": input.clip_id, "render_id": new_id, "allow_fail": true }), ctx.clone())
+            .dispatch("qc.run", json!({ "clip_id": input.clip_id, "render_id": new_id, "allow_fail": true, "faces": input.faces }), ctx.clone())
             .await
             .map_err(|e| fail_with(&applied, "rustler qc run --allow-fail", e))?;
         applied.push(AppliedStep {
@@ -450,7 +458,7 @@ async fn fix_apply(ctx: Ctx, input: FixApplyInput) -> rustler_core::Result<FixAp
             cli: format!("rustler qc run {cid} --allow-fail"),
             change: "re-checked the new render".into(),
         });
-        let (_, v, _, rest) = suggest_inner(&ctx, &store, &input.clip_id, Some(&new_id)).await?;
+        let (_, v, _, rest) = suggest_inner(&ctx, &store, &input.clip_id, Some(&new_id), input.faces).await?;
         let look_at = vec![store.resolve(&v.report.contact_sheet)];
         after = Some(FixAfter {
             render_id: new_id,

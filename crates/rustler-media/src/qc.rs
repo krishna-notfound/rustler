@@ -612,6 +612,8 @@ const FACE_CUT_OFF_WARN_RATIO: f64 = 0.25;
 const SHORTS_MAX_S: f64 = 60.0;
 const REELS_TIKTOK_MAX_S: f64 = 90.0;
 const SKIPPED_ENGINE: &str = "engine unavailable";
+/// Value of the face checks when they were not requested (QC stays fast and engine-free by default).
+pub const SKIPPED_FACES_OFF: &str = "off by default — look at the contact sheet, or run qc run --faces";
 
 /// Brief limits relevant to QC (all optional; read leniently from `brief.json`).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -625,8 +627,12 @@ pub struct QcBrief {
 /// "nothing known": the engine-based checks report `skipped`.
 #[derive(Clone, Debug, Default)]
 pub struct QcExtras {
-    /// `faces.track` samples over the render at [`FACE_SAMPLE_FPS`]; `None` = engine unavailable.
+    /// `faces.track` samples over the render at [`FACE_SAMPLE_FPS`]; `None` = engine unavailable
+    /// (or, with `faces_off`, not requested).
     pub faces: Option<Vec<FaceSample>>,
+    /// The face checks were not requested (`qc run --faces` / project `qc_faces`): they report
+    /// `pass` with `{"skipped": "off by default ..."}` instead of an engine-unavailable warning.
+    pub faces_off: bool,
     /// Start times (output seconds) of the clip's text overlays.
     pub overlay_starts: Vec<f64>,
     /// Output time of the first caption word, when a transcript covers the clip.
@@ -723,7 +729,17 @@ fn ratio(count: usize, total: usize) -> f64 {
     if total == 0 { 0.0 } else { count as f64 / total as f64 }
 }
 
-fn skipped(name: &str, expected: &str, cid: &str) -> QcCheck {
+fn skipped(name: &str, expected: &str, cid: &str, off: bool) -> QcCheck {
+    if off {
+        // Pass-with-info: nothing is wrong, the check just was not asked for.
+        return check(
+            name,
+            QcStatus::Pass,
+            json!({ "skipped": SKIPPED_FACES_OFF }),
+            expected,
+            Some(format!("to check faces, run: rustler qc run {cid} --faces (or set `project set-settings --qc-faces true`)")),
+        );
+    }
     check(
         name,
         QcStatus::Warn,
@@ -755,11 +771,11 @@ pub fn face_checks(clip: &Clip, extras: &QcExtras) -> Vec<QcCheck> {
     let Some(samples) = &extras.faces else {
         let mut out = Vec::new();
         if caps {
-            out.push(skipped("caption_over_face", &exp_caption, &cid));
+            out.push(skipped("caption_over_face", &exp_caption, &cid, extras.faces_off));
         }
         if region.is_some() {
-            out.push(skipped("face_visible_ratio", &exp_visible, &cid));
-            out.push(skipped("face_cut_off", &exp_cut, &cid));
+            out.push(skipped("face_visible_ratio", &exp_visible, &cid, extras.faces_off));
+            out.push(skipped("face_cut_off", &exp_cut, &cid, extras.faces_off));
         }
         return out;
     };
@@ -1151,6 +1167,19 @@ mod tests {
         }
         // blur-fit without captions has nothing to check
         assert!(face_checks(&clip_with("blur-fit", false, 0.7), &QcExtras::default()).is_empty());
+    }
+
+    #[test]
+    fn faces_off_is_pass_with_info_not_a_warning() {
+        let clip = clip_with("center-crop", true, 0.70);
+        let c = face_checks(&clip, &QcExtras { faces_off: true, ..QcExtras::default() });
+        assert_eq!(c.len(), 3);
+        for ck in &c {
+            assert_eq!(ck.status, QcStatus::Pass, "{}", ck.name);
+            assert_eq!(ck.value, json!({"skipped": SKIPPED_FACES_OFF}));
+            assert!(ck.fix_hint.as_deref().unwrap().contains("qc run clp_"), "{:?}", ck.fix_hint);
+        }
+        assert_eq!(SKIPPED_FACES_OFF, "off by default — look at the contact sheet, or run qc run --faces");
     }
 
     #[test]
