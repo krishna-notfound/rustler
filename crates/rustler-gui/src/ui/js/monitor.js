@@ -267,6 +267,12 @@
     if (!cue) return;
     // Mirrors rustler-captions presets (font, size = canvas width x factor, outline, active word).
     var P = PRESETS[cap.preset] || customPreset(cap.preset) || PRESETS['clean-white'];
+    // caption.speaker_colors: the cue takes the colour of its speaker (words labelled by analyze.speakers)
+    var sc = E.extras && E.extras.speaker_colors;
+    if (sc && sc.enabled && R.timeline && R.timeline.outWords) {
+      var w0 = R.timeline.outWords().filter(function (w) { return w.t0 >= cue.start - 0.02 && w.t0 < cue.end; })[0];
+      if (w0 && w0.speaker && sc.colors && sc.colors[w0.speaker]) P = Object.assign({}, P, { primary: sc.colors[w0.speaker] });
+    }
     var k = W / E.clip.canvas.width;
     // ASS font size ~ line height; CSS px = em (ratios measured against libass renders)
     var size = E.clip.canvas.width * P.size * k / (P.font === 'anton' ? 1.7 : 1.4);

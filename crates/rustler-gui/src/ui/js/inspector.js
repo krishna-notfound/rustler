@@ -170,7 +170,10 @@
             if (j.status === 'ok' && j.result && j.result.data) {
               var d = j.result.data;
               (d.warnings || []).forEach(function (w) { R.toast(w); });
-              R.toast('Crop follows the active speaker in ' + (d.segments || []).length + ' segment(s)', 'good');
+              var segs = d.segments || [];
+              var noFace = segs.filter(function (s) { return !s.faces_found_ratio; }).length;
+              if (noFace) R.toast('crop.track_speaker: no faces found in ' + noFace + ' of ' + segs.length + ' segment(s); the crop stays put there', 'bad');
+              else R.toast('Crop follows the active speaker in ' + segs.length + ' segment(s)', 'good');
             }
             if (E && E.clipId === id) E.reload('mutate');
           });

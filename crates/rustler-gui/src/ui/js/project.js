@@ -137,7 +137,7 @@
         body.appendChild(h('div', { class: 'tablewrap' }, h('table', { class: 'tbl compact recent' }, h('tbody', null, list.slice(0, 15).map(function (p) {
           var cur = S.project && p.path.toLowerCase() === S.project.replace(/[\\/]+$/, '').toLowerCase();
           return h('tr', { class: cur ? 'sel' : '' },
-            h('td', null, h('b', null, p.name), h('div', { class: 'muted tiny mono ell', style: { maxWidth: '330px' }, title: p.path }, p.path)),
+            h('td', null, h('b', null, p.name), h('div', { class: 'muted tiny mono ell', style: { maxWidth: '230px' }, title: p.path }, p.path)),
             h('td', { class: 'small nowrap' }, p.sources + ' src · ' + p.clips + ' clips'),
             h('td', { class: 'small muted nowrap' }, String(p.last_opened || '').replace('T', ' ').slice(0, 16)),
             h('td', null, p.exists ? (cur ? h('span', { class: 'muted small' }, 'open') : R.button('Open', function () { return openDir(p.path); }, { small: true, primary: true })) : R.badge('missing', 'fail')));

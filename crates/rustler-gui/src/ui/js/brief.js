@@ -84,6 +84,15 @@
     var box = h('div', { class: 'briefcheck' });
     box.appendChild(h('div', { class: 'row' }, R.statusBadge(c.status, 'brief ' + c.status), h('b', null, c.clip_name || c.clip_id),
       h('span', { class: 'muted small' }, 'rev ' + c.clip_revision + ' · ' + String(c.checked_at || '').replace('T', ' ').slice(0, 19))));
+    if (opts && opts.compact) {
+      // narrow (editor inspector): one stacked row per rule
+      (c.rules || []).forEach(function (r) {
+        box.appendChild(h('div', { class: 'rulerow' }, h('div', { class: 'row tight' }, R.statusBadge(r.status), h('b', { class: 'mono small' }, r.rule)),
+          h('div', { class: 'small' }, r.message), (r.fix || []).map(function (line) { return R.cliRow(line, opts); })));
+      });
+      if ((c.post_items || []).length) box.appendChild(h('div', { class: 'small' }, h('b', null, 'For the post: '), c.post_items.join(' · ')));
+      return box;
+    }
     var rows = (c.rules || []).map(function (r) {
       return h('tr', { class: 'st-row-' + r.status },
         h('td', null, R.statusBadge(r.status)), h('td', { class: 'mono small' }, r.rule), h('td', { class: 'small' }, r.message),
@@ -110,7 +119,7 @@
   // Editor tab / per-clip block.
   R.briefPanel = function (el, clipId, mutate, onChange) {
     var out = h('div'), desc = h('div');
-    var opts = { mutate: mutate, done: function () { if (onChange) onChange(); } };
+    var opts = { mutate: mutate, compact: true, done: function () { if (onChange) onChange(); } };
     var summary = h('div', { class: 'small' });
     el.appendChild(h('div', { class: 'row' }, summary, h('span', { class: 'grow' }), R.button('Edit brief', function () { R.go('brief'); }, { small: true, cls: 'ghost' })));
     R.run('brief.show', {}, true).then(function (d) {

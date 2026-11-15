@@ -138,7 +138,7 @@
     E.timeline.forEach(function (m) {
       (E.words[m.source_id] || []).forEach(function (w) {
         if (w.end <= m.src_start || w.start >= m.src_end) return;
-        out.push({ t0: m.out_start + Math.max(0, w.start - m.src_start), t1: m.out_start + Math.min(m.src_end, w.end) - m.src_start, text: w.text });
+        out.push({ t0: m.out_start + Math.max(0, w.start - m.src_start), t1: m.out_start + Math.min(m.src_end, w.end) - m.src_start, text: w.text, speaker: w.speaker });
       });
     });
     return out;
