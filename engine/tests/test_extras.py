@@ -90,3 +90,11 @@ def test_capabilities_report_optional_features(monkeypatch):
     assert set(feats) == {"ocr", "audio-events", "speakers"}
     assert feats["speakers"]["available"] is False
     assert feats["speakers"]["missing"] == ["rustler_definitely_not_installed_mod"]
+
+
+def test_hide_extras_env_simulates_a_lite_install(monkeypatch):
+    monkeypatch.setenv("RUSTLER_HIDE_EXTRAS", "ocr, speakers")
+    assert not rpc.extra_available("ocr") and not rpc.extra_available("speakers")
+    assert rpc.missing_modules("ocr") == list(rpc.EXTRA_MODULES["ocr"])
+    feats = run_loop([req(1, "engine.capabilities")])[0]["result"]["features"]
+    assert feats["ocr"]["available"] is False and feats["speakers"]["available"] is False

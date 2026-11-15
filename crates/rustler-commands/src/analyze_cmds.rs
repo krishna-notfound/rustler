@@ -24,16 +24,21 @@ use std::path::PathBuf;
 // ---------------------------------------------------------------------------------------
 
 /// Starts the Python engine. Development/test override: if `RUSTLER_ENGINE_PROJECT` names an
-/// engine source dir, the engine runs as `uv run --project <dir> python -m rustler_engine`
-/// instead of the venv created by `rustler setup`.
+/// engine source dir, the engine runs as `uv run --project <dir> --extra ocr --extra audio-events
+/// --extra speakers python -m rustler_engine` (every analyzer, like `--profile full`) instead of the
+/// venv created by `rustler setup`. `RUSTLER_HIDE_EXTRAS=ocr,speakers` makes the engine behave as if
+/// those extras were not installed (lite simulation).
 pub async fn spawn_engine(paths: &ToolPaths) -> rustler_core::Result<EngineClient> {
     if let Some(dir) = std::env::var_os("RUSTLER_ENGINE_PROJECT") {
         let dir = PathBuf::from(dir);
         let hf = std::env::var("HF_HOME").unwrap_or_else(|_| paths.models.join("hf").to_string_lossy().into_owned());
-        let args: Vec<String> = ["run", "--project", &dir.to_string_lossy(), "python", "-m", "rustler_engine"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+        let args: Vec<String> = [
+            "run", "--project", &dir.to_string_lossy(), "--extra", "ocr", "--extra", "audio-events", "--extra", "speakers",
+            "python", "-m", "rustler_engine",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
         return EngineClient::spawn_command(&paths.uv, &args, &dir, &[("HF_HOME".to_string(), hf)]).await;
     }
     EngineClient::spawn(paths).await

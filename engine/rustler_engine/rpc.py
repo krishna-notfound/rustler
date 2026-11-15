@@ -62,9 +62,17 @@ def enable_hint(extra: str) -> str:
 
 
 def missing_modules(extra: str) -> List[str]:
-    """Modules of ``extra`` that cannot be imported (checked without importing them)."""
-    import importlib.util
+    """Modules of ``extra`` that cannot be imported (checked without importing them).
 
+    ``RUSTLER_HIDE_EXTRAS=ocr,speakers`` pretends those extras are not installed (a test hook that
+    simulates a lite install on a machine that has everything).
+    """
+    import importlib.util
+    import os
+
+    hidden = {x.strip() for x in os.environ.get("RUSTLER_HIDE_EXTRAS", "").split(",") if x.strip()}
+    if extra in hidden:
+        return list(EXTRA_MODULES[extra])
     out = []
     for m in EXTRA_MODULES[extra]:
         try:
