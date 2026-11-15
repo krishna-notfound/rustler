@@ -253,3 +253,8 @@ Demo outputs: `%TEMP%\rustler-e2e\exports\jfk-hook.mp4`, `%TEMP%\rustler-stream\
   Devanagari OCR [Sonnet]; real two-person footage speaker-framing test + fixes [Sonnet].
 - Next: release binaries (Windows + Linux) on the private GitHub repo + one-line installers; CC0 music
   (FreePD public-domain library) in setup assets.
+- Merged webcam edge-snap + Devanagari OCR: engine `overlay.find_box` (edge-supported rectangle around the
+  face; stream_demo facecam now x1490..1890 y30..546 vs true 1490..1890/30..550 — was 1459..1920 with a
+  gameplay sliver); `layout detect-webcam` reports rect_source edges|expansion. OCR `lang:
+  latin|devanagari|auto` with PP-OCRv5 Devanagari ONNX (Apache-2.0, sha-pinned): "नमस्ते दोस्तों" read at
+  0.95/1.00 confidence. Engine 131 passed. Known limits 1 + 2 closed.
