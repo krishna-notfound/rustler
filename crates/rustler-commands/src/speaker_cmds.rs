@@ -49,6 +49,9 @@ const MIN_PRESENCE: f64 = 0.3;
 const MIN_SPEAK: f64 = 0.3;
 /// Best face must beat the runner-up by this much, else the choice is "ambiguous".
 const MIN_MARGIN: f64 = 0.15;
+/// Mouth movement is only believed on faces at least this wide (share of the frame width): on the
+/// 4-6 % faces of a wide two-shot the lips are ~10 px and the "motion" is head and codec noise.
+const MIN_MOTION_FACE_WIDTH: f64 = 0.07;
 /// Face sampling rate for `speakers.active`.
 const ACTIVE_FPS: f64 = 5.0;
 /// A person needs this many close-up samples (only one face on screen) before a close-up can say
@@ -427,6 +430,7 @@ struct FaceStat {
     speak: f64,
     area: f64,
     cx: f64,
+    w: f64,
 }
 
 fn samples_in(samples: &[ActiveSample], start: f64, end: f64) -> impl Iterator<Item = &ActiveSample> {
@@ -445,6 +449,7 @@ fn turn_stats(samples: &[ActiveSample], start: f64, end: f64) -> (usize, BTreeMa
             e.speak += f.speak;
             e.area += f.area();
             e.cx += f.cx();
+            e.w += f.w;
         }
     }
     (n, m)
@@ -458,7 +463,7 @@ fn present_faces(samples: &[ActiveSample], t: &SpeakerTurn) -> Vec<(u32, FaceSta
         .filter(|(_, s)| n > 0 && s.n as f64 / n as f64 >= MIN_PRESENCE)
         .map(|(id, s)| {
             let k = s.n as f64;
-            (id, FaceStat { n: s.n, speak: s.speak / k, area: s.area / k, cx: s.cx / k })
+            (id, FaceStat { n: s.n, speak: s.speak / k, area: s.area / k, cx: s.cx / k, w: s.w / k })
         })
         .collect()
 }
@@ -471,7 +476,7 @@ fn speaker_face_map(samples: &[ActiveSample], turns: &[SpeakerTurn]) -> BTreeMap
         let mut acc: BTreeMap<u32, (f64, usize)> = BTreeMap::new();
         for t in long.iter().filter(|t| pred(t)) {
             for s in samples_in(samples, t.start, t.end) {
-                for f in &s.faces {
+                for f in s.faces.iter().filter(|f| f.w >= MIN_MOTION_FACE_WIDTH) {
                     let e = acc.entry(f.id).or_default();
                     e.0 += f.speak;
                     e.1 += 1;
@@ -652,7 +657,7 @@ pub fn choose_faces(samples: &[ActiveSample], turns: &[SpeakerTurn]) -> Vec<Turn
             (best_id, "only-face")
         } else if let Some((f, src)) = mine.filter(|(_, src)| *src != OwnerSource::Motion) {
             (f, if src == OwnerSource::Identity { "face-id" } else { "elimination" })
-        } else if best.speak >= MIN_SPEAK && best.speak - second >= MIN_MARGIN {
+        } else if best.w >= MIN_MOTION_FACE_WIDTH && best.speak >= MIN_SPEAK && best.speak - second >= MIN_MARGIN {
             (best_id, "mouth-motion")
         } else if let Some((f, _)) = mine {
             (f, "speaker-map")
