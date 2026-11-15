@@ -31,11 +31,10 @@ agent edits. Every action verified in a browser and confirmed with CLI reads.
 **Knowledge for agents:** 17 guides + 10 workflow prompts (`knowledge/`), embedded in the binary and served
 over CLI and MCP; `skills/rustler/SKILL.md` (Claude Code) and `AGENTS.md` (others); `docs/agent-integration.md`.
 
-**Tests:** last complete Rust runs all green — 477 passed / 0 failed (speakers branch with master merged, and again on
-Linux), 434 on the audio/FX branch; changes merged after those (GUI integration, Linux packaging fix, hook-seam
-tweak, setup model prefetch) passed their own crate tests (gui 9/9, overlay, cli, knowledge). The final whole-
-workspace run on Windows was stopped by Claude Code for low memory after 189 passed / 0 failed — re-run
-`cargo test --workspace` when the laptop is idle (close WSL first: `wsl --shutdown`). Python engine: 116 passed, 1 skipped.
+**Tests (final code, every crate, 2026-11-15 ~06:00):** **478 Rust tests passed, 0 failed** (core 47, registry 5,
+tools 18, engine-bridge 11, captions 22, knowledge 9, media 92, mcp 10, gui 9, cli 36, commands 75 unit + 144
+integration across 21 test files); Python engine 116 passed, 1 skipped. Linux (WSL): 477 Rust + 114 engine passed.
+**Release build:** `target\release\rustler.exe` (28 MB) built; `doctor run` -> ready.
 Linux (WSL): 477 Rust tests passed, engine 114 passed; setup/doctor/full flow/MCP/GUI verified — see `docs/linux.md`.
 
 **Real end-to-end runs (all through the CLI, contact sheets inspected):**
@@ -47,12 +46,12 @@ Linux (WSL): 477 Rust tests passed, engine 114 passed; setup/doctor/full flow/MC
 **How to use it now (PowerShell):**
 ```
 cd C:\Users\krishna\Desktop\rustler
-.\target\debug\rustler.exe doctor run            # release build: cargo build --release -p rustler-cli (when RAM is free)
-.\target\debug\rustler.exe guide show start-here
-.\target\debug\rustler.exe --project $env:TEMP\rustler-stream gui    # streamer demo project in the editor
+.\target\release\rustler.exe doctor run
+.\target\release\rustler.exe guide show start-here
+.\target\release\rustler.exe --project $env:TEMP\rustler-stream gui    # streamer demo project in the editor
 ```
 Give Claude Code the skill: copy `skills\rustler` to `%USERPROFILE%\.claude\skills\rustler`; MCP:
-`claude mcp add rustler -- C:\Users\krishna\Desktop\rustler\target\debug\rustler.exe mcp serve`.
+`claude mcp add rustler -- C:\Users\krishna\Desktop\rustler\target\release\rustler.exe mcp serve`.
 Demo outputs: `%TEMP%\rustler-e2e\exports\jfk-hook.mp4`, `%TEMP%\rustler-stream\exports\stream-hook.mp4`.
 
 **Known limits / next ideas:**
@@ -61,7 +60,7 @@ Demo outputs: `%TEMP%\rustler-e2e\exports\jfk-hook.mp4`, `%TEMP%\rustler-stream\
 3. No CC0 music library (no verifiable login-free source) — add your own with `asset add --license`.
 4. Speaker colours / active-speaker crop tested on synthetic two-face video, not real podcast footage yet.
 5. Windows PowerShell 5.1 strips quotes in JSON args → use `--input-json @file.json`.
-6. Tauri desktop wrapper and GitHub release binaries / one-line installer are not done (the web GUI runs locally).
+6. Tauri desktop wrapper and published GitHub release binaries / one-line installer are not done (local release build exists; the web GUI runs locally).
 
 ---
 
