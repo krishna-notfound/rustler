@@ -93,7 +93,10 @@ Pinned versions: `wry 0.57.2` (feature `devtools`), `tao 0.37.2`, `muda 0.21.2`,
   machine (they were not on the WSL Ubuntu used for `docs/linux.md`). So on Linux the webview stack is behind
   the `linux-webview` feature of `rustler-desktop`; without it `rustler-desktop` / `rustler desktop` build and
   exit with an error that points to `rustler gui`, and `cargo build --workspace` keeps working on headless
-  machines. To build the real window on Linux:
+  machines. Checked in WSL Ubuntu: `cargo check -p rustler-desktop -p rustler-cli` passes with no warnings
+  without the feature; with `--features linux-webview` it stops at `glib-sys` / `gobject-sys` because
+  `pkg-config` and the GTK/WebKitGTK dev packages are not installed there (expected; the window code itself
+  was not compiled on Linux). To build the real window on Linux:
 
   ```bash
   sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libxdo-dev
@@ -129,5 +132,8 @@ Pinned versions: `wry 0.57.2` (feature `devtools`), `tao 0.37.2`, `muda 0.21.2`,
   Edit > Undo outside the editor shows the page toast: `.playwright-mcp/desktop-recent-undo.png`.
 - Ctrl+O with focus in the page opens the native folder picker parented to the window:
   `.playwright-mcp/desktop-open-dialog.png`; Ctrl+= zooms the page: `.playwright-mcp/desktop-zoom.png`.
+- Release build (`cargo build --release -p rustler-desktop -p rustler-cli`, `CARGO_BUILD_JOBS=2`): `rustler-desktop.exe`
+  27.9 MB (no console window), `rustler.exe` 31.6 MB. The release app opened the editor maximized on this
+  1920x1080 / 125 % screen: `.playwright-mcp/desktop-release-editor.png`.
 - Closing the window: stdout `closed` with `state_saved: true`, `desktop.json` written, process exited, nothing
   listening on the server port afterwards.
