@@ -264,3 +264,8 @@ Demo outputs: `%TEMP%\rustler-e2e\exports\jfk-hook.mp4`, `%TEMP%\rustler-stream\
   window state, server bound to 127.0.0.1 + token. 12 tests; release build 27.9 MB. Screenshots
   .playwright-mcp/desktop-*.png. Linux window behind `linux-webview` feature (needs WebKitGTK).
 - Running: release binaries + installers + CC0 music (FreePD) [Sonnet]; real-footage speaker test [Sonnet].
+- Added `see frame --grid true` (labelled 0–1 coordinate grid, 1280 wide) and `--regions-of <clip>`
+  (draws the clip's region boxes with numbers). Recommended path for vision agents: look at the grid,
+  read the webcam/gameplay box edges, `layout from-frame-boxes`, verify with `--regions-of`. No model
+  runs. Verified on the stream demo (facecam read off the grid as x 0.775–0.985, y 0.02–0.50; the
+  regions view exposed the old box cutting the facecam's bottom). Guides updated.
