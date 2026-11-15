@@ -45,7 +45,7 @@ impl Default for Permissions {
     }
 }
 
-/// Default: 1080x1920@30 canvas, Latin captions, whisper model "small".
+/// Default: 1080x1920@30 canvas, Latin captions, whisper model "base" (the lite install fetches it; switch with `project set-settings`).
 #[derive(Serialize, Deserialize, JsonSchema, Clone, PartialEq, Debug)]
 #[serde(default)]
 pub struct ProjectSettings {
@@ -59,7 +59,7 @@ impl Default for ProjectSettings {
         Self {
             canvas: Canvas::default(),
             caption_script: CaptionScript::Latin,
-            default_whisper_model: "small".to_string(),
+            default_whisper_model: "base".to_string(),
         }
     }
 }

@@ -24,7 +24,7 @@ import wave
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from .rpc import RpcError
+from .rpc import RpcError, require_extra
 
 log = logging.getLogger("rustler_engine.audio_events")
 
@@ -182,10 +182,9 @@ def yamnet_group_scores(x, progress: Callable[..., None]):
     """Return ``(frame_scores[frames, 6], model_name)``; frame i covers [0.48 i, 0.48 i + 0.96] s."""
     import numpy as np
 
-    try:
-        import onnxruntime as ort
-    except ImportError as e:  # pragma: no cover - dependency is declared
-        raise RpcError("dependency_missing", f"onnxruntime is not installed: {e}") from e
+    require_extra("audio-events", "YAMNet sound-event detection")
+    import onnxruntime as ort
+
     model, class_map = ensure_model(progress)
     names = read_class_names(class_map)
     groups = group_indices(names)
@@ -400,7 +399,8 @@ def run(params: Dict[str, Any], progress: Callable[..., None]) -> Dict[str, Any]
         except RpcError as e:
             if which == "yamnet" or e.kind in ("validation",):
                 raise
-            warnings.append(f"YAMNet unavailable ({e.message}); used the spectral heuristic instead")
+            hint = f"; to enable: {e.hint}" if getattr(e, "hint", None) else ""
+            warnings.append(f"YAMNet unavailable ({e.message}); used the spectral heuristic instead{hint}")
             log.warning("yamnet unavailable: %s", e.message)
         except ImportError as e:
             if which == "yamnet":

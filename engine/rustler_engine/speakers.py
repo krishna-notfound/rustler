@@ -29,7 +29,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from .rpc import RpcError
+from .rpc import RpcError, require_extra
 
 log = logging.getLogger("rustler_engine.speakers")
 
@@ -208,6 +208,7 @@ def _sherpa_pass(x, seg: Path, emb: Path, num_clusters: int, progress: Callable[
 def diarize_sherpa(
     x, num_speakers: Optional[int], min_speakers: Optional[int], max_speakers: Optional[int], progress: Callable[..., None]
 ) -> List[Dict[str, Any]]:
+    require_extra("speakers", "sherpa-onnx speaker diarization")
     seg, emb = ensure_models(progress)
     raw = _sherpa_pass(x, seg, emb, num_speakers if num_speakers else -1, progress)
     segs = relabel(raw)
@@ -446,6 +447,8 @@ def diarize(params: Dict[str, Any], progress: Callable[..., None]) -> Dict[str, 
             if isinstance(e, RpcError) and e.kind == "validation":
                 raise
             msg = e.message if isinstance(e, RpcError) else f"sherpa-onnx is not installed: {e}"
+            if isinstance(e, RpcError) and e.hint:
+                msg = f"{msg}; to enable: {e.hint}"
             log.warning("falling back to the heuristic diarizer: %s", msg)
             used = "heuristic"
             warnings.append(f"fell back to the heuristic diarizer (much less accurate): {msg}")

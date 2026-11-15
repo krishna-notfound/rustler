@@ -85,7 +85,7 @@ fn defaults_match_spec() {
     let s = ProjectSettings::default();
     assert_eq!(s.canvas, Canvas::default());
     assert_eq!(s.caption_script, CaptionScript::Latin);
-    assert_eq!(s.default_whisper_model, "small");
+    assert_eq!(s.default_whisper_model, "base");
 }
 
 fn sample_clip() -> Clip {

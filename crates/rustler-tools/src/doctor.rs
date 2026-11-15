@@ -24,6 +24,58 @@ pub struct EncoderStatus {
     pub error: Option<String>,
 }
 
+/// One optional (heavy, opt-in) feature: whether it works now and the exact command to enable it.
+#[derive(Serialize, Deserialize, JsonSchema, Clone, PartialEq, Eq, Debug)]
+pub struct OptionalFeature {
+    /// `--with` name: `ocr` | `audio-events` | `speakers` | `cuda` | `sfx-pack`.
+    pub name: String,
+    pub description: String,
+    pub available: bool,
+    /// Present when not available: the command that adds it.
+    pub enable: Option<String>,
+}
+
+const FEATURES: [(&str, &str); 5] = [
+    ("ocr", "on-screen text recognition (`analyze ocr`, RapidOCR)"),
+    ("audio-events", "YAMNet sound-event labels (`analyze events`; a spectral heuristic works without it)"),
+    ("speakers", "sherpa-onnx speaker diarization (`analyze speakers`; a heuristic works without it)"),
+    ("cuda", "NVIDIA GPU libraries for faster-whisper transcription"),
+    ("sfx-pack", "Kenney CC0 sound-effects pack in the asset library (add your own with `asset add`)"),
+];
+
+/// Which optional features are usable now. `engine` = the result of `engine.capabilities`
+/// (`None` when the engine is not installed or not responding: then the engine-backed ones are unavailable).
+pub fn optional_features(paths: &ToolPaths, engine: Option<&serde_json::Value>) -> Vec<OptionalFeature> {
+    let feature_ok = |name: &str| {
+        engine
+            .and_then(|e| e.pointer(&format!("/features/{name}/available")))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    };
+    let sfx = {
+        let root = crate::assets::assets_root(&paths.home);
+        crate::assets::load_manifest(&root)
+            .iter()
+            .any(|e| e.kind == crate::assets::AssetKind::Sfx && e.id.starts_with("sfx-kenney-"))
+    };
+    FEATURES
+        .iter()
+        .map(|(name, description)| {
+            let available = match *name {
+                "cuda" => engine.and_then(|e| e.get("cuda")).and_then(|v| v.as_bool()).unwrap_or(false),
+                "sfx-pack" => sfx,
+                n => feature_ok(n),
+            };
+            OptionalFeature {
+                name: name.to_string(),
+                description: description.to_string(),
+                available,
+                enable: (!available).then(|| format!("rustler setup run --with {name}")),
+            }
+        })
+        .collect()
+}
+
 #[derive(Serialize, Deserialize, JsonSchema, Clone, PartialEq, Debug)]
 pub struct DoctorReport {
     pub os: String,
@@ -38,6 +90,15 @@ pub struct DoctorReport {
     /// Result of engine `engine.capabilities`, when the engine is installed.
     pub engine: Option<serde_json::Value>,
     pub fonts: Vec<String>,
+    /// `lite` (base engine; heavy analyzers opt-in) or `full` (every analyzer extra installed).
+    #[serde(default)]
+    pub profile: String,
+    /// Heavy pieces `rustler setup` recorded (extras, SFX pack).
+    #[serde(default)]
+    pub install: crate::setup::InstallState,
+    /// Optional features, whether each is available, and the exact command to enable it. Not part of `ready`.
+    #[serde(default)]
+    pub optional_features: Vec<OptionalFeature>,
     pub ready: bool,
     pub missing: Vec<String>,
 }
@@ -190,6 +251,7 @@ pub async fn doctor(paths: &ToolPaths) -> DoctorReport {
         .await;
     }
     let fonts = crate::fonts::installed(paths);
+    let install = crate::setup::installed_state(paths);
 
     let mut missing = Vec::new();
     if ffmpeg.is_none() {
@@ -234,7 +296,41 @@ pub async fn doctor(paths: &ToolPaths) -> DoctorReport {
         nvidia_gpu,
         engine: None,
         fonts,
+        profile: crate::setup::profile_name(&install).to_string(),
+        optional_features: optional_features(paths, None),
+        install,
         ready: missing.is_empty(),
         missing,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn optional_features_report_what_is_missing_and_how_to_enable_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = ToolPaths::from_home(tmp.path());
+        let caps = serde_json::json!({
+            "cuda": false,
+            "features": {
+                "ocr": {"available": false, "missing": ["rapidocr"]},
+                "audio-events": {"available": true, "missing": []},
+                "speakers": {"available": false, "missing": ["sherpa_onnx"]},
+            }
+        });
+        let f = optional_features(&paths, Some(&caps));
+        let by = |n: &str| f.iter().find(|x| x.name == n).unwrap().clone();
+        assert!(by("audio-events").available && by("audio-events").enable.is_none());
+        assert!(!by("ocr").available);
+        assert_eq!(by("ocr").enable.as_deref(), Some("rustler setup run --with ocr"));
+        assert_eq!(by("speakers").enable.as_deref(), Some("rustler setup run --with speakers"));
+        assert_eq!(by("cuda").enable.as_deref(), Some("rustler setup run --with cuda"));
+        assert_eq!(by("sfx-pack").enable.as_deref(), Some("rustler setup run --with sfx-pack"));
+        // no engine at all: every engine-backed feature is unavailable
+        let none = optional_features(&paths, None);
+        assert!(none.iter().all(|x| !x.available && x.enable.is_some()));
+        assert_eq!(f.len(), 5);
     }
 }

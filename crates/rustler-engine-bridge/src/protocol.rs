@@ -33,6 +33,12 @@ pub struct RpcError {
 pub struct RpcErrorData {
     #[serde(default)]
     pub kind: Option<String>,
+    /// What the user can run to fix it (e.g. ``run `rustler setup run --with ocr` ``).
+    #[serde(default)]
+    pub hint: Option<String>,
+    /// The optional install extra that is missing (`ocr` | `audio-events` | `speakers`).
+    #[serde(default)]
+    pub extra: Option<String>,
 }
 
 /// `params` of a `progress` notification. `pct` is 0..=100 on the wire.
@@ -110,7 +116,8 @@ pub fn map_error(method: &str, e: RpcError) -> RustlerError {
     };
     let mut err = RustlerError::new(code, STAGE, format!("{method}: {}", e.message));
     if code == ErrorCode::DependencyMissing {
-        err = err.hint("run `rustler setup`");
+        let engine_hint = e.data.as_ref().and_then(|d| d.hint.as_deref());
+        err = err.hint(engine_hint.unwrap_or("run `rustler setup`"));
     }
     err
 }
@@ -162,6 +169,7 @@ mod tests {
             message: "m".into(),
             data: kind.map(|k| RpcErrorData {
                 kind: Some(k.into()),
+                ..Default::default()
             }),
         };
         assert_eq!(
@@ -177,5 +185,33 @@ mod tests {
             ErrorCode::Internal
         );
         assert_eq!(map_error("m", mk(None, -32601)).code, ErrorCode::Validation);
+    }
+
+    #[test]
+    fn dependency_missing_uses_the_engine_hint() {
+        let e = RpcError {
+            code: -32000,
+            message: "OCR needs the optional 'ocr' install extra".into(),
+            data: Some(RpcErrorData {
+                kind: Some("dependency_missing".into()),
+                hint: Some("run `rustler setup run --with ocr`".into()),
+                extra: Some("ocr".into()),
+            }),
+        };
+        let mapped = map_error("ocr.run", e);
+        assert_eq!(mapped.code, ErrorCode::DependencyMissing);
+        assert_eq!(mapped.hint.as_deref(), Some("run `rustler setup run --with ocr`"));
+        let plain = map_error(
+            "m",
+            RpcError {
+                code: -32000,
+                message: "x".into(),
+                data: Some(RpcErrorData {
+                    kind: Some("dependency_missing".into()),
+                    ..Default::default()
+                }),
+            },
+        );
+        assert_eq!(plain.hint.as_deref(), Some("run `rustler setup`"));
     }
 }

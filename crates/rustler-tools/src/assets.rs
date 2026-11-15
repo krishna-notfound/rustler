@@ -385,7 +385,7 @@ async fn kenney_zip_url(pack: &str) -> Result<String> {
     let api = format!("https://kenney.nl/download-link/{}", hex_of(&format!("assets/{pack}")));
     let net = |e: &dyn std::fmt::Display| {
         RustlerError::new(ErrorCode::Provider, "setup.assets", format!("kenney.nl {pack}: {e}"))
-            .hint("check your internet connection; `rustler setup --no-assets` skips the SFX pack")
+            .hint("check your internet connection; the SFX pack is optional (`rustler setup run --with sfx-pack`); add your own sounds with `rustler asset add`")
             .retryable()
     };
     let text = kenney_client()?
@@ -465,9 +465,10 @@ async fn fetch_pack(
     Ok(out)
 }
 
-/// `rustler setup` step: built-in styles/layouts, installed fonts, Kenney CC0 SFX. Idempotent;
-/// a network failure only adds a warning. No music is fetched (no verifiably CC0, login-free source).
-pub async fn install(paths: &ToolPaths, force: bool, progress: &ProgressSink) -> Result<AssetsReport> {
+/// `rustler setup` step: built-in styles/layouts and installed fonts, plus (only when `sfx` is true,
+/// i.e. `setup run --with sfx-pack` or `--profile full`) the Kenney CC0 SFX packs. Idempotent;
+/// a network failure only adds a warning. No music is fetched: the agent adds its own with `asset add`.
+pub async fn install(paths: &ToolPaths, force: bool, sfx: bool, progress: &ProgressSink) -> Result<AssetsReport> {
     let root = assets_root(&paths.home);
     std::fs::create_dir_all(&root).map_err(|e| err(format!("create {}: {e}", root.display())))?;
     let mut report = AssetsReport::default();
@@ -489,6 +490,11 @@ pub async fn install(paths: &ToolPaths, force: bool, progress: &ProgressSink) ->
     emit(format!("registered {} installed fonts", report.fonts), 0.2);
 
     for (i, (pack, label)) in PACKS.iter().enumerate() {
+        if !sfx {
+            // opt-in: report what an earlier run already registered, fetch nothing
+            report.sfx = load_manifest(&root).iter().filter(|e| e.kind == AssetKind::Sfx && e.id.starts_with("sfx-kenney-")).count();
+            break;
+        }
         let have = load_manifest(&root)
             .iter()
             .filter(|e| e.kind == AssetKind::Sfx && e.id.starts_with(&format!("sfx-kenney-{}-", pack.trim_end_matches("-sounds"))))
