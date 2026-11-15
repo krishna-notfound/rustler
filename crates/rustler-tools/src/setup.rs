@@ -58,6 +58,10 @@ pub struct SetupOptions {
     /// Add optional pieces: `ocr`, `audio-events`, `speakers`, `cuda`, `sfx-pack`
     /// (repeat the flag or separate with commas: `--with ocr,speakers`). Previously added pieces are kept.
     pub with: Vec<String>,
+    /// Also download the optional CC0 music pack (11 FreePD tracks, about 50 MB). Off by default and never part
+    /// of the default setup (not even `--profile full`): the agent adds any music it wants with `asset add`.
+    /// Enable with `--music-pack`.
+    pub music_pack: bool,
 }
 
 impl Default for SetupOptions {
@@ -70,6 +74,7 @@ impl Default for SetupOptions {
             assets: true,
             models: true,
             with: Vec::new(),
+            music_pack: false,
         }
     }
 }
@@ -415,12 +420,13 @@ pub async fn setup(
         manifest.install.extras = plan.extras.clone();
     }
     if opts.assets {
-        emit(if plan.sfx_pack {
-            "filling the asset library (built-in styles, fonts, CC0 SFX pack)"
-        } else {
-            "filling the asset library (built-in styles, fonts; the SFX pack is opt-in: --with sfx-pack)"
+        emit(match (plan.sfx_pack, opts.music_pack) {
+            (true, true) => "filling the asset library (built-in styles, fonts, CC0 SFX pack, CC0 music pack)",
+            (true, false) => "filling the asset library (built-in styles, fonts, CC0 SFX pack)",
+            (false, true) => "filling the asset library (built-in styles, fonts, CC0 music pack)",
+            (false, false) => "filling the asset library (built-in styles, fonts; SFX pack: --with sfx-pack, music pack: --music-pack)",
         });
-        match assets::install(paths, force, plan.sfx_pack, progress).await {
+        match assets::install_with(paths, force, plan.sfx_pack, opts.music_pack, progress).await {
             Ok(r) => {
                 if plan.sfx_pack && r.warnings.is_empty() {
                     manifest.install.sfx_pack = true;
@@ -428,7 +434,7 @@ pub async fn setup(
                 report.notes.extend(r.warnings.iter().cloned());
                 let c = Component {
                     name: "assets".into(),
-                    version: format!("{} built-in, {} fonts, {} sfx", r.builtins, r.fonts, r.sfx),
+                    version: format!("{} built-in, {} fonts, {} sfx, {} music", r.builtins, r.fonts, r.sfx, r.music),
                     path: assets::assets_root(&paths.home),
                     sha256: None,
                 };

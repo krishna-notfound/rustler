@@ -98,3 +98,15 @@ async fn frame_of_a_clip_delegates_to_preview() {
     assert!(std::fs::metadata(img).unwrap().len() > 1000);
     assert_eq!(dims(&f, img).await, (1080, 1920));
 }
+
+#[tokio::test]
+async fn grid_frame_for_vision_agents() {
+    let Some(f) = fx().await else { return };
+    let plain = call(&f.reg, &f.ctx, "see.frame", json!({"source_id": f.src.id, "t": 3.0, "width": 640})).await.unwrap();
+    let v = call(&f.reg, &f.ctx, "see.frame", json!({"source_id": f.src.id, "t": 3.0, "grid": true})).await.unwrap();
+    let img = v["image"].as_str().unwrap();
+    assert!(img.ends_with("_grid.jpg"), "annotated frame is a separate file: {img}");
+    // Grid frames default to 1280 wide so the labels are readable.
+    assert_eq!(dims(&f, img).await.0, 1280);
+    assert_ne!(img, plain["image"].as_str().unwrap());
+}

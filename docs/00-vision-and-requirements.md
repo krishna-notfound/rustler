@@ -101,3 +101,9 @@ renders, checks quality, fixes problems, and delivers finished short-form clips.
 - 2026-11-15 (02:40): **Goal: complete everything** — the full CLI for every tool in the design, then
   the full GUI (Premiere-style editor, built in the web GUI). CLI must be complete. No 5-hour cap.
   Plan: `docs/superpowers/plans/2026-11-15-complete-rustler.md`.
+- 2026-11-15 (~09:40): **Lightweight by default; agent has full control.** Heavy local analysis (OCR,
+  audio-event models, diarization, engine face checks in QC) must not run implicitly — it stresses the
+  machine and cloud agents. The agent uses its own vision (see frame/tiles) to decide sections; heavy
+  analyzers are opt-in helpers (`setup --profile full` / `--with <extra>`). **No fixed creative assets**:
+  the agent can add any music/SFX/image (file, URL, or audio from an imported source); built-in packs
+  are opt-in; license metadata optional (warned, not required).

@@ -83,10 +83,21 @@ rustler audio add-sfx <clip_id> https://example.org/whoosh.wav --at 2.5         
 
 `audio add-music` / `audio add-sfx` accept a path, `asset:<id>`, an `http(s)` link (needs the project's
 network + downloads permission) or `source:<source_id>[@start-end]` (start/end in seconds or MM:SS;
-without a range the whole audio track). A video file or video link is reduced to its audio track.
+without a range the whole audio track). For `add-music` (and `asset add --kind music`) a video file or video link is reduced to its audio track; a sound effect must be an audio file or a `source:` reference.
 `asset add` does not require a license: a missing one is stored as "unspecified (added by user/agent)"
 with a warning, so clearing the rights is on you (and the user). If the license requires attribution,
 put the credit line in the clip's caption/description.
+
+An optional starter pack of 11 CC0 tracks (FreePD: upbeat, chill/lo-fi, dramatic, epic, funny) is available
+only on request: `rustler setup run --music-pack` (about 50 MB, license page checked first, sha256 pinned).
+Then browse by mood and use it by id:
+
+```text
+rustler asset list --kind music --tag upbeat           # moods: upbeat chill lofi dramatic epic funny
+rustler asset search "boss battle" --kind music
+rustler audio add-music <clip_id> --path asset:music-freepd-happy-whistling-ukulele --volume-db -18 --duck true
+```
+
 `--scope project` (default inside a project) keeps the file with the project; `--scope global` is shared
 by all projects (`~/.rustler/assets`).
 

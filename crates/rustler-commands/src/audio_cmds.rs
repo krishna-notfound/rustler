@@ -411,7 +411,7 @@ async fn add_sfx(ctx: Ctx, mut i: AddSfxIn) -> Result<SfxOut> {
     let store = ctx.store()?;
     let clip = store.load_clip(&i.clip_id)?;
     // A path, `asset:<id>` (`rustler asset list --kind sfx`), an http(s) URL or `source:<id>[@a-b]`.
-    let resolved = crate::media_ref::resolve(&ctx, STAGE, &i.file.to_string_lossy(), crate::media_ref::Want::Audio).await?;
+    let resolved = crate::media_ref::resolve(&ctx, STAGE, &i.file.to_string_lossy(), crate::media_ref::Want::Any).await?;
     i.file = resolved.path.clone();
     if !resolved.pending && !i.file.is_file() {
         return Err(RustlerError::new(ErrorCode::NotFound, STAGE, format!("no such file: {}", i.file.display()))

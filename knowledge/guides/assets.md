@@ -29,7 +29,7 @@ After `setup run` (`rustler asset list` shows the real state; the SFX pack is **
 | `layout` | `layout-center-crop`, `layout-blur-fit`, `layout-split-vertical` | built-in |
 | `font` | Anton, Poppins ExtraBold, Poppins Bold, Noto Sans Devanagari | OFL-1.1 |
 | `sfx` | **only after `rustler setup run --with sfx-pack`** (or `--profile full`): about 26 curated sounds from the Kenney Interface Sounds and Impact Sounds packs: clicks, ticks, pops, swipes (`sfx-kenney-interface-swipe-up`), glitch, bong, punches and impacts (`sfx-kenney-impact-punch-heavy`, `sfx-kenney-impact-impact-metal`, `-glass`, `-bell`). Without the pack the library has no sfx: add your own | CC0 |
-| `music` | **none bundled, nothing fixed.** Add whatever you want (section 4) | yours |
+| `music` | **none by default, nothing fixed.** Add whatever you want (section 4). Optional CC0 starter pack (11 FreePD tracks, `rustler setup run --music-pack`): `asset list --kind music --tag upbeat`, then `audio add-music <clip> --path asset:<id>` | yours / CC0-1.0 (FreePD) |
 
 Layout assets are only the three built-ins; custom multi-region layouts are saved with
 `layout save-preset` (see `layouts-and-framing`).

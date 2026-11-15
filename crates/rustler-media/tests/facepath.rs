@@ -168,3 +168,34 @@ fn engine_json_deserializes() {
     assert_eq!(s.faces.len(), 1);
     assert_eq!(s.t, 1.25);
 }
+
+/// Found on real two-person footage: after a long still stretch the first key of the next move
+/// landed far from the previous key, and the render's linear interpolation made the crop drift
+/// across the whole still stretch (the speaker left the frame for seconds).
+#[test]
+fn hold_keys_keep_the_crop_still_until_the_move_starts() {
+    // 0.2 for 12 s, then 0.8 for 8 s (5 fps).
+    let s = series(100, 5.0, 0.0, |i| Some(if i < 60 { 0.2 } else { 0.8 }));
+    let at = |keys: &[CropKey], t: f64| {
+        let k = keys.partition_point(|k| k.t <= t);
+        if k == 0 {
+            return keys[0].x;
+        }
+        if k == keys.len() {
+            return keys[k - 1].x;
+        }
+        let (a, b) = (keys[k - 1], keys[k]);
+        a.x + (b.x - a.x) * (t - a.t) / (b.t - a.t)
+    };
+    let quick = SmoothParams { median_window: 3, min_cutoff: 2.0, beta: 0.05, dead_zone: 0.02, max_speed: 1.6, hold_keys: false };
+    let drifting = crop_keys(&s, CROP_W, &quick);
+    assert!((at(&drifting, 6.0) - at(&drifting, 0.0)).abs() > 0.05, "documents the old drift: {drifting:?}");
+    let p = SmoothParams { hold_keys: true, ..quick };
+    let held = crop_keys(&s, CROP_W, &p);
+    let x0 = at(&held, 0.0);
+    for t in [1.0, 4.0, 8.0, 11.5] {
+        assert!((at(&held, t) - x0).abs() < 0.01, "crop moved at {t}: {held:?}");
+    }
+    assert!(at(&held, 15.0) > 0.5, "{held:?}");
+    assert!(held.windows(2).all(|w| w[1].t > w[0].t), "{held:?}");
+}

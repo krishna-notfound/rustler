@@ -12,9 +12,22 @@ Rustler provides the tools (FFmpeg, yt-dlp, local faster-whisper, OpenCV face tr
 - **GUI** `rustler gui` — local web editor (regions, monitor, timeline, inspector) over the same commands.
 - **Knowledge book** `rustler guide list` / `rustler prompt list` — 17 guides and 10 workflows: how to edit like a pro.
 
+## Install
+Prebuilt binaries (Windows x64 zip with CLI + desktop window, Linux x86_64 tar.gz) are GitHub release assets of the
+private repo. One-file installers verify SHA256, install into `~/.rustler/app` without admin/root, add `rustler` to the
+user PATH, give Claude Code the skill and run `rustler setup run`:
+```powershell
+gh api repos/krishna-notfound/rustler/contents/scripts/install.ps1 -H "Accept: application/vnd.github.raw" > $env:TEMP\rustler-install.ps1; powershell -ExecutionPolicy Bypass -File $env:TEMP\rustler-install.ps1
+```
+```sh
+gh api repos/krishna-notfound/rustler/contents/scripts/install.sh -H "Accept: application/vnd.github.raw" | bash
+```
+Needs `gh auth login` or `RUSTLER_TOKEN`/`GITHUB_TOKEN` (private repo). Details, flags, manual download: [`docs/install.md`](docs/install.md).
+Music is bring-your-own (`rustler asset add`); an optional CC0 starter pack: `rustler setup run --music-pack`.
+
 ## Quick start
 ```bash
-cargo build --release -p rustler-cli        # Windows: run from PowerShell
+cargo build --release -p rustler-cli        # from source (or install a release, above); Windows: run from PowerShell
 rustler setup run                           # LITE: FFmpeg, yt-dlp, uv + base Python engine, whisper base, fonts, built-in styles -> ~/.rustler
 rustler setup run --with ocr,speakers       # opt in to heavy analyzers later (also: audio-events, cuda, sfx-pack, or --profile full)
 rustler doctor run                          # what works (GPU, encoders, engine); ready=true means you can render

@@ -132,18 +132,30 @@ Line-delimited JSON-RPC 2.0 over the worker's stdin/stdout. Start with
   - Progress: `stage: "speakers.diarize"`, `pct` from the chunk callback; `stage: "models.fetch"` while
     the models download. Speed on this laptop (CPU): about 3 s for 29 s of audio once the models are cached.
 - `speakers.active {"video_path", "start": 0.0, "end": null|float, "fps": 5.0}`
-  -> `{"width", "height", "fps", "samples": [{"t", "faces": [{"x","y","w","h","score","id","motion","speak"}]}], "tracks": [{"id","samples","mean_x","mean_area","motion_p10","motion_p95","static"}]}`
+  -> `{"width", "height", "fps", "samples": [{"t", "faces": [{"x","y","w","h","score","id","track","motion","speak"}]}], "tracks": [{"id","samples","mean_x","mean_area","motion_p10","motion_p95","static","shots"}], "people", "warnings"?}`
   - Same sampling and face boxes as `faces.track` (YuNet, normalized 0..1, `t` = source time), `fps` in
     (0, 15]. Per sample three consecutive frames (about 0.05 s apart) are read; `motion` is the mean
     absolute grey difference (0..1) inside the lower 45 % of each face box (mouth and chin, middle 70 %
     of the width), averaged over the burst.
-  - `id` is a stable face track id (greedy nearest-centre matching, a face may be missing for up to
-    3 s), numbered left to right by mean x. `speak` (0..1) is `motion` normalized within the face's own
-    track ((motion - p10) / (p95 - p10), clipped), so a quiet face and an animated face are comparable.
-    A track whose p95 - p10 spread is below 0.008 is `static` (a photo, a poster, someone who never
-    speaks) and gets `speak: 0`.
+  - `track` is a face in one shot (greedy matching to a track seen in the last 3 s: nearest centre within
+    0.22 of the frame width, width ratio <= 1.7, and, when both faces have an appearance embedding, cosine
+    >= 0.25 so a cut to a close-up does not glue the close-up onto a wide-shot face). `id` is the *person*:
+    tracks are linked by appearance (SFace embeddings of faces >= 24 px wide, average-linkage cosine >= 0.40,
+    never two tracks that share a sample), so one person keeps one `id` across cuts; numbered left to right
+    by mean x. `people` is the number of persons. Without the SFace model (offline) `id` = `track` and
+    `warnings` says so. Frames are analysed at up to 960 px wide.
+  - `speak` (0..1) is `motion` normalized within the face's own *track* ((motion - p10) / (p95 - p10),
+    clipped; a close-up and a wide shot of one person are normalized separately), so a quiet face and an
+    animated face are comparable. A track whose p95 - p10 spread is below 0.008 is `static` (a photo, a
+    poster, someone who never speaks) and gets `speak: 0`. `tracks[]` has one row per person (`shots` =
+    number of tracks merged into it).
   - Errors: `validation` (missing params, video not found, bad range), `media` (cannot open video,
     cannot load the YuNet model). Progress: `stage: "speakers.active"`.
+  - `speakers.diarize` is windowed since 2026-11-15: sherpa-onnx finds the speech regions, then 1.5 s windows
+    (every 0.5 s) are embedded and clustered (average linkage; debris clusters such as applause are folded into
+    the nearest speaker; auto speaker count only when clusters are clearly apart), labels are smoothed with a
+    switch penalty, runs under 1 s are absorbed and switches snap to the quietest moment within 0.7 s. The
+    result shape is unchanged (non-overlapping segments).
 - `models.fetch` also accepts `{"diarization": true}` -> adds `"diarization"` to `fetched` and `"diarization_dir"`.
 - `engine.capabilities` `packages` now also lists `sherpa_onnx` when installed.
 - `models.fetch` also accepts `{"ocr_devanagari": true}` -> adds `"ocr_devanagari"` to `fetched` and `"ocr_devanagari_path"`.

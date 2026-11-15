@@ -208,13 +208,27 @@ def _sherpa_pass(x, seg: Path, emb: Path, num_clusters: int, progress: Callable[
 def diarize_sherpa(
     x, num_speakers: Optional[int], min_speakers: Optional[int], max_speakers: Optional[int], progress: Callable[..., None]
 ) -> List[Dict[str, Any]]:
+    """sherpa-onnx segmentation for the speech regions, then windowed-embedding re-segmentation.
+
+    sherpa's own clustering embeds whole (often long) segments. On real two-person footage with
+    similar voices and room reverb it merged a host and a guest into one speaker. The windowed
+    pass (:func:`resegment`) embeds 1.5 s windows, clusters them and smooths the labels, which
+    separated the same voices. If the windowed pass cannot run, sherpa's own labels are used.
+    """
     require_extra("speakers", "sherpa-onnx speaker diarization")
     seg, emb = ensure_models(progress)
     raw = _sherpa_pass(x, seg, emb, num_speakers if num_speakers else -1, progress)
-    segs = relabel(raw)
-    if num_speakers:
+    own = relabel(raw)
+    try:
+        regions = merge_regions([(s["start"], s["end"]) for s in own], gap=MIN_DURATION_OFF)
+        segs = resegment(x, regions, emb, num_speakers, min_speakers, max_speakers, progress)
+    except ImportError:
+        segs = []
+    if segs:
         return segs
-    n = count_speakers(segs)
+    if num_speakers:
+        return own
+    n = count_speakers(own)
     target = n
     if max_speakers is not None and n > max_speakers:
         target = max_speakers
@@ -222,8 +236,324 @@ def diarize_sherpa(
         target = min_speakers
     if target != n and len(x) > 0:
         # Threshold clustering is outside the requested range: redo the clustering with a fixed count.
-        segs = relabel(_sherpa_pass(x, seg, emb, target, progress))
-    return segs
+        own = relabel(_sherpa_pass(x, seg, emb, target, progress))
+    return own
+
+
+# --- windowed embedding re-segmentation ---------------------------------------------------------
+
+EMBED_WINDOW = 1.5
+EMBED_HOP = 0.5
+#: Auto speaker count: k clusters are believed when every pair is at least this far apart (mean cosine
+#: distance between their windows) and at least MIN_SPLIT_RATIO times the spread inside any cluster.
+MIN_SPLIT_HEIGHT = 0.33
+MIN_SPLIT_RATIO = 1.3
+MAX_AUTO_SPEAKERS = 8
+#: A speaker needs at least this share of the embedded windows and this many seconds of speech.
+MIN_SPEAKER_SHARE = 0.08
+MIN_SPEAKER_SECONDS = 3.0
+#: Cost (in cosine-similarity units) of switching speaker between two adjacent windows.
+SWITCH_PENALTY = 0.25
+#: Switch boundaries snap to the quietest moment within this many seconds.
+SNAP_SECONDS = 0.7
+#: Speaker runs shorter than this are absorbed by the neighbours (back-channels, breaths).
+MIN_RUN_SECONDS = 1.0
+
+
+def merge_regions(spans: List[Tuple[float, float]], gap: float = 0.0) -> List[Tuple[float, float]]:
+    out: List[List[float]] = []
+    for a, b in sorted(spans):
+        if out and a <= out[-1][1] + gap:
+            out[-1][1] = max(out[-1][1], b)
+        else:
+            out.append([a, b])
+    return [(a, b) for a, b in out]
+
+
+def embedding_windows(
+    regions: List[Tuple[float, float]], window: float = EMBED_WINDOW, hop: float = EMBED_HOP
+) -> List[Tuple[float, float, int]]:
+    """``(start, end, region_index)`` windows every ``hop`` s inside each speech region; a region
+    shorter than the window gets one window of its own length (regions under 0.5 s are skipped)."""
+    wins: List[Tuple[float, float, int]] = []
+    for ri, (a, b) in enumerate(regions):
+        if b - a < 0.5:
+            continue
+        if b - a <= window + hop / 2:
+            wins.append((a, b, ri))
+            continue
+        s = a
+        while s + window <= b + 1e-9:
+            wins.append((s, s + window, ri))
+            s += hop
+        if wins[-1][1] < b - hop / 2:
+            wins.append((b - window, b, ri))
+    return wins
+
+
+def _embed(x, wins: List[Tuple[float, float, int]], emb: Path, progress: Callable[..., None]):
+    import numpy as np
+    import sherpa_onnx as so
+
+    threads = max(1, min(4, os.cpu_count() or 2))
+    ex = so.SpeakerEmbeddingExtractor(so.SpeakerEmbeddingExtractorConfig(model=str(emb), num_threads=threads, provider="cpu"))
+    out = []
+    for i, (a, b, _) in enumerate(wins):
+        st = ex.create_stream()
+        st.accept_waveform(sample_rate=SAMPLE_RATE, waveform=x[int(a * SAMPLE_RATE) : int(b * SAMPLE_RATE)])
+        st.input_finished()
+        e = np.asarray(ex.compute(st), dtype=np.float32)
+        out.append(e / max(1e-9, float(np.linalg.norm(e))))
+        if i % 25 == 0:
+            progress("speakers.diarize", round(i / len(wins) * 100.0, 1))
+    return np.stack(out)
+
+
+def cluster_embeddings(E, k: Optional[int], lo: Optional[int] = None, hi: Optional[int] = None, mass=None):
+    """Average-linkage agglomerative clustering of unit vectors on cosine distance.
+
+    ``k`` fixes the cluster count. Otherwise the count is the largest one whose clusters are clearly apart
+    (:data:`MIN_SPLIT_HEIGHT`, :data:`MIN_SPLIT_RATIO`), clusters holding too little speech are folded into the nearest one,
+    and the ``lo``/``hi`` bounds are applied. ``mass`` is the speech time (s) each window stands
+    for (windows overlap, so this is not the window length); default 0.5 s. Returns integer labels
+    (0 = first window's cluster).
+    """
+    import numpy as np
+
+    n = len(E)
+    if n <= 1:
+        return np.zeros(n, dtype=int)
+    dist0 = np.maximum(0.0, 1.0 - E @ E.T)
+    dist = dist0.copy()
+    np.fill_diagonal(dist, np.inf)
+    sizes = np.ones(n)
+    history: List[Tuple[int, int, float]] = []
+    for _ in range(n - 1):
+        flat = int(np.argmin(dist))
+        i, j = divmod(flat, n)
+        if i > j:
+            i, j = j, i
+        history.append((i, j, float(dist[i, j])))
+        new = (dist[i] * sizes[i] + dist[j] * sizes[j]) / (sizes[i] + sizes[j])
+        dist[i, :] = new
+        dist[:, i] = new
+        dist[i, i] = np.inf
+        dist[j, :] = np.inf
+        dist[:, j] = np.inf
+        sizes[i] += sizes[j]
+
+    def cut(target: int) -> Dict[int, List[int]]:
+        g: Dict[int, List[int]] = {i: [i] for i in range(n)}
+        for i, j, _ in history[: n - target]:
+            g[i].extend(g.pop(j))
+        return g
+
+    w = np.full(n, EMBED_HOP) if mass is None else np.asarray(mass, dtype=float)
+    min_mass = max(MIN_SPEAKER_SECONDS, MIN_SPEAKER_SHARE * float(w.sum()))
+
+    def fold(g: Dict[int, List[int]]) -> Dict[int, List[int]]:
+        """Fold clusters with too little speech (applause, laughter, noise) into the nearest one."""
+        while len(g) > 1:
+            small = [c for c, m in g.items() if float(w[m].sum()) < min_mass]
+            if not small:
+                break
+            c = min(small, key=lambda c: len(g[c]))
+            tgt = min((o for o in g if o != c), key=lambda o: float(dist0[np.ix_(g[c], g[o])].mean()))
+            g[tgt].extend(g.pop(c))
+        return g
+
+    def avg(a: List[int], b: List[int]) -> float:
+        return float(dist0[np.ix_(a, b)].mean())
+
+    def forced(kk: int) -> Dict[int, List[int]]:
+        """``kk`` clusters of real speech: the smallest cut that leaves kk clusters with enough
+        speech once the debris (applause, laughter, noise) is folded into its nearest cluster."""
+        g = cut(kk)
+        for t in range(kk, min(n, kk + 12) + 1):
+            cand = cut(t)
+            if sum(1 for m in cand.values() if float(w[m].sum()) >= min_mass) >= kk:
+                g = cand
+                break
+        g = fold(g)
+        while len(g) > kk:  # more big clusters than asked: merge the closest pair
+            ids = list(g)
+            i, j = min(((a, b) for ai, a in enumerate(ids) for b in ids[ai + 1 :]), key=lambda p: avg(g[p[0]], g[p[1]]))
+            g[i].extend(g.pop(j))
+        return g
+
+    def within(m: List[int]) -> float:
+        if len(m) < 2:
+            return 0.0
+        sub = dist0[np.ix_(m, m)]
+        return float(sub.sum() / (len(m) * (len(m) - 1)))
+
+    def believable(g: Dict[int, List[int]]) -> bool:
+        ids = list(g)
+        if len(ids) < 2:
+            return True
+        between = min(avg(g[a], g[b]) for ai, a in enumerate(ids) for b in ids[ai + 1 :])
+        return between >= MIN_SPLIT_HEIGHT and between >= MIN_SPLIT_RATIO * max(within(g[a]) for a in ids)
+
+    if k:
+        k = max(1, min(k, n))
+        g = forced(k)
+        if len(g) < k:  # not enough distinct speech to fill k clusters: honour the exact count anyway
+            g = cut(k)
+    else:
+        # Speaker count: the largest k whose clusters are all clearly apart (average cosine distance
+        # between clusters vs the spread inside them); one speaker's windows also spread out a little.
+        g = forced(1)
+        for kk in range(2, min(MAX_AUTO_SPEAKERS, n) + 1):
+            cand = forced(kk)
+            if len(cand) < kk or not believable(cand):
+                break
+            g = cand
+        if lo and len(g) < lo:
+            g = forced(min(lo, n))
+        if hi and len(g) > hi:
+            g = forced(hi)
+    labels = np.zeros(n, dtype=int)
+    for lab, (_, idxs) in enumerate(sorted(g.items(), key=lambda kv: min(kv[1]))):
+        labels[idxs] = lab
+    return labels
+
+
+def smooth_labels(E, labels, penalty: float = SWITCH_PENALTY):
+    """Viterbi over windows in time order: emission = cosine similarity to the cluster centroid,
+    a fixed cost for every speaker switch (so a lone odd window does not flip the speaker)."""
+    import numpy as np
+
+    n = len(E)
+    k = int(labels.max()) + 1 if n else 0
+    if k <= 1 or n < 2:
+        return labels
+    cent = np.stack([E[labels == c].mean(axis=0) for c in range(k)])
+    cent /= np.maximum(1e-9, np.linalg.norm(cent, axis=1, keepdims=True))
+    sim = E @ cent.T
+    score = np.zeros((n, k))
+    back = np.zeros((n, k), dtype=int)
+    score[0] = sim[0]
+    for i in range(1, n):
+        for c in range(k):
+            sw = score[i - 1].copy()
+            sw[c] = -np.inf
+            j = int(np.argmax(sw))
+            if sw[j] - penalty > score[i - 1, c]:
+                score[i, c] = sw[j] - penalty + sim[i, c]
+                back[i, c] = j
+            else:
+                score[i, c] = score[i - 1, c] + sim[i, c]
+                back[i, c] = c
+    out = np.zeros(n, dtype=int)
+    out[-1] = int(np.argmax(score[-1]))
+    for i in range(n - 1, 0, -1):
+        out[i - 1] = back[i, out[i]]
+    return out
+
+
+def window_slots(wins: List[Tuple[float, float, int]]) -> List[Tuple[float, float]]:
+    """The non-overlapping slot each window owns: from the midpoint to its previous neighbour's
+    centre to the midpoint to the next one's; the first and last window of a speech region own
+    that region's edge. One entry per window (a zero-length slot is possible)."""
+    centres = [(a + b) / 2.0 for a, b, _ in wins]
+    out: List[Tuple[float, float]] = []
+    for i, (a, b, ri) in enumerate(wins):
+        first = i == 0 or wins[i - 1][2] != ri
+        last = i + 1 == len(wins) or wins[i + 1][2] != ri
+        lo = a if first else (centres[i - 1] + centres[i]) / 2.0
+        hi = b if last else (centres[i] + centres[i + 1]) / 2.0
+        out.append((lo, max(lo, hi)))
+    return out
+
+
+def window_spans(wins: List[Tuple[float, float, int]], labels) -> List[Tuple[float, float, int]]:
+    """``(start, end, label)`` per window slot (see :func:`window_slots`), empty slots dropped."""
+    return [(lo, hi, int(labels[i])) for i, (lo, hi) in enumerate(window_slots(wins)) if hi > lo]
+
+
+def merge_runs(spans: List[Tuple[float, float, int]], min_run: float = MIN_RUN_SECONDS) -> List[List[Any]]:
+    """Join adjacent same-speaker spans, then let neighbours absorb runs shorter than ``min_run``."""
+    runs: List[List[Any]] = []
+
+    def push(r: List[Any]) -> None:
+        if runs and runs[-1][2] == r[2] and r[0] - runs[-1][1] <= 1e-6:
+            runs[-1][1] = r[1]
+        else:
+            runs.append(list(r))
+
+    for s in spans:
+        push(list(s))
+    while len(runs) > 1:
+        short = [i for i, r in enumerate(runs) if r[1] - r[0] < min_run]
+        victim = None
+        for i in sorted(short, key=lambda i: runs[i][1] - runs[i][0]):
+            nbs = [j for j in (i - 1, i + 1) if 0 <= j < len(runs) and (abs(runs[j][1] - runs[i][0]) <= 1e-6 or abs(runs[j][0] - runs[i][1]) <= 1e-6)]
+            if nbs:
+                victim = (i, max(nbs, key=lambda j: runs[j][1] - runs[j][0]))
+                break
+        if victim is None:
+            break
+        i, j = victim
+        if j < i:
+            runs[j][1] = runs[i][1]
+        else:
+            runs[j][0] = runs[i][0]
+        del runs[i]
+        merged = runs[:]
+        runs.clear()
+        for r in merged:
+            push(r)
+    return runs
+
+
+def _quiet_snap(energy, t: float, lo: float, hi: float, hop: float = 0.01) -> float:
+    """The quietest moment (smoothed frame energy) in ``[lo, hi]``; ties go to the one nearest ``t``."""
+    import numpy as np
+
+    a, b = max(0, int(lo / hop)), min(len(energy), int(hi / hop))
+    if b - a < 8:
+        return t
+    e = np.convolve(energy[a:b], np.ones(7) / 7.0, mode="same")[3:-3]
+    if len(e) == 0:
+        return t
+    cand = np.nonzero(e <= float(e.min()) + 1.0)[0] + 3  # within 1 dB of the quietest frame
+    best = min(cand, key=lambda i: abs((a + i) * hop - t))
+    return (a + int(best)) * hop
+
+
+def resegment(
+    x,
+    regions: List[Tuple[float, float]],
+    emb: Path,
+    num_speakers: Optional[int],
+    min_speakers: Optional[int],
+    max_speakers: Optional[int],
+    progress: Callable[..., None],
+) -> List[Dict[str, Any]]:
+    """Windowed-embedding diarization inside ``regions`` (see :func:`diarize_sherpa`)."""
+    duration = len(x) / SAMPLE_RATE
+    scale = max(1.0, duration / 900.0)  # bounds the window count (the clustering is O(n^2))
+    hop = EMBED_HOP * scale
+    wins = embedding_windows(regions, EMBED_WINDOW * min(scale, 2.0), hop)
+    if not wins:
+        return []
+    E = _embed(x, wins, emb, progress)
+    mass = [hi - lo for lo, hi in window_slots(wins)]
+    labels = cluster_embeddings(E, num_speakers, min_speakers, max_speakers, mass)
+    raw_labels = labels
+    labels = smooth_labels(E, labels)
+    runs = merge_runs(window_spans(wins, labels))
+    if num_speakers and len({r[2] for r in runs}) < min(num_speakers, len(set(raw_labels.tolist()))):
+        # An exact count was asked for: smoothing must not erase a speaker with little speech.
+        runs = merge_runs(window_spans(wins, raw_labels), min_run=0.0)
+    _, energy = mfcc_frames(x)
+    for i in range(1, len(runs)):
+        a, b = runs[i - 1], runs[i]
+        if abs(a[1] - b[0]) <= 1e-6 and a[2] != b[2]:
+            t = _quiet_snap(energy, a[1], max(a[0] + 0.3, a[1] - SNAP_SECONDS), min(b[1] - 0.3, a[1] + SNAP_SECONDS))
+            a[1] = b[0] = t
+    progress("speakers.diarize", 100.0)
+    return relabel([(float(a), float(b), int(lab)) for a, b, lab in runs])
 
 
 # --- numpy heuristic diarizer (fallback) ---------------------------------------------------------
@@ -468,7 +798,16 @@ def diarize(params: Dict[str, Any], progress: Callable[..., None]) -> Dict[str, 
 
 # --- speakers.active ---------------------------------------------------------------------------
 
-MAX_ACTIVE_WIDTH = 640
+MAX_ACTIVE_WIDTH = 960
+SFACE_FILENAME = "face_recognition_sface_2021dec.onnx"
+SFACE_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/" + SFACE_FILENAME
+SFACE_SHA256 = "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79"
+#: Faces narrower than this many pixels (analysis frame) get no appearance embedding.
+MIN_EMBED_FACE_PX = 24
+#: Tracks of one person: cosine similarity of the SFace embeddings (OpenCV's own threshold is 0.363).
+SAME_PERSON_COS = 0.40
+SAME_TRACK_MIN_COS = 0.25
+TRACK_MAX_WIDTH_RATIO = 1.7
 MAX_ACTIVE_SAMPLES = 20000
 #: Mouth motion below this spread (p95 - p10, in 0..1 pixel units) is treated as sensor/codec noise.
 MIN_MOTION_SPREAD = 0.008
@@ -503,9 +842,18 @@ def motion_between(a, b, rect: Tuple[int, int, int, int]) -> float:
     return float(np.abs(pa - pb).mean() / 255.0)
 
 
+def _cos(a, b) -> float:
+    import numpy as np
+
+    return float(np.dot(a, b) / max(1e-9, float(np.linalg.norm(a) * np.linalg.norm(b))))
+
+
 def assign_tracks(samples: List[Dict[str, Any]]) -> None:
-    """Give every face a ``id`` by greedy nearest-centre matching to tracks seen in the last 3 s;
-    ids are then renumbered left to right (by mean centre x)."""
+    """Give every face a ``track`` (and ``id`` = ``track`` until :func:`link_persons` runs) by greedy
+    matching to tracks seen in the last 3 s: nearest centre within 0.22 of the frame width, similar
+    size, and, when both faces carry an appearance embedding (``_emb``), a similar-looking face.
+    Without the size and appearance gates a cut to a close-up glued the close-up to the wide-shot
+    face next to it. Tracks are numbered left to right (by mean centre x)."""
     tracks: List[Dict[str, Any]] = []
     for s in samples:
         pairs = []
@@ -515,8 +863,13 @@ def assign_tracks(samples: List[Dict[str, Any]]) -> None:
                 if s["t"] - tr["last_t"] > TRACK_HOLD_SECONDS:
                     continue
                 d = abs(cx - tr["cx"])
-                if d <= TRACK_MAX_DX:
-                    pairs.append((d, fi, ti))
+                if d > TRACK_MAX_DX:
+                    continue
+                if max(f["w"], tr["w"]) / max(1e-6, min(f["w"], tr["w"])) > TRACK_MAX_WIDTH_RATIO:
+                    continue
+                if "_emb" in f and tr["emb"] is not None and _cos(f["_emb"], tr["emb"]) < SAME_TRACK_MIN_COS:
+                    continue
+                pairs.append((d, fi, ti))
         pairs.sort()
         used_f, used_t = set(), set()
         for d, fi, ti in pairs:
@@ -526,58 +879,154 @@ def assign_tracks(samples: List[Dict[str, Any]]) -> None:
             used_t.add(ti)
             f = s["faces"][fi]
             f["_track"] = ti
-            tracks[ti]["cx"] = f["x"] + f["w"] / 2.0
-            tracks[ti]["last_t"] = s["t"]
-            tracks[ti]["xs"].append(f["x"] + f["w"] / 2.0)
+            tr = tracks[ti]
+            tr["cx"] = f["x"] + f["w"] / 2.0
+            tr["w"] = f["w"]
+            tr["last_t"] = s["t"]
+            tr["xs"].append(f["x"] + f["w"] / 2.0)
+            if "_emb" in f:
+                tr["emb"] = f["_emb"] if tr["emb"] is None else tr["emb"] * 0.8 + f["_emb"] * 0.2
         for fi, f in enumerate(s["faces"]):
             if fi in used_f:
                 continue
             cx = f["x"] + f["w"] / 2.0
             f["_track"] = len(tracks)
-            tracks.append({"cx": cx, "last_t": s["t"], "xs": [cx]})
+            tracks.append({"cx": cx, "w": f["w"], "last_t": s["t"], "xs": [cx], "emb": f.get("_emb")})
     order = sorted(range(len(tracks)), key=lambda i: sum(tracks[i]["xs"]) / len(tracks[i]["xs"]))
     rank = {old: new for new, old in enumerate(order)}
     for s in samples:
         for f in s["faces"]:
-            f["id"] = rank[f.pop("_track")]
+            f["track"] = rank[f.pop("_track")]
+            f["id"] = f["track"]
+
+
+def link_persons(samples: List[Dict[str, Any]]) -> int:
+    """Group tracks into people by appearance, so a person keeps one ``id`` across cuts (wide shot,
+    close-up, wide shot again). Tracks that are on screen in the same sample are different people.
+    Average-linkage on cosine similarity of the mean face embedding, merged while >= SAME_PERSON_COS.
+    Tracks without an embedding (tiny faces) stay separate. ``id`` becomes the person number,
+    ordered left to right by mean centre x. Returns the number of people."""
+    import numpy as np
+
+    by_track: Dict[int, Dict[str, Any]] = {}
+    for si, s in enumerate(samples):
+        for f in s["faces"]:
+            t = by_track.setdefault(f["track"], {"emb": [], "xs": [], "seen": set()})
+            t["xs"].append(f["x"] + f["w"] / 2.0)
+            t["seen"].add(si)
+            if "_emb" in f:
+                t["emb"].append(f["_emb"])
+    ids = sorted(by_track)
+    mean_emb = {}
+    for tid in ids:
+        e = by_track[tid]["emb"]
+        if len(e) >= 2:
+            m = np.mean(np.stack(e), axis=0)
+            mean_emb[tid] = m / max(1e-9, float(np.linalg.norm(m)))
+    clusters: List[List[int]] = [[tid] for tid in ids]
+
+    def conflict(a: List[int], b: List[int]) -> bool:
+        sa = set().union(*(by_track[t]["seen"] for t in a))
+        sb = set().union(*(by_track[t]["seen"] for t in b))
+        return bool(sa & sb)
+
+    def sim(a: List[int], b: List[int]) -> Optional[float]:
+        v = [float(mean_emb[x] @ mean_emb[y]) for x in a if x in mean_emb for y in b if y in mean_emb]
+        return sum(v) / len(v) if v else None
+
+    while True:
+        best = None
+        for i in range(len(clusters)):
+            for j in range(i + 1, len(clusters)):
+                v = sim(clusters[i], clusters[j])
+                if v is None or v < SAME_PERSON_COS or conflict(clusters[i], clusters[j]):
+                    continue
+                if best is None or v > best[0]:
+                    best = (v, i, j)
+        if best is None:
+            break
+        _, i, j = best
+        clusters[i].extend(clusters.pop(j))
+    mean_x = lambda c: sum(sum(by_track[t]["xs"]) for t in c) / sum(len(by_track[t]["xs"]) for t in c)  # noqa: E731
+    clusters.sort(key=mean_x)
+    person_of = {t: pi for pi, c in enumerate(clusters) for t in c}
+    for s in samples:
+        for f in s["faces"]:
+            f["id"] = person_of[f["track"]]
+    return len(clusters)
 
 
 def normalize_motion(samples: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Add ``speak`` (0..1) per face, normalized within its own track; returns per-track stats."""
+    """Add ``speak`` (0..1) per face, normalized within its own track (a track is one face in one
+    shot, so a close-up and a wide shot of the same person are normalized separately); returns
+    one stats row per person (``id``)."""
     import numpy as np
 
-    by_id: Dict[int, List[float]] = {}
+    key = lambda f: f.get("track", f["id"])  # noqa: E731
+    by_track: Dict[int, List[float]] = {}
     for s in samples:
         for f in s["faces"]:
-            by_id.setdefault(f["id"], []).append(f["motion"])
+            by_track.setdefault(key(f), []).append(f["motion"])
     stats: Dict[int, Dict[str, float]] = {}
-    for tid, vals in by_id.items():
+    for tid, vals in by_track.items():
         v = np.asarray(vals)
         lo, hi = float(np.percentile(v, 10)), float(np.percentile(v, 95))
         stats[tid] = {"lo": lo, "hi": hi, "spread": hi - lo}
     for s in samples:
         for f in s["faces"]:
-            st = stats[f["id"]]
+            st = stats[key(f)]
             if st["spread"] < MIN_MOTION_SPREAD:
                 f["speak"] = 0.0
             else:
                 f["speak"] = round(min(1.0, max(0.0, (f["motion"] - st["lo"]) / st["spread"])), 4)
+    people: Dict[int, List[Dict[str, Any]]] = {}
+    for s in samples:
+        for f in s["faces"]:
+            people.setdefault(f["id"], []).append(f)
     tracks = []
-    for tid in sorted(by_id):
-        areas = [f["w"] * f["h"] for s in samples for f in s["faces"] if f["id"] == tid]
-        cxs = [f["x"] + f["w"] / 2.0 for s in samples for f in s["faces"] if f["id"] == tid]
+    for pid in sorted(people):
+        fs = people[pid]
+        tids = {key(f) for f in fs}
+        main = max(tids, key=lambda t: len(by_track[t]))
         tracks.append(
             {
-                "id": tid,
-                "samples": len(by_id[tid]),
-                "mean_x": round(sum(cxs) / len(cxs), 4),
-                "mean_area": round(sum(areas) / len(areas), 5),
-                "motion_p10": round(stats[tid]["lo"], 5),
-                "motion_p95": round(stats[tid]["hi"], 5),
-                "static": stats[tid]["spread"] < MIN_MOTION_SPREAD,
+                "id": pid,
+                "samples": len(fs),
+                "mean_x": round(sum(f["x"] + f["w"] / 2.0 for f in fs) / len(fs), 4),
+                "mean_area": round(sum(f["w"] * f["h"] for f in fs) / len(fs), 5),
+                "motion_p10": round(stats[main]["lo"], 5),
+                "motion_p95": round(stats[main]["hi"], 5),
+                "static": all(stats[t]["spread"] < MIN_MOTION_SPREAD for t in tids),
+                "shots": len(tids),
             }
         )
     return tracks
+
+
+def ensure_sface(progress: Optional[Callable[..., None]] = None) -> Optional[Path]:
+    """The SFace face-recognition model (OpenCV Zoo, Apache-2.0), downloaded on first use and
+    verified by sha256. Returns ``None`` when it cannot be had (offline): people are then not linked
+    across cuts."""
+    p = rustler_home() / "models" / "sface" / SFACE_FILENAME
+    try:
+        if p.is_file() and _sha256(p) == SFACE_SHA256:
+            return p
+        p.parent.mkdir(parents=True, exist_ok=True)
+        if progress:
+            progress("models.fetch", 0.0, f"downloading {SFACE_FILENAME} (SFace, Apache-2.0)")
+        tmp = _download(SFACE_URL, p.parent)
+        try:
+            got = _sha256(tmp)
+            if got != SFACE_SHA256:
+                raise RpcError("media", f"SFace model has sha256 {got}, expected {SFACE_SHA256}")
+            os.replace(tmp, p)
+        finally:
+            if tmp.exists():
+                tmp.unlink()
+        return p
+    except Exception as e:  # noqa: BLE001 - optional model: degrade, do not fail the analysis
+        log.warning("SFace model unavailable, faces are not linked across cuts: %s", e)
+        return None
 
 
 def active(params: Dict[str, Any], progress: Callable[..., None]) -> Dict[str, Any]:
@@ -599,6 +1048,7 @@ def active(params: Dict[str, Any], progress: Callable[..., None]) -> Dict[str, A
         raise RpcError("validation", f"video not found: {video_path}")
 
     import cv2
+    import numpy as np
 
     model = faces_mod.ensure_model(None, progress)
     cap = cv2.VideoCapture(video_path)
@@ -624,6 +1074,13 @@ def active(params: Dict[str, Any], progress: Callable[..., None]) -> Dict[str, A
             )
         except cv2.error as e:
             raise RpcError("media", f"cannot load YuNet model {model}: {e}") from e
+        recognizer = None
+        sface = ensure_sface(progress)
+        if sface is not None:
+            try:
+                recognizer = cv2.FaceRecognizerSF.create(str(sface), "")
+            except cv2.error as e:
+                log.warning("cannot load SFace: %s", e)
         n = int((end - start) * fps + 1e-9)
         if n < 1 or n > MAX_ACTIVE_SAMPLES:
             raise RpcError("validation", f"range yields {n} samples (allowed 1..{MAX_ACTIVE_SAMPLES})")
@@ -665,8 +1122,14 @@ def active(params: Dict[str, Any], progress: Callable[..., None]) -> Dict[str, A
                     rect = mouth_region(box, fw, fh)
                     diffs = [motion_between(burst[k], burst[k + 1], rect) for k in range(len(burst) - 1)]
                     motion = sum(diffs) / len(diffs) if diffs else 0.0
-                    fl.append(
-                        {
+                    emb = None
+                    if recognizer is not None and float(r[2]) >= MIN_EMBED_FACE_PX:
+                        try:
+                            e = recognizer.feature(recognizer.alignCrop(f0, r)).flatten().astype(np.float32)
+                            emb = e / max(1e-9, float(np.linalg.norm(e)))
+                        except cv2.error:
+                            emb = None
+                    entry = {
                             "x": round(box[0], 5),
                             "y": round(box[1], 5),
                             "w": round(box[2], 5),
@@ -674,7 +1137,9 @@ def active(params: Dict[str, Any], progress: Callable[..., None]) -> Dict[str, A
                             "score": round(float(r[-1]), 4),
                             "motion": round(motion, 5),
                         }
-                    )
+                    if emb is not None:
+                        entry["_emb"] = emb
+                    fl.append(entry)
             fl.sort(key=lambda f: f["w"] * f["h"], reverse=True)
             samples.append({"t": round(t, 4), "faces": fl})
             if i % 4 == 0 or i == n - 1:
@@ -682,8 +1147,13 @@ def active(params: Dict[str, Any], progress: Callable[..., None]) -> Dict[str, A
     finally:
         cap.release()
     assign_tracks(samples)
+    people = link_persons(samples)
     tracks = normalize_motion(samples)
     for s in samples:
         for f in s["faces"]:
             f["motion"] = round(f["motion"], 5)
-    return {"width": width, "height": height, "fps": fps, "samples": samples, "tracks": tracks}
+            f.pop("_emb", None)
+    out = {"width": width, "height": height, "fps": fps, "samples": samples, "tracks": tracks, "people": people}
+    if recognizer is None:
+        out["warnings"] = ["face recognition model unavailable: faces are not linked across cuts"]
+    return out
