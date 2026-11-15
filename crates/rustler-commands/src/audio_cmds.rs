@@ -350,7 +350,8 @@ async fn volume(ctx: Ctx, i: VolumeIn) -> Result<AudioFxOut> {
 #[derive(Deserialize, JsonSchema)]
 pub struct AddSfxIn {
     pub clip_id: ClipId,
-    /// Local audio file (wav/mp3/m4a/ogg/flac...).
+    /// Local audio file (wav/mp3/m4a/ogg/flac...), `asset:<id>`, an `http(s)` link to an audio file
+    /// (downloaded to the project's assets cache), or `source:<source_id>[@start-end]` (audio of an imported video).
     pub file: PathBuf,
     /// Edit-timeline time in seconds (what `clip show` prints). Give this or at_word.
     pub at: Option<f64>,
@@ -409,9 +410,10 @@ async fn add_sfx(ctx: Ctx, mut i: AddSfxIn) -> Result<SfxOut> {
     const STAGE: &str = "audio.add_sfx";
     let store = ctx.store()?;
     let clip = store.load_clip(&i.clip_id)?;
-    // `asset:<id>` picks a sound from the asset library (`rustler asset list --kind sfx`).
-    i.file = crate::asset_cmds::resolve_asset_path(&store, &ctx.home, &i.file.to_string_lossy())?;
-    if !i.file.is_file() {
+    // A path, `asset:<id>` (`rustler asset list --kind sfx`), an http(s) URL or `source:<id>[@a-b]`.
+    let resolved = crate::media_ref::resolve(&ctx, STAGE, &i.file.to_string_lossy(), crate::media_ref::Want::Audio).await?;
+    i.file = resolved.path.clone();
+    if !resolved.pending && !i.file.is_file() {
         return Err(RustlerError::new(ErrorCode::NotFound, STAGE, format!("no such file: {}", i.file.display()))
             .hint("pass an existing local audio file (wav/mp3/m4a/ogg/flac)"));
     }
@@ -421,7 +423,7 @@ async fn add_sfx(ctx: Ctx, mut i: AddSfxIn) -> Result<SfxOut> {
             .hint(format!("supported extensions: {}", SFX_EXTS.join(", "))));
     }
     let paths = ToolPaths::from_home(&ctx.home);
-    if paths.ffprobe.is_file() {
+    if paths.ffprobe.is_file() && !resolved.pending {
         let p = rustler_media::probe(&paths, &i.file).await.map_err(|e| {
             validation(STAGE, format!("cannot read {}: {}", i.file.display(), e.message))
         })?;

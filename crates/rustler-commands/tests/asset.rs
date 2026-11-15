@@ -69,19 +69,10 @@ fn ids(v: &Value, key: &str) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn add_requires_license_and_lists_searches_removes() {
+async fn add_lists_searches_removes() {
     let f = fx();
     let wav = f.dir.join("Big Whoosh.wav");
     write_wav(&wav, 0.5);
-
-    // no license / placeholder license: refused, nothing copied
-    for lic in [json!({}), json!({"license": ""}), json!({"license": "unknown"})] {
-        let mut input = json!({"path": wav, "kind": "sfx"});
-        input.as_object_mut().unwrap().extend(lic.as_object().unwrap().clone());
-        let e = run(&f, "asset.add", input).await.unwrap_err();
-        assert_eq!(e.code, ErrorCode::Validation, "{}", e.message);
-        assert!(e.message.contains("license"));
-    }
     assert!(!f.ctx.project_dir.as_ref().unwrap().join("assets").exists());
     // wrong extension for the kind
     let e = run(&f, "asset.add", json!({"path": wav, "kind": "font", "license": "OFL-1.1"})).await.unwrap_err();
@@ -405,7 +396,7 @@ async fn setup_assets_fetches_cc0_sfx() {
     let dir = paths.fonts.join("Anton");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("Anton-Regular.ttf"), b"not a real font").unwrap();
-    let report = rustler_tools::assets::install(&paths, false, &rustler_registry::ProgressSink::noop()).await.unwrap();
+    let report = rustler_tools::assets::install(&paths, false, true, &rustler_registry::ProgressSink::noop()).await.unwrap();
     println!("{report:#?}");
     assert!(report.warnings.is_empty(), "{:?}", report.warnings);
     assert!(report.sfx >= 20, "{}", report.sfx);
@@ -421,7 +412,7 @@ async fn setup_assets_fetches_cc0_sfx() {
         assert!(rustler_tools::assets::entry_file(&rustler_tools::assets::assets_root(tmp.path()), e).unwrap().is_file());
     }
     // idempotent: a second run downloads nothing and changes nothing
-    let again = rustler_tools::assets::install(&paths, false, &rustler_registry::ProgressSink::noop()).await.unwrap();
+    let again = rustler_tools::assets::install(&paths, false, true, &rustler_registry::ProgressSink::noop()).await.unwrap();
     assert_eq!(again.sfx, report.sfx);
     // the real library: the new assets are visible through asset.list/search
     let mut ctx = rustler_registry::Ctx::new(None, tmp.path().to_path_buf());
@@ -442,4 +433,189 @@ async fn setup_assets_fetches_cc0_sfx() {
         println!("{s}");
         assert!(s["preview"]["duration_s"].as_f64().unwrap() > 0.0);
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// lite / agent-first assets: license optional, --url, media references
+// ---------------------------------------------------------------------------------------------
+
+/// Serves `body` once per connection on 127.0.0.1 (any path); returns the base URL.
+fn serve_bytes(body: Vec<u8>) -> String {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut s) = stream else { break };
+            let mut buf = [0u8; 2048];
+            let _ = s.read(&mut buf);
+            let head = format!("HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+            let _ = s.write_all(head.as_bytes());
+            let _ = s.write_all(&body);
+        }
+    });
+    format!("http://127.0.0.1:{port}")
+}
+
+fn wav_bytes(secs: f64) -> Vec<u8> {
+    let tmp = tempfile::tempdir().unwrap();
+    let p = tmp.path().join("t.wav");
+    write_wav(&p, secs);
+    std::fs::read(p).unwrap()
+}
+
+#[tokio::test]
+async fn missing_license_is_accepted_with_a_warning_never_refused() {
+    let f = fx();
+    let wav = f.dir.join("my track.wav");
+    write_wav(&wav, 0.4);
+    let a = run(&f, "asset.add", json!({"path": wav, "kind": "music"})).await.expect("no license is fine");
+    assert_eq!(a["asset"]["license"], "unspecified (added by user/agent)");
+    assert!(a["warnings"].to_string().contains("no license given"), "{a}");
+    let id = a["asset"]["id"].as_str().unwrap().to_string();
+    run(&f, "asset.remove", json!({"id": id})).await.unwrap();
+    // a placeholder string is treated the same; a real license is kept as given
+    let b = run(&f, "asset.add", json!({"path": wav, "kind": "music", "license": "unknown"})).await.unwrap();
+    assert_eq!(b["asset"]["license"], "unspecified (added by user/agent)");
+    run(&f, "asset.remove", json!({"id": b["asset"]["id"]})).await.unwrap();
+    let c = run(&f, "asset.add", json!({"path": wav, "kind": "music", "license": "bought on a stock site, invoice 42"})).await.unwrap();
+    assert_eq!(c["asset"]["license"], "bought on a stock site, invoice 42");
+    assert!(c.get("warnings").is_none(), "no warning when a license is given: {c}");
+}
+
+#[tokio::test]
+async fn add_by_url_downloads_into_the_library_and_the_cache() {
+    let f = fx();
+    let base = serve_bytes(wav_bytes(0.5));
+    // a URL without a file extension: the type is sniffed from the bytes
+    let url = format!("{base}/media/get?id=7");
+    let a = run(&f, "asset.add", json!({"url": url, "kind": "music", "name": "Fetched Bed", "tags": ["lofi"]})).await.unwrap();
+    assert_eq!(a["asset"]["license"], "unspecified (added by user/agent)");
+    assert_eq!(a["asset"]["source_url"], url);
+    let file = PathBuf::from(a["asset"]["file"].as_str().unwrap());
+    assert!(file.is_file() && file.extension().unwrap() == "wav", "{file:?}");
+    let root = f.ctx.project_dir.clone().unwrap();
+    assert!(root.join("assets").join("_cache").is_dir(), "downloads go through the assets cache");
+    // usable as asset:<id> by audio commands
+    let id = a["asset"]["id"].as_str().unwrap();
+    let r = rustler_commands::media_ref::resolve(&f.ctx, "t", &format!("asset:{id}"), rustler_commands::media_ref::Want::Audio).await.unwrap();
+    assert_eq!(r.path, file);
+    // the same URL again is served from the cache and is a duplicate of the library entry
+    let e = run(&f, "asset.add", json!({"url": url, "kind": "music"})).await.unwrap_err();
+    assert!(e.message.contains("already in"), "{}", e.message);
+
+    // both path and url, neither, a non-http url, and something that is not media
+    assert_eq!(run(&f, "asset.add", json!({"url": url, "path": "x.wav", "kind": "music"})).await.unwrap_err().code, ErrorCode::Validation);
+    assert_eq!(run(&f, "asset.add", json!({"kind": "music"})).await.unwrap_err().code, ErrorCode::Validation);
+    assert_eq!(run(&f, "asset.add", json!({"url": "ftp://x/y.mp3", "kind": "music"})).await.unwrap_err().code, ErrorCode::Validation);
+    let html = serve_bytes(b"<html>not media</html>".to_vec());
+    let e = run(&f, "asset.add", json!({"url": format!("{html}/page"), "kind": "music"})).await.unwrap_err();
+    assert_eq!(e.code, ErrorCode::Validation, "{}", e.message);
+}
+
+#[tokio::test]
+async fn url_downloads_obey_project_permissions() {
+    let f = fx();
+    run(&f, "project.set_permissions", json!({"network": false})).await.unwrap();
+    let base = serve_bytes(wav_bytes(0.2));
+    let e = run(&f, "asset.add", json!({"url": format!("{base}/a.wav"), "kind": "sfx"})).await.unwrap_err();
+    assert_eq!(e.code, ErrorCode::Validation);
+    assert!(e.message.contains("not allowed") && e.hint.unwrap().contains("set-permissions"));
+    assert!(!f.ctx.project_dir.as_ref().unwrap().join("assets").join("_cache").exists());
+}
+
+#[tokio::test]
+async fn dry_run_url_add_downloads_nothing() {
+    let f = fx();
+    let base = serve_bytes(wav_bytes(0.2));
+    let mut dry = f.ctx.clone();
+    dry.dry_run = true;
+    let d = call(&f.reg, &dry, "asset.add", json!({"url": format!("{base}/a.wav"), "kind": "sfx"})).await.unwrap();
+    assert_eq!(d["dry_run"], true);
+    assert!(!f.ctx.project_dir.as_ref().unwrap().join("assets").exists());
+}
+
+#[tokio::test]
+async fn music_and_sfx_accept_url_asset_path_and_source_references() {
+    let Some((_t, home)) = tools_home() else { return };
+    let (proj, store, mut ctx) = new_project();
+    ctx.home = home.clone();
+    let reg = registry();
+    // a real imported-style source with audio (a 6 s mp4 with a 440 Hz tone)
+    let media = proj.path().join("v.mp4");
+    make_video(&ffmpeg_in(&home), &media, 6, 320, 240, true);
+    let src = add_source(&store, &media, probe_1080p(6.0, true, true));
+    write_transcript(&store, &src.id, sample_words());
+    let clip = call(&reg, &ctx, "clip.create", json!({"name": "c", "source_id": src.id, "start_unit": 0, "end_unit": 0})).await.unwrap();
+    let cid = clip["id"].as_str().unwrap().to_string();
+    let cache = ctx.project_dir.clone().unwrap().join("assets").join("_cache");
+
+    // 1. source:<id>@start-end: the audio of that range becomes the music bed (m4a in the assets cache)
+    let m = call(&reg, &ctx, "audio.add_music", json!({"clip_id": cid, "path": format!("source:{}@1-4", src.id)})).await.unwrap();
+    let p = PathBuf::from(m["music"]["path"].as_str().unwrap());
+    assert!(p.is_file() && p.starts_with(&cache) && p.extension().unwrap() == "m4a", "{p:?}");
+    let dur = ffprobe_duration(&home, &p);
+    assert!((dur - 3.0).abs() < 0.3, "extracted range is ~3 s, got {dur}");
+    // whole-source audio and a range past the end
+    let m2 = call(&reg, &ctx, "audio.add_music", json!({"clip_id": cid, "path": format!("source:{}", src.id)})).await.unwrap();
+    assert!(PathBuf::from(m2["music"]["path"].as_str().unwrap()).is_file());
+    let e = call(&reg, &ctx, "audio.add_music", json!({"clip_id": cid, "path": format!("source:{}@100-120", src.id)})).await.unwrap_err();
+    assert_eq!(e.code, ErrorCode::Validation, "{}", e.message);
+    let e = call(&reg, &ctx, "audio.add_music", json!({"clip_id": cid, "path": "source:src_doesnotexist@1-2"})).await.unwrap_err();
+    assert_eq!(e.code, ErrorCode::NotFound);
+
+    // 2. an http(s) URL (served locally): downloaded into the cache and used
+    let wav = proj.path().join("bed.wav");
+    write_wav(&wav, 1.0);
+    let base = serve_bytes(std::fs::read(&wav).unwrap());
+    let u = format!("{base}/bed.wav");
+    let m3 = call(&reg, &ctx, "audio.add_music", json!({"clip_id": cid, "path": u})).await.unwrap();
+    let p3 = PathBuf::from(m3["music"]["path"].as_str().unwrap());
+    assert!(p3.is_file() && p3.starts_with(&cache), "{p3:?}");
+    let s = call(&reg, &ctx, "audio.add_sfx", json!({"clip_id": cid, "file": format!("{base}/boom.wav"), "at": 0.2})).await.unwrap();
+    assert!(PathBuf::from(s["sfx"]["file"].as_str().unwrap()).starts_with(&cache), "{s}");
+    // a video URL used as music reduces to its audio track
+    let base_v = serve_bytes(std::fs::read(&media).unwrap());
+    let m4 = call(&reg, &ctx, "audio.add_music", json!({"clip_id": cid, "path": format!("{base_v}/clip.mp4")})).await.unwrap();
+    let p4 = PathBuf::from(m4["music"]["path"].as_str().unwrap());
+    assert_eq!(p4.extension().unwrap(), "m4a", "{p4:?}");
+
+    // 3. the plain path and asset:<id> forms still work; a missing file keeps its NotFound
+    let m5 = call(&reg, &ctx, "audio.add_music", json!({"clip_id": cid, "path": wav})).await.unwrap();
+    assert!(PathBuf::from(m5["music"]["path"].as_str().unwrap()).ends_with("bed.wav"));
+    let e = call(&reg, &ctx, "audio.add_music", json!({"clip_id": cid, "path": proj.path().join("nope.mp3")})).await.unwrap_err();
+    assert_eq!(e.code, ErrorCode::NotFound);
+
+    // 4. permissions gate the URL form only
+    call(&reg, &ctx, "project.set_permissions", json!({"network": false})).await.unwrap();
+    let e = call(&reg, &ctx, "audio.add_music", json!({"clip_id": cid, "path": format!("{base}/other.wav")})).await.unwrap_err();
+    assert_eq!(e.code, ErrorCode::Validation);
+    call(&reg, &ctx, "audio.add_music", json!({"clip_id": cid, "path": format!("source:{}@1-2", src.id)})).await.unwrap();
+}
+
+#[tokio::test]
+async fn asset_add_from_a_source_clip_makes_a_music_asset() {
+    let Some((_t, home)) = tools_home() else { return };
+    let (proj, store, mut ctx) = new_project();
+    ctx.home = home.clone();
+    let reg = registry();
+    let media = proj.path().join("v.mp4");
+    make_video(&ffmpeg_in(&home), &media, 5, 320, 240, true);
+    let src = add_source(&store, &media, probe_1080p(5.0, true, true));
+    let a = call(&reg, &ctx, "asset.add", json!({"path": format!("source:{}@0-3", src.id), "kind": "music", "name": "Stream BGM"})).await.unwrap();
+    let file = PathBuf::from(a["asset"]["file"].as_str().unwrap());
+    assert!(file.is_file() && file.extension().unwrap() == "m4a", "{file:?}");
+    assert_eq!(a["asset"]["license"], "unspecified (added by user/agent)");
+    // a video file added as music keeps only its audio
+    let v = call(&reg, &ctx, "asset.add", json!({"path": media, "kind": "sfx", "name": "Clip sound"})).await.unwrap();
+    assert_eq!(PathBuf::from(v["asset"]["file"].as_str().unwrap()).extension().unwrap(), "m4a");
+}
+
+fn ffprobe_duration(home: &Path, f: &Path) -> f64 {
+    let out = std::process::Command::new(home.join("bin").join(if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" }))
+        .args(["-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1"])
+        .arg(f)
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().parse().unwrap()
 }

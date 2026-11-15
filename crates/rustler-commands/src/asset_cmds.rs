@@ -4,13 +4,15 @@
 //! Two stores with the same schema (`manifest.json` + files, see `rustler_tools::assets`): the
 //! global library `<home>/assets/` and a per-project `<project>/assets/`. They are merged at read
 //! time (project overrides global overrides built-in, by id). Every entry carries license metadata;
-//! `asset.add` refuses a missing license, so no unlicensed media enters the library.
+//! `asset.add` takes anything the agent or user supplies (a file, or `--url`): a missing license is
+//! recorded as "unspecified (added by user/agent)" with a warning, never refused.
 //!
 //! Helpers other command modules use: [`resolve_asset_path`] (`asset:<id>` in place of a path),
 //! [`asset_font_dirs`] (render font staging), [`custom_presets`] / [`check_caption_style`]
 //! (custom caption styles), [`style_infos`].
 
 use crate::clip_cmds::log_event;
+use crate::media_ref::{self, Want, is_url};
 use crate::see_cmds::find_fonts;
 use ab_glyph::{Font, FontArc, PxScale, ScaleFont};
 use image::{Rgb, RgbImage};
@@ -569,14 +571,19 @@ async fn asset_show(ctx: Ctx, i: IdIn) -> Result<ShowOut> {
 
 #[derive(Deserialize, JsonSchema)]
 pub struct AddIn {
-    /// Local file to copy into the library.
-    pub path: PathBuf,
+    /// Local file to copy into the library (or `source:<source_id>[@start-end]` to take the audio of an
+    /// imported video as a music/sfx asset). Give this or `--url`.
+    pub path: Option<PathBuf>,
+    /// Direct `http(s)` link to an audio/image/font/video file: downloaded into the library (needs the
+    /// project's network+downloads permission, like `source import`). A video file added as music/sfx
+    /// is reduced to its audio track.
+    pub url: Option<String>,
     pub kind: AssetKind,
     /// Display name (default: the file name).
     pub name: Option<String>,
     pub tags: Option<Vec<String>>,
-    /// REQUIRED: the license the file is under (`CC0-1.0`, `CC-BY-4.0`, `OFL-1.1`, `own work`,
-    /// `licensed: <where from>`). Unlicensed media is refused.
+    /// Optional: the license the file is under (`CC0-1.0`, `CC-BY-4.0`, `OFL-1.1`, `own work`,
+    /// `licensed: <where from>`, anything). Missing = stored as "unspecified (added by user/agent)" with a warning.
     #[serde(default)]
     pub license: String,
     pub license_url: Option<String>,
@@ -599,14 +606,21 @@ pub struct AddOut {
 
 const NO_LICENSE: &[&str] = &["", "unknown", "none", "n/a", "na", "unlicensed", "todo", "tbd", "?", "-", "unspecified"];
 
-/// Trimmed license text; `Validation` for an empty or placeholder license.
-pub fn check_license(stage: &str, license: &str) -> Result<String> {
+/// License recorded when none (or a placeholder such as `unknown`) is given.
+pub const LICENSE_UNSPECIFIED: &str = "unspecified (added by user/agent)";
+
+/// The license text to store, and a warning when it is unspecified. Never refuses: the agent/user
+/// decides what may be used; Rustler only records what it was told.
+pub fn normalize_license(license: &str) -> (String, Option<String>) {
     let l = license.trim();
     if NO_LICENSE.contains(&l.to_lowercase().as_str()) {
-        return Err(validation(stage, "a license is required: unlicensed media is never added to the library")
-            .hint("pass --license, e.g. CC0-1.0, CC-BY-4.0, OFL-1.1, \"own work\", or \"licensed: <where from>\"; add --license-url/--source-url when you have them"));
+        (
+            LICENSE_UNSPECIFIED.to_string(),
+            Some("no license given: stored as \"unspecified (added by user/agent)\". You are responsible for the right to use this file; pass --license/--source-url (and --attribution) when you know them".to_string()),
+        )
+    } else {
+        (l.to_string(), None)
     }
-    Ok(l.to_string())
 }
 
 fn ext_of(p: &Path) -> String {
@@ -675,18 +689,49 @@ fn sha256_of(path: &Path) -> Result<String> {
 
 async fn asset_add(ctx: Ctx, i: AddIn) -> Result<AddOut> {
     const STAGE: &str = "asset.add";
-    let license = check_license(STAGE, &i.license)?;
-    if !i.path.is_file() {
-        return Err(RustlerError::new(ErrorCode::NotFound, STAGE, format!("no such file: {}", i.path.display()))
-            .hint("pass an existing local file"));
+    let (license, license_warning) = normalize_license(&i.license);
+    let want = if matches!(i.kind, AssetKind::Music | AssetKind::Sfx) { Want::Audio } else { Want::Any };
+    let (src, source_url_auto, fetch_note, pending) = match (&i.path, &i.url) {
+        (Some(_), Some(_)) => {
+            return Err(validation(STAGE, "give a path or --url, not both").hint("e.g. `rustler asset add song.mp3 --kind music` or `rustler asset add --url https://.../song.mp3 --kind music`"));
+        }
+        (None, None) => {
+            return Err(validation(STAGE, "nothing to add: pass a file path or --url").hint("e.g. `rustler asset add song.mp3 --kind music` or `rustler asset add --url https://.../song.mp3 --kind music`"));
+        }
+        (None, Some(u)) => {
+            if !is_url(u) {
+                return Err(validation(STAGE, format!("--url must be an http(s) link, got `{u}`")).hint("use a direct link to the file, or pass a local path"));
+            }
+            let r = media_ref::resolve(&ctx, STAGE, u, want).await?;
+            (r.path, Some(u.trim().to_string()), r.note, r.pending)
+        }
+        (Some(p), None) => {
+            let s = p.to_string_lossy().into_owned();
+            if is_url(&s) || s.starts_with("source:") {
+                let r = media_ref::resolve(&ctx, STAGE, &s, want).await?;
+                (r.path, is_url(&s).then(|| s.trim().to_string()), r.note, r.pending)
+            } else {
+                let r = media_ref::resolve(&ctx, STAGE, &s, want).await?;
+                (r.path, None, r.note, false)
+            }
+        }
+    };
+    if !pending && !src.is_file() {
+        return Err(RustlerError::new(ErrorCode::NotFound, STAGE, format!("no such file: {}", src.display()))
+            .hint("pass an existing local file, or --url <http(s) link>"));
     }
-    check_extension(i.kind, &i.path)?;
+    check_extension(i.kind, &src)?;
+    // From here on `i.path` is the resolved local file.
+    let i = AddIn { path: Some(src), source_url: i.source_url.or(source_url_auto), ..i };
+    let i_path: PathBuf = i.path.clone().unwrap_or_default();
     let scope = i.scope.unwrap_or_else(|| default_scope(&ctx));
     let root = root_for(&ctx, scope, STAGE)?;
-    let sha = sha256_of(&i.path)?;
-    let stem = i.path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let sha = if pending { String::new() } else { sha256_of(&i_path)? };
+    let stem = i_path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     let mut name = i.name.as_deref().map(str::trim).filter(|n| !n.is_empty()).unwrap_or(&stem).to_string();
     let mut warnings = Vec::new();
+    warnings.extend(license_warning);
+    warnings.extend(fetch_note);
     if license.to_lowercase().contains("by") && !license.to_lowercase().contains("cc0") && i.attribution.as_deref().is_none_or(|a| a.trim().is_empty()) {
         warnings.push("this license usually requires attribution; add --attribution \"<credit line>\"".to_string());
     }
@@ -694,7 +739,7 @@ async fn asset_add(ctx: Ctx, i: AddIn) -> Result<AddOut> {
     // Caption styles are validated and stored through the same path as caption.create_style.
     let mut style_json: Option<Vec<u8>> = None;
     if i.kind == AssetKind::CaptionStyle {
-        let bytes = std::fs::read(&i.path).map_err(|e| io_err(STAGE, "read", &i.path, e))?;
+        let bytes = std::fs::read(&i_path).map_err(|e| io_err(STAGE, "read", &i_path, e))?;
         let mut s: CustomStyle = serde_json::from_slice(&bytes)
             .map_err(|e| validation(STAGE, format!("not a caption style file: {e}")).hint("create one with `rustler caption create-style`, or copy the shape of `rustler asset show style-bold-karaoke`"))?;
         if i.name.is_some() {
@@ -708,7 +753,7 @@ async fn asset_add(ctx: Ctx, i: AddIn) -> Result<AddOut> {
         name = s.name.clone();
         style_json = Some(serde_json::to_vec_pretty(&s).map_err(|e| validation(STAGE, e.to_string()))?);
     } else if i.kind == AssetKind::Layout {
-        let bytes = std::fs::read(&i.path).map_err(|e| io_err(STAGE, "read", &i.path, e))?;
+        let bytes = std::fs::read(&i_path).map_err(|e| io_err(STAGE, "read", &i_path, e))?;
         serde_json::from_slice::<serde_json::Value>(&bytes).map_err(|e| validation(STAGE, format!("not valid JSON: {e}")))?;
     }
 
@@ -727,9 +772,9 @@ async fn asset_add(ctx: Ctx, i: AddIn) -> Result<AddOut> {
     let file_name = if i.kind == AssetKind::CaptionStyle {
         format!("{}.json", slug(&name))
     } else if i.kind == AssetKind::Font {
-        i.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| format!("{id}.ttf"))
+        i_path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| format!("{id}.ttf"))
     } else {
-        format!("{}.{}", slug(&stem), ext_of(&i.path))
+        format!("{}.{}", slug(&stem), ext_of(&i_path))
     };
     let mut dest = dir.join(&file_name);
     let mut n = 2;
@@ -772,7 +817,7 @@ async fn asset_add(ctx: Ctx, i: AddIn) -> Result<AddOut> {
     match style_json {
         Some(bytes) => std::fs::write(&dest, bytes).map_err(|e| io_err(STAGE, "write", &dest, e))?,
         None => {
-            std::fs::copy(&i.path, &dest).map_err(|e| io_err(STAGE, "copy to", &dest, e))?;
+            std::fs::copy(&i_path, &dest).map_err(|e| io_err(STAGE, "copy to", &dest, e))?;
         }
     }
     update_manifest(&root, |m| {
@@ -1048,6 +1093,8 @@ async fn caption_styles(ctx: Ctx, _i: StylesIn) -> Result<StylesOut> {
 pub fn register(reg: &mut Registry) {
     let ro = Annotations { read_only: true, destructive: false, network: false, costs_money: false, long_running: false };
     let write = Annotations { read_only: false, ..ro };
+    // `asset.add --url` downloads
+    let write_net = Annotations { network: true, ..write };
     reg.register(typed(
         "asset.list",
         "List library assets (fonts, music, sfx, images, caption styles, layouts) with license metadata; global + project merged",
@@ -1078,10 +1125,13 @@ pub fn register(reg: &mut Registry) {
     ));
     reg.register(typed(
         "asset.add",
-        "Add a file to the library (copied in). --license is required; unlicensed media is refused",
+        "Add anything to the library: a local file, or --url <direct http(s) link> (audio, image, font, or a video whose audio becomes music/sfx), or source:<id>[@start-end] (audio of an imported video). --license is optional (missing = recorded as unspecified, with a warning)",
         &["path"],
-        write,
+        write_net,
         vec![
+            Example { description: "your own music, no license metadata needed", cli: "rustler asset add song.mp3 --kind music --tags chill" },
+            Example { description: "music from a direct link", cli: "rustler asset add --url https://example.org/lofi.mp3 --kind music --tags lofi --license CC-BY-4.0 --attribution \"Artist - Title\"" },
+            Example { description: "reuse the audio of an imported video as music", cli: "rustler asset add source:src_01k...@30-75 --kind music --name stream-bgm" },
             Example { description: "a CC0 whoosh into the project", cli: "rustler asset add whoosh.wav --kind sfx --license CC0-1.0 --tags whoosh,transition --source-url https://example.org/whoosh" },
             Example { description: "an OFL font for everyone", cli: "rustler asset add Bangers-Regular.ttf --kind font --license OFL-1.1 --scope global" },
         ],
@@ -1152,10 +1202,13 @@ mod tests {
     }
 
     #[test]
-    fn license_check() {
-        assert!(check_license("t", "CC0-1.0").is_ok());
-        for bad in ["", "  ", "Unknown", "N/A", "unlicensed"] {
-            assert_eq!(check_license("t", bad).unwrap_err().code, ErrorCode::Validation, "{bad}");
+    fn license_is_optional_and_never_refused() {
+        assert_eq!(normalize_license(" CC0-1.0 "), ("CC0-1.0".to_string(), None));
+        assert_eq!(normalize_license("anything goes: bought on a stock site").0, "anything goes: bought on a stock site");
+        for blank in ["", "  ", "Unknown", "N/A", "unlicensed"] {
+            let (l, w) = normalize_license(blank);
+            assert_eq!(l, "unspecified (added by user/agent)", "{blank}");
+            assert!(w.unwrap().contains("responsible"), "{blank}");
         }
     }
 
