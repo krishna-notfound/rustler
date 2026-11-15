@@ -23,6 +23,7 @@ pub use app::run;
 
 use serde_json::json;
 use std::path::{Path, PathBuf};
+
 /// Env var: after the first page load, open this project folder through the same function the
 /// File > Open project... folder picker uses (for tests and scripted launches).
 pub const OPEN_ENV: &str = "RUSTLER_DESKTOP_OPEN";
