@@ -10,7 +10,8 @@
 //! * `clips/<id>/extras.json` key `speaker_colors` (`caption.speaker_colors`): the renderer then
 //!   writes speaker-coloured captions (`rustler_captions::write_ass_colored`).
 //! * `crop.track_speaker` follows the ACTIVE speaker: the engine's `speakers.active` gives face
-//!   boxes with a mouth-motion score per sample; this module correlates that with the turns.
+//!   boxes per sample (a person id that survives cuts, and a mouth-motion score); this module links
+//!   speakers to people (close-ups, elimination, mouth movement on big faces) and builds the crop path.
 
 use crate::analyze_cmds::spawn_engine;
 use crate::clip_cmds::{load_transcript, tracking_crop_width, transcript_rel};
@@ -419,8 +420,9 @@ pub struct TurnChoice {
     pub score: f64,
     /// Lead over the runner-up face.
     pub margin: f64,
-    /// `mouth-motion`, `speaker-map` (the face this speaker owns in other turns), `dominant`
-    /// (ambiguous: the largest face), `only-face`, `short-turn`, `no-face`.
+    /// `only-face` (one person on screen), `face-id` (linked through close-ups), `elimination`
+    /// (the only person left), `mouth-motion`, `speaker-map` (the face this speaker owns in other
+    /// turns), `dominant` (ambiguous: the largest face), `short-turn`, `no-face`.
     pub reason: String,
 }
 
@@ -1573,5 +1575,27 @@ mod tests {
         let keys = crop_keys(&speaker_face_samples(&samples, &choices), 0.3164, &drifting);
         let bad = crop_hit_rate(&samples, &keys, 0.3164, &[(8.3, 16.5, guest), (17.2, 39.8, host), (41.0, 95.0, guest)]);
         assert!(bad < rate, "{bad} vs {rate}");
+    }
+
+    /// Second real excerpt (public-domain White House fireside chat, medium and very wide shots where
+    /// the camera slowly zooms, faces 2-4 % of the width, close-ups of the guest at the end):
+    /// guest speaks 0-6 s and 46-105 s, host 6-45 s.
+    #[test]
+    fn real_footage_medium_two_shot_with_zooms() {
+        let f: Fixture = serde_json::from_str(include_str!("../tests/fixtures/speakers/boyle_medium_active.json")).unwrap();
+        let t: Vec<SpeakerTurn> = serde_json::from_str(include_str!("../tests/fixtures/speakers/boyle_medium_turns.json")).unwrap();
+        let (samples, turns) = (f.samples, merge_turns(&t));
+        let owner = owner_map(&samples, &turns);
+        let (guest, host) = (owner["S1"].0, owner["S2"].0);
+        assert_ne!(guest, host);
+        assert_eq!(owner["S1"].1, OwnerSource::Identity, "{owner:?}");
+        let choices = choose_faces(&samples, &turns);
+        assert!(choices.iter().all(|c| c.reason != "dominant" && c.reason != "mouth-motion"), "{choices:?}");
+        let keys = crop_keys(&speaker_face_samples(&samples, &choices), 0.3164, &speaker_smooth());
+        let rate = crop_hit_rate(&samples, &keys, 0.3164, &[(0.5, 5.7, guest), (6.3, 44.8, host), (45.8, 104.9, guest)]);
+        assert!(rate >= 0.95, "crop contained the speaker in only {:.0}% of samples: {keys:?}", rate * 100.0);
+        // The old behaviour (largest face, no identity) put the crop on the host in the first turn.
+        let first = &choices[0];
+        assert_eq!(first.face_id, Some(guest));
     }
 }

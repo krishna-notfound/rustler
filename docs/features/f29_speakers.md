@@ -36,13 +36,13 @@ smoothing as `crop.track_face`; per-turn `reason`: `mouth-motion`, `speaker-map`
 
 1. Speaker ids `S1`, `S2`... follow first appearance; colours are keyed by id, names are display-only.
 2. The preset's active-word highlight is unchanged: pick an S1 colour other than yellow with `bold-karaoke` or `clean-white`.
-3. `crop.track_speaker` needs a `center-crop` segment; turns shorter than 0.6 s never move the crop; re-run it after trimming a clip.
+3. `crop.track_speaker` needs a `center-crop` segment; turns shorter than 1.0 s never move the crop; re-run it after trimming a clip.
 4. Models download once to `~/.rustler/models/diarization/` with sha256 checks; the heuristic fallback can split one speaker in two (it did on the JFK sample).
 
 ## Tasks
 
 - [x] analyze.speakers, speaker.rename, caption.speaker_colors, crop.track_speaker
-- [ ] Test on real two-person footage (none available offline; only a synthetic two-face video and JFK + FDR audio)
+- [x] Test on real two-person footage (2 public-domain White House fireside chats; `docs/test-media.md`); fixes in the status log
 
 ## Acceptance Criteria
 
@@ -55,5 +55,16 @@ smoothing as `crop.track_face`; per-turn `reason`: `mouth-motion`, `speaker-map`
 `cargo test -p rustler-commands --test speakers`, `cargo test -p rustler-captions --test ass_colored`, `~/.rustler/bin/uv run --project engine pytest -q engine/tests/test_speakers.py`.
 
 ## Status Log
+
+- 2026-11-15 (real footage) - Tested on real two-person footage (wide two-shot, close-ups, zooming very wide shots; `docs/test-media.md`).
+  Found and fixed: (1) diarization merged two similar voices into one speaker (guest 96 % of the time): now windowed-embedding
+  re-segmentation (`speakers.py`), 91.5 % of speech time attributed correctly on the hand-labelled excerpt, auto speaker count 2 (was 7);
+  (2) faces were tracked by position only, so a cut to a close-up made a new "face": SFace appearance embeddings now keep one `face_id` per
+  person across cuts; (3) mouth movement is noise on 4-6 % wide faces (wide two-shot): ignored below 7 % width, speaker -> person is learned
+  from close-ups (`face-id`) and elimination instead; (4) after a cut the crop followed a position from the old shot: now follows the largest
+  visible face; (5) crop keys drifted for seconds between a still stretch and the next move because the renderer interpolates linearly between
+  keys and the path only emitted keys when it moved (`SmoothParams::hold_keys`, on for the speaker crop; `crop track-face` still has it off);
+  (6) turns shorter than 1.0 s (was 0.6) never move the crop. Crop-contains-speaker rate over 1 s samples: Vance excerpt 33 % -> 97 %,
+  Boyle excerpt 95 % -> 100 % (`crop track-face`: 70 % / 63 %). Regression tests use recorded fixtures from the real runs.
 
 - 2026-11-15 — Built (C4) and merged; registry at 118 commands.
