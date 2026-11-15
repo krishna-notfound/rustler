@@ -78,8 +78,10 @@ Exit codes: 0 ok · 2 usage/validation · 3 not found · 4 dependency missing ·
 - Section sources start near 0; `original_offset` maps back to the original URL's timeline.
 - Paths inside the project are stored relative to it, so a project folder can be copied (or
   `project pack`ed) to another machine and continued.
-- Library files can be named `asset:<id>` where a path is expected (`audio add-music --path`,
-  `audio add-sfx <file>`). See the `assets` guide.
+- Audio arguments take any **media reference**: a path, `asset:<id>`, an `http(s)` link (downloaded into
+  `<project>/assets/_cache/`, needs the project's network+downloads permission) or
+  `source:<source_id>[@start-end]` (the audio of an imported video; seconds or MM:SS) in `audio add-music --path`,
+  `audio add-sfx <file>` and `asset add`. See the `assets` and `audio` guides.
 
 ## 5. Discovery
 
@@ -126,8 +128,8 @@ Commands that change a clip save a new revision (`history undo` reverts); pass `
 
 | Command | What it does |
 |---|---|
-| `setup.run {profile?, gpu?, whisper_models?, assets?, force?}` | install ffmpeg, yt-dlp, uv, engine, whisper model, fonts and built-in assets into `~/.rustler` |
-| `doctor.run` | tools, encoders, GPU, fonts, engine; `ready=true` means you can render |
+| `setup.run {profile?, with?, gpu?, whisper_models?, models?, assets?, force?}` | install ffmpeg, yt-dlp, uv, the **lite** engine (default: whisper `base`, no heavy analyzers), fonts and built-in styles into `~/.rustler`. `--with ocr,audio-events,speakers,cuda,sfx-pack` adds optional pieces; `--profile full` adds all of them. Never removes anything already installed |
+| `doctor.run` | tools, encoders, GPU, fonts, engine, install `profile` (lite/full) and `optional_features[]` (each with `available` and the exact `enable` command); `ready=true` means you can render |
 | `project.create <name> --dir` | new project folder |
 | `project.show` | project, sources, counts and the suggested next command |
 | `project.status` | one glance: per source (words, units, deep analysis) and per clip (revision, render, QC, brief) |
@@ -135,7 +137,7 @@ Commands that change a clip save a new revision (`history undo` reverts); pass `
 | `project.pack <out>? {include_media?, include_renders?, include_analysis?}` | zip the project (no media by default) |
 | `project.unpack <archive> <dir>` | extract a pack, fix media paths, register it |
 | `project.set_permissions {network?, downloads?, fs_roots?, cookies_file?}` | what the project may download/read |
-| `project.set_settings {caption_script?, default_whisper_model?}` | `latin` / `devanagari` / `as_transcribed` captions; default model |
+| `project.set_settings {caption_script?, default_whisper_model?, qc_faces?}` | `latin` / `devanagari` / `as_transcribed` captions; default whisper model (`base`); run the engine face checks in every `qc run` (off by default) |
 | `guide.list`, `guide.show <id>`, `guide.search <query>` | this knowledge book |
 | `prompt.list`, `prompt.show <name> --args` | ready-made workflows |
 
@@ -151,7 +153,7 @@ CLI-only helpers (not registry commands): `rustler help`, `rustler commands list
 | `source.search <query> {limit?}` | public YouTube search |
 | `source.import <input> {sections?, name?}` | local file or URL (`--sections` downloads only those windows); proxy + wav |
 | `source.list`, `source.show <src>` | sources; probe and which analyses exist |
-| `analyze.quick <src>` | audio + scenes + transcript + units + highlight signals in one call |
+| `analyze.quick <src> {transcribe?: auto\|always\|never}` | light first look: loudness + scenes (on the proxy) + transcript + highlight signals. `auto` reuses captions fetched for a URL source instead of running whisper; `never` skips the transcript; no OCR/events/faces/speakers |
 | `analyze.transcribe <src> {model?, language?, device?, force?}` | transcription alone (resumable) |
 | `analyze.scenes <src>`, `analyze.audio <src>` | scene cuts; loudness curve, peaks, silences |
 | `analyze.deep <src> {every?, fps?}` | on-screen text + audio events + faces + plain-language summary |
@@ -235,7 +237,7 @@ CLI-only helpers (not registry commands): `rustler help`, `rustler commands list
 |---|---|
 | `render.preview_frame <clip> --out-t*` | one composed frame (layout, captions, overlays, effects): look before the full render |
 | `render.run <clip> {quality?, prefer-gpu?, two-pass-loudness?}` | one encode, 1080x1920 mp4 (`draft` or `final`) |
-| `qc.run <clip> {render-id?, allow-fail?}` | checks + contact sheet; exit 7 when failed |
+| `qc.run <clip> {render-id?, allow-fail?, faces?}` | fast checks + contact sheet (look at it); exit 7 when failed. `--faces` (or project `qc_faces`) adds the engine face checks, which are `pass` with `{"skipped": "off by default ..."}` otherwise |
 | `fix.suggest <clip>` | QC report → ordered fixes with exact commands and an `auto_safe` flag |
 | `fix.apply <clip> {check?, rerender?}` | apply the `auto_safe` fixes, re-render, re-run QC |
 | `qc.compare <clip> <render_a> <render_b>` | side-by-side contact sheet + per-check diff |
@@ -259,7 +261,7 @@ CLI-only helpers (not registry commands): `rustler help`, `rustler commands list
 | Command | What it does |
 |---|---|
 | `asset.list {kind?, tag?}`, `asset.search <query>`, `asset.show <id>` | fonts, music, sfx, images, caption styles, layouts with licenses; `show` makes a preview |
-| `asset.add <path> --kind* --license* {name?, tags?, scope?, source-url?, attribution?}` | copy a file in; unlicensed refused |
+| `asset.add <path>\|--url <link>\|source:<id>@a-b --kind* {license?, name?, tags?, scope?, source-url?, attribution?}` | add anything: a file, a direct link, or the audio of an imported video; no license needed (recorded as "unspecified (added by user/agent)" with a warning) |
 | `asset.remove <id>` | remove (built-ins cannot be removed) |
 
 ### Speakers

@@ -1,7 +1,7 @@
 ---
 id: assets
 title: "Assets: fonts, sound effects, music, caption styles, licenses"
-summary: "Find and add library assets (asset list/search/show/add/remove), use them as asset:<id> in audio commands, license rules, bundled Kenney CC0 sound effects, and creating custom caption styles."
+summary: "Find and add library assets (asset list/search/show/add/remove), add anything yourself (file, --url, source:<id>), use them as asset:<id> in audio commands, optional license metadata, the opt-in Kenney CC0 SFX pack, and creating custom caption styles."
 order: 17
 tags: [assets, library, license, sfx, music, fonts, caption-style, custom-style]
 ---
@@ -9,8 +9,10 @@ tags: [assets, library, license, sfx, music, fonts, caption-style, custom-style]
 # Assets
 
 The library holds everything reusable that is not a source video: **fonts, sound effects, music,
-images, caption styles and layouts**. Every entry has a license; unlicensed media is refused. Two
-places, merged when you read them:
+images, caption styles and layouts**. Nothing is fixed: **you can add anything** (your own music, a
+track from a link, the audio of any imported video). Every entry records a license field; if you do
+not know it, it is stored as "unspecified (added by user/agent)" with a warning (Rustler never
+refuses a file over the license text; the right to use it is yours). Two places, merged when you read them:
 
 - global: `~/.rustler/assets/` (filled by `rustler setup run`; shared by all projects)
 - project: `<project>/assets/` (added with `--scope project`, the default inside a project)
@@ -19,15 +21,15 @@ A project asset overrides a global one with the same id, which overrides a built
 
 ## 1. What is there out of the box
 
-After `setup run` (`rustler asset list` shows the real state):
+After `setup run` (`rustler asset list` shows the real state; the SFX pack is **opt-in**, see below):
 
 | Kind | Contents | License |
 |---|---|---|
 | `caption_style` | `style-bold-karaoke`, `style-clean-white`, `style-boxed-highlight`, `style-hormozi-pop` (the 4 presets) | built-in |
 | `layout` | `layout-center-crop`, `layout-blur-fit`, `layout-split-vertical` | built-in |
 | `font` | Anton, Poppins ExtraBold, Poppins Bold, Noto Sans Devanagari | OFL-1.1 |
-| `sfx` | about 26 curated sounds from the Kenney Interface Sounds and Impact Sounds packs: clicks, ticks, pops, swipes (`sfx-kenney-interface-swipe-up`), glitch, bong, punches and impacts (`sfx-kenney-impact-punch-heavy`, `sfx-kenney-impact-impact-metal`, `-glass`, `-bell`) | CC0 |
-| `music` | **none bundled.** Add your own licensed or royalty-free tracks (section 4) | yours |
+| `sfx` | **only after `rustler setup run --with sfx-pack`** (or `--profile full`): about 26 curated sounds from the Kenney Interface Sounds and Impact Sounds packs: clicks, ticks, pops, swipes (`sfx-kenney-interface-swipe-up`), glitch, bong, punches and impacts (`sfx-kenney-impact-punch-heavy`, `sfx-kenney-impact-impact-metal`, `-glass`, `-bell`). Without the pack the library has no sfx: add your own | CC0 |
+| `music` | **none bundled, nothing fixed.** Add whatever you want (section 4) | yours |
 
 Layout assets are only the three built-ins; custom multi-region layouts are saved with
 `layout save-preset` (see `layouts-and-framing`).
@@ -49,7 +51,8 @@ frame. Look at it before you choose.
 
 ## 3. Use an asset: `asset:<id>`
 
-Wherever a command wants an audio file path, pass `asset:<id>`:
+Wherever a command wants an audio file, pass `asset:<id>` (or a path, an `http(s)` link, or
+`source:<source_id>[@start-end]`, see `audio` section 3):
 
 ```
 rustler audio add-sfx clp_X asset:sfx-kenney-impact-punch-heavy --at 0.1 --volume-db -8
@@ -62,23 +65,31 @@ Sound effects: keep them subtle (-6 to -12 dB, the voice stays on top), one or t
 cut, an emphasis word or the reveal; word-anchored (`--at-word`) effects follow the word when you
 re-cut. See `audio` and `editing-toolkit`.
 
-## 4. Add your own (license required)
+## 4. Add your own (anything; the license is optional)
 
 ```
-rustler asset add D:/music/calm-bed.mp3 --kind music --license "CC0-1.0" --name "Calm bed" --tags '["calm","bed"]' \
-    --source-url https://example.org/track
+rustler asset add D:/music/calm-bed.mp3 --kind music --name "Calm bed" --tags '["calm","bed"]'
+rustler asset add --url https://example.org/lofi.mp3 --kind music --license CC-BY-4.0 --attribution "Artist - Track"
+rustler asset add source:src_01k...@30-75 --kind music --name stream-bgm     # audio of an imported video
 rustler asset add D:/fonts/Bangers-Regular.ttf --kind font --license OFL-1.1 --scope global
 rustler asset add D:/sfx/whoosh.wav --kind sfx --license "own work" --scope project
 ```
 
-- `--license` is **required**. Placeholders such as `unknown` or `n/a` are refused. Use the real license
-  (`CC0-1.0`, `CC-BY-4.0`, `OFL-1.1`, `own work`, `licensed: <where from>`); add `--attribution "<credit>"`
-  when the license requires credit and `--license-url` when you have it.
-- Allowed extensions per kind: font `ttf/otf`; music/sfx `mp3 wav ogg m4a aac flac opus`; image
-  `png jpg webp gif`; caption style and layout `json`. A file already in the library (same sha256) is refused.
-- Never add music you are not allowed to use. Platforms flag copyrighted tracks; **the user's license
-  is the user's responsibility, so ask when in doubt** and leave music off rather than guess. If a
-  track needs attribution, put it in the post description (see `platform-specs`).
+- **Sources**: a local file, `--url <direct http(s) link>` (downloaded into the library; needs the
+  project's network + downloads permission like `source import`; page URLs are not scraped, give the link
+  to the file), or `source:<source_id>[@start-end]` (the audio of that range of an imported video, saved
+  as m4a). A video file added as music/sfx is reduced to its audio track. Downloads and extractions are
+  cached in `<project>/assets/_cache/`, so the same URL or range is fetched once.
+- `--license` is **optional**. Missing (or a placeholder such as `unknown`) is stored as
+  `unspecified (added by user/agent)` with a warning; any text you give is stored as-is
+  (`CC0-1.0`, `CC-BY-4.0`, `OFL-1.1`, `own work`, `licensed: <where from>`...). Add `--attribution "<credit>"`
+  when the license requires credit, `--license-url` / `--source-url` when you have them.
+- Allowed extensions per kind: font `ttf/otf`; music/sfx `mp3 wav ogg m4a aac flac opus` (plus video
+  containers, reduced to audio); image `png jpg webp gif`; caption style and layout `json`. A file already
+  in the library (same sha256) is refused as a duplicate.
+- Rights are the user's call, not Rustler's: platforms flag copyrighted tracks, so when in doubt about a
+  commercial song, ask or leave music off (see `audio` section 3). If a track needs attribution, put it in
+  the post description (see `platform-specs`).
 - Note the id from the output (`music-calm-bed`): that is what `asset:<id>` needs.
 
 ## 5. Custom caption styles
@@ -112,5 +123,6 @@ based family for that script.
 - **CC0 / public domain**: free to use, no credit needed (the bundled Kenney sounds).
 - **OFL-1.1** (fonts): free to use in videos; do not resell the font file.
 - **CC-BY**: usable with credit in the description; record it with `--attribution`.
-- **Own work / licensed**: you state where the right comes from; Rustler does not verify it.
-- Anything else, or "found online": do not add it.
+- **Own work / licensed / anything you write**: you state where the right comes from; Rustler records it and never verifies it.
+- **unspecified (added by user/agent)**: what is stored when you gave no license. Fine for your own files and
+  tests; for anything you publish, make sure the right to use it exists.

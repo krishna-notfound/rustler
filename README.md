@@ -15,7 +15,8 @@ Rustler provides the tools (FFmpeg, yt-dlp, local faster-whisper, OpenCV face tr
 ## Quick start
 ```bash
 cargo build --release -p rustler-cli        # Windows: run from PowerShell
-rustler setup run                           # FFmpeg, yt-dlp, uv/Python engine, whisper model, fonts, built-in assets -> ~/.rustler
+rustler setup run                           # LITE: FFmpeg, yt-dlp, uv + base Python engine, whisper base, fonts, built-in styles -> ~/.rustler
+rustler setup run --with ocr,speakers       # opt in to heavy analyzers later (also: audio-events, cuda, sfx-pack, or --profile full)
 rustler doctor run                          # what works (GPU, encoders, engine); ready=true means you can render
 rustler project create ep12 --dir ./ep12
 cd ep12

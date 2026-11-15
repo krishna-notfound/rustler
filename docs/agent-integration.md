@@ -23,7 +23,8 @@ Then bootstrap once per machine (idempotent, no admin rights, resumable):
 
 ```
 rustler doctor run     # ready=true?
-rustler setup run      # installs ffmpeg, yt-dlp, uv, the Python engine, whisper models, fonts into ~/.rustler
+rustler setup run      # LITE (default): ffmpeg, yt-dlp, uv, the base Python engine, whisper base, fonts -> ~/.rustler
+rustler setup run --with ocr,speakers   # optional heavy analyzers, only when needed (--profile full = everything)
 rustler project create "my-clips" --dir ./my-clips
 ```
 
@@ -171,7 +172,7 @@ agent> Done. Two clips are in ./ep212/exports (one skipped: the second window ha
   different PATH. Use an absolute path.
 - MCP server starts but tools report "no project": set `RUSTLER_PROJECT` in the server `env`, or pass
   `project` on each call.
-- Exit 4 (dependency missing): run `rustler setup run`, then `rustler doctor run`.
+- Exit 4 (dependency missing): run the command in the error `hint` (`rustler setup run`, or `rustler setup run --with ocr|speakers|audio-events|cuda` for an optional analyzer), then `rustler doctor run` (it lists `optional_features` with the enable command for each).
 - Network commands refused: the project needs permission (`rustler project set-permissions`).
 - Windows PowerShell 5.1 strips double quotes inside JSON flag values (`--layout-params '{"top":...}'` fails
   validation): put the JSON in a file and pass `--input-json @file.json`, or escape quotes as `\"`.

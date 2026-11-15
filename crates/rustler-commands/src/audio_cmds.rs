@@ -627,7 +627,7 @@ pub fn register(reg: &mut Registry) {
     ));
     reg.register(typed(
         "audio.add_sfx",
-        "Add a sound effect at an edit-timeline time or on a transcript word (word-anchored effects follow the word through re-cuts); returns its id",
+        "Add a sound effect at an edit-timeline time or on a transcript word (word-anchored effects follow the word through re-cuts); returns its id. The file can be a path, asset:<id>, an http(s) link or source:<source_id>[@start-end]",
         &["clip_id", "file"],
         write,
         vec![

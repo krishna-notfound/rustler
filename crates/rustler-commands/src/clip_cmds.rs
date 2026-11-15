@@ -1175,10 +1175,14 @@ pub fn register(reg: &mut Registry) {
     ));
     reg.register(typed(
         "audio.add_music",
-        "Add a background music bed (ducked under speech) to a clip",
+        "Add a background music bed (ducked under speech) to a clip. --path takes anything: a file, asset:<id>, an http(s) link to an audio/video file (downloaded to the project's assets cache), or source:<source_id>[@start-end] (the audio of an imported video)",
         &["clip_id"],
         WRITE,
-        vec![Example { description: "quiet ducked bed", cli: "rustler audio add-music clp_x --path bed.mp3 --volume-db -20" }],
+        vec![
+            Example { description: "quiet ducked bed", cli: "rustler audio add-music clp_x --path bed.mp3 --volume-db -20" },
+            Example { description: "reuse the audio of an imported video (seconds or MM:SS)", cli: "rustler audio add-music clp_x --path source:src_01k...@30-75" },
+            Example { description: "music from a direct link", cli: "rustler audio add-music clp_x --path https://example.org/lofi.mp3" },
+        ],
         audio_add_music,
     ));
     reg.register(typed("audio.remove_music", "Remove the music bed from a clip", &["clip_id"], WRITE, vec![], audio_remove_music));

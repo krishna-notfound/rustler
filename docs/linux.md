@@ -66,8 +66,9 @@ target (`--target=x86_64-linux-gnu.2.31`); this was not exercised here.
 
 ```sh
 export RUSTLER_HOME=$HOME/.rustler        # default; any directory works
-rustler setup                             # ffmpeg+ffprobe (static, libass), yt-dlp, uv, Python 3.11 engine, models, fonts, assets
-rustler setup --gpu none                  # force the CPU engine even if nvidia-smi exists (also skips ~2.2 GB of CUDA wheels)
+rustler setup                             # LITE: ffmpeg+ffprobe (static, libass), yt-dlp, uv, Python 3.11 base engine, whisper base, fonts, built-in styles
+rustler setup --with ocr,speakers         # add heavy analyzers (audio-events, cuda, sfx-pack too); --profile full = everything
+rustler setup --profile full --gpu none   # the previous full install; --gpu none never adds the ~2.2 GB of CUDA wheels
 rustler doctor                            # JSON; `"ready": true` is the pass condition
 ```
 
