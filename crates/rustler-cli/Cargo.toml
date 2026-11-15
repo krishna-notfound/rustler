@@ -17,9 +17,9 @@ path = "src/main.rs"
 anyhow.workspace = true
 rustler-commands.workspace = true
 rustler-core.workspace = true
-rustler-desktop = { version = "0.1.0", path = "../rustler-desktop" }
-rustler-gui = { version = "0.1.0", path = "../rustler-gui" }
-rustler-mcp = { version = "0.1.0", path = "../rustler-mcp" }
+rustler-desktop = { version = "0.1.1", path = "../rustler-desktop" }
+rustler-gui = { version = "0.1.1", path = "../rustler-gui" }
+rustler-mcp = { version = "0.1.1", path = "../rustler-mcp" }
 rustler-registry.workspace = true
 rustler-tools.workspace = true
 serde.workspace = true
