@@ -1,0 +1,32 @@
+﻿[package]
+name = "rustler-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "rustler_desktop"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rustler-desktop"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+muda = "0.21.2"
+open = "5.4.5"
+rfd = "0.18.0"
+rustler-commands.workspace = true
+rustler-core.workspace = true
+rustler-gui = { version = "0.1.0", path = "../rustler-gui" }
+rustler-registry.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tao = "0.37.2"
+tokio.workspace = true
+wry = { version = "0.57.2", features = ["devtools"] }
+
+[dev-dependencies]
+tempfile.workspace = true
