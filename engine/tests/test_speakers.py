@@ -267,6 +267,8 @@ def test_sherpa_single_speaker_and_min_max(sherpa_models):
     assert out["num_speakers"] == 1
     forced = speakers.diarize({"audio_path": str(jfk), "min_speakers": 2}, noop)
     assert forced["num_speakers"] == 2  # min_speakers forces a re-cluster to at least 2
+    exact = speakers.diarize({"audio_path": str(jfk), "num_speakers": 2}, noop)
+    assert exact["num_speakers"] == 2  # an exact count is honoured even when one voice dominates
 
 
 def test_sherpa_models_are_verified_and_cached(sherpa_models):

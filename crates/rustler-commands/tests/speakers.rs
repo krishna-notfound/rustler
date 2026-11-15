@@ -337,7 +337,7 @@ async fn real_analyze_speakers_on_the_jfk_sample() {
 
     // second run with a forced split keeps working and relabels the transcript
     let two = support::ok(&reg, "analyze.speakers", &ctx, json!({"source_id": id, "num_speakers": 2})).await;
-    assert_eq!(two["num_speakers"], 2);
+    assert_eq!(two["num_speakers"], 2, "{two}");
     let named = support::ok(&reg, "speaker.rename", &ctx, json!({"source_id": id, "speaker": "S1", "name": "Kennedy"})).await;
     assert_eq!(named["labels"]["S1"], "Kennedy");
 }

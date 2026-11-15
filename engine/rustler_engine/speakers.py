@@ -394,7 +394,10 @@ def cluster_embeddings(E, k: Optional[int], lo: Optional[int] = None, hi: Option
         return between >= MIN_SPLIT_HEIGHT and between >= MIN_SPLIT_RATIO * max(within(g[a]) for a in ids)
 
     if k:
-        g = forced(max(1, min(k, n)))
+        k = max(1, min(k, n))
+        g = forced(k)
+        if len(g) < k:  # not enough distinct speech to fill k clusters: honour the exact count anyway
+            g = cut(k)
     else:
         # Speaker count: the largest k whose clusters are all clearly apart (average cosine distance
         # between clusters vs the spread inside them); one speaker's windows also spread out a little.
@@ -536,8 +539,12 @@ def resegment(
     E = _embed(x, wins, emb, progress)
     mass = [hi - lo for lo, hi in window_slots(wins)]
     labels = cluster_embeddings(E, num_speakers, min_speakers, max_speakers, mass)
+    raw_labels = labels
     labels = smooth_labels(E, labels)
     runs = merge_runs(window_spans(wins, labels))
+    if num_speakers and len({r[2] for r in runs}) < min(num_speakers, len(set(raw_labels.tolist()))):
+        # An exact count was asked for: smoothing must not erase a speaker with little speech.
+        runs = merge_runs(window_spans(wins, raw_labels), min_run=0.0)
     _, energy = mfcc_frames(x)
     for i in range(1, len(runs)):
         a, b = runs[i - 1], runs[i]
