@@ -1,4 +1,4 @@
-﻿[package]
+[package]
 name = "rustler-desktop"
 version.workspace = true
 edition.workspace = true
