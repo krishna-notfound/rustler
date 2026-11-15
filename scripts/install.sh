@@ -26,7 +26,10 @@ RUN_SETUP=1
 API="https://api.github.com"
 
 say() { # say <step> <status> [detail]
-  printf '{"step":"%s","status":"%s","detail":"%s"}\n' "$1" "$2" "${3:-}"
+  local d="${3:-}"
+  d="${d//\\/\\\\}"
+  d="${d//\"/\\\"}"
+  printf '{"step":"%s","status":"%s","detail":"%s"}\n' "$1" "$2" "$d"
 }
 die() { say "$1" "error" "$2"; exit 1; }
 
@@ -87,8 +90,14 @@ fetch() { # fetch <asset name> <dest>
   if [ "$MODE" = token ]; then
     id="${ASSET_ID[$1]:-}"
     [ -n "$id" ] || die download "asset $1 is not in release $TAG"
-    curl -fsSL -H "Authorization: Bearer $TOKEN" -H "Accept: application/octet-stream" "$API/repos/$REPO/releases/assets/$id" -o "$2" \
-      || die download "download of $1 failed"
+    local try ok=0
+    for try in 1 2 3 4; do   # large downloads can drop mid-transfer; retry from scratch
+      if curl -fsSL --connect-timeout 30 -H "Authorization: Bearer $TOKEN" -H "Accept: application/octet-stream" \
+           "$API/repos/$REPO/releases/assets/$id" -o "$2"; then ok=1; break; fi
+      say download retry "$1 attempt $try failed"
+      sleep 2
+    done
+    [ "$ok" = 1 ] || die download "download of $1 failed"
   else
     gh release download "$TAG" -R "$REPO" -p "$1" -D "$TMP/dl" --clobber >/dev/null 2>&1 || die download "download of $1 failed"
     mv "$TMP/dl/$1" "$2"

@@ -87,8 +87,12 @@ try {
         if ($Mode -eq 'token') {
             if (-not $assetId.ContainsKey($name)) { Die 'download' "asset $name is not in release $Tag" }
             $h = @{ Authorization = "Bearer $Token"; Accept = 'application/octet-stream'; 'User-Agent' = 'rustler-installer' }
-            try { Invoke-WebRequest -Uri "$Api/repos/$Repo/releases/assets/$($assetId[$name])" -Headers $h -OutFile $dest -UseBasicParsing }
-            catch { Die 'download' "download of $name failed: $($_.Exception.Message)" }
+            $ok = $false
+            for ($try = 1; $try -le 4 -and -not $ok; $try++) {   # large downloads can drop mid-transfer; retry from scratch
+                try { Invoke-WebRequest -Uri "$Api/repos/$Repo/releases/assets/$($assetId[$name])" -Headers $h -OutFile $dest -UseBasicParsing; $ok = $true }
+                catch { Say 'download' 'retry' "$name attempt ${try} failed: $($_.Exception.Message)"; Start-Sleep -Seconds 2 }
+            }
+            if (-not $ok) { Die 'download' "download of $name failed" }
         } else {
             $dl = Join-Path $Tmp 'dl'
             New-Item -ItemType Directory -Force -Path $dl | Out-Null
