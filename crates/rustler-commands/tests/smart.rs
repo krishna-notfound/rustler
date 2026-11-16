@@ -69,7 +69,15 @@ async fn clip_create_trims_fillers_and_pauses_and_lists_undo_commands() {
     for x in d.iter().filter(|x| x["kind"] == "filler" || x["kind"] == "pause") {
         let cmds: Vec<&str> = x["override_with"].as_array().unwrap().iter().map(|c| c.as_str().unwrap()).collect();
         assert!(cmds.iter().any(|c| c.starts_with("rustler history restore ")), "{x}");
+        assert!(cmds.iter().any(|c| c.starts_with("rustler edit trim ") && c.contains("--segment-id seg_")), "{x}");
     }
+    // the per-item override really puts the pause back: extend the piece before it
+    let pause = d.iter().find(|x| x["kind"] == "pause").unwrap();
+    let seg = pause["segment_ids"][0].as_str().unwrap();
+    let end = pause["source_end"].as_f64().unwrap();
+    let t = common::call(&reg, &ctx, "edit.trim", json!({"clip_id": v["id"], "segment_id": seg, "end": end})).await.unwrap();
+    let pieces = t["segments"].as_array().unwrap();
+    assert!(pieces.iter().any(|p| (p["end"].as_f64().unwrap() - 4.425).abs() < 1e-6), "{t}");
     let undo_all = smart["undo_all"].as_str().unwrap();
     assert!(undo_all.ends_with("--revision 1"), "{undo_all}");
     // the undo command really restores the raw clip

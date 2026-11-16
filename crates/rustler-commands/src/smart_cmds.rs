@@ -501,7 +501,14 @@ pub fn decide_active(samples: &[ScanSample], speech: &[bool], end: f64, p: &Acti
                 ns += 1;
             }
         }
-        let reason = if alone && nx > 0 { "only-face" } else { reason };
+        let (ms, mm) = if ns > 0 { (ss / ns as f64, sm / ns as f64) } else { (0.0, 0.0) };
+        let reason = if alone && nx > 0 {
+            "only-face"
+        } else if reason == "largest-face" && ns > 0 && ms >= p.min_energy && mm >= p.margin * ms {
+            "mouth-motion" // picked as the largest at first, but its mouth led clearly over the turn
+        } else {
+            reason
+        };
         turns.push(ActiveTurn {
             start: round3(start),
             end: round3(stop),
@@ -1445,6 +1452,15 @@ fn save_step(ctx: &Ctx, store: &ProjectStore, old: &Clip, mut new: Clip, stage: 
 
 /// Remaps decision segment ids onto the final clip (pieces made by later cuts) by source overlap.
 fn remap_ids(decisions: &mut [Decision], clip: &Clip) {
+    // A removed span (filler, pause) is put back by extending the piece that now ends where the cut
+    // starts up to where it ended (the next piece starts there).
+    for d in decisions.iter_mut().filter(|d| d.kind == "filler" || d.kind == "pause") {
+        let (Some(a), Some(b)) = (d.source_start, d.source_end) else { continue };
+        if let Some(before) = clip.segments.iter().find(|s| (s.end - a).abs() < 2e-3) {
+            d.segment_ids = vec![before.id.clone()];
+            d.override_with.push(format!("rustler edit trim {} --segment-id {} --end {b:.3}", clip.id, before.id));
+        }
+    }
     for d in decisions.iter_mut().filter(|d| d.kind == "layout" || d.kind == "framing") {
         let (Some(a), Some(b)) = (d.source_start, d.source_end) else { continue };
         let ids: Vec<SegmentId> = clip.segments.iter().filter(|s| s.start < b - 1e-6 && s.end > a + 1e-6).map(|s| s.id.clone()).collect();
@@ -1573,7 +1589,7 @@ pub async fn apply_smart_defaults(ctx: &Ctx, store: &ProjectStore, clip: Clip, o
                     report.warnings.extend(w);
                     report.steps.push(step);
                     clip = saved;
-                    for (src, h) in &hits_all {
+                    for (_, h) in &hits_all {
                         report.decisions.push(Decision {
                             kind: "filler".into(),
                             segment_ids: Vec::new(),
@@ -1583,7 +1599,6 @@ pub async fn apply_smart_defaults(ctx: &Ctx, store: &ProjectStore, clip: Clip, o
                             why: if h.rule == "filler" { "filler word list".into() } else { "standalone filler between pauses".into() },
                             override_with: vec![
                                 format!("rustler history restore {} --revision {before}", clip.id),
-                                format!("rustler edit set-range {} --segment-id <piece before it> --end {:.3} (source {src})", clip.id, h.end),
                             ],
                         });
                     }
@@ -1623,7 +1638,6 @@ pub async fn apply_smart_defaults(ctx: &Ctx, store: &ProjectStore, clip: Clip, o
                             why: format!("word gap longer than {PAUSE_MIN_GAP} s"),
                             override_with: vec![
                                 format!("rustler history restore {} --revision {before}", clip.id),
-                                format!("rustler edit set-range {} --segment-id <piece before it> --end {:.3}", clip.id, b),
                             ],
                         });
                     }
