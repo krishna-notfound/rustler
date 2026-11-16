@@ -542,7 +542,9 @@ async fn render_batch(ctx: Ctx, i: RenderBatchIn) -> Result<RenderBatchOut> {
     let cap = if encoder.contains("nvenc") { NVENC_PARALLEL } else { MAX_PARALLEL };
     let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
     let default = default_parallel(encoder.contains("nvenc"), cores);
-    let parallel = (i.parallel.map(|p| p as usize).unwrap_or(default)).clamp(1, cap);
+    // Explicit --parallel wins, then the `render.parallel` setting, then the encoder default.
+    let configured: Option<u32> = crate::config_cmds::setting(&ctx, "render.parallel");
+    let parallel = (i.parallel.or(configured).map(|p| p as usize).unwrap_or(default)).clamp(1, cap);
     let only_missing = i.only_missing.unwrap_or(false);
 
     let total = ids.len();

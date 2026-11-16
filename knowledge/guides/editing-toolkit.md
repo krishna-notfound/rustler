@@ -86,12 +86,13 @@ rustler effect add clp_X punch-in --start 4.2 --end 6.0          # instant zoom 
 rustler effect add clp_X zoom-slow --start 0 --end 5 --amount 1.2   # slow push 1.0 -> 1.2
 rustler effect add clp_X shake --start 7.0 --end 7.4 --amount 0.02  # impact
 rustler effect add clp_X flash --start 3.0 --end 3.25               # white flash on a beat
+rustler effect add clp_X punch-in --words amazing,look          # on every spoken 'amazing' / 'look'
 rustler effect list clp_X          # effects with rendered windows, and the progress bar
 rustler effect remove clp_X fx_1
 ```
 
 Effects are applied to the composed frame **under the captions and overlays**. `amount`: zoom factor
-1.01-2 for punch-in / zoom-slow; shake amplitude 0.002-0.08 of the frame; none for flash. Place a
+1.01-2 for punch-in / zoom-slow; shake amplitude 0.002-0.08 of the frame; none for flash. With `--words` (comma list; case and punctuation ignored) no time conversion is needed: every occurrence of each word inside the clip gets an effect from 0.05 s before the word to 0.25 s after it, a word that is not in the clip comes back in `warnings`, and `--source-id` limits the search to one source. Otherwise place a
 `punch-in` on the emphasis word (times from `transcript get`, converted to output time with `clip show`),
 a `flash` or `shake` on a joke/impact, a `zoom-slow` under a long calm statement. Two to three effects
 in 30 seconds is plenty; effects on every sentence read as noise. On a split layout the zoom covers

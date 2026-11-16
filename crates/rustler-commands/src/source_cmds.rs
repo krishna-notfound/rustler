@@ -224,7 +224,13 @@ async fn run_ytdlp(
     let mut cmd = tokio::process::Command::new(ytdlp);
     // Persistent cache (player JS / challenge solutions) next to the tools, so repeat calls are cheaper.
     if let Some(home) = ytdlp.parent().and_then(Path::parent) {
+        // `<home>/yt-dlp.conf` (written by `setup run --insecure-tls`), when present.
+        cmd.args(rustler_tools::ytdlp_install::config_args(home));
         cmd.arg("--cache-dir").arg(home.join("cache").join("yt-dlp"));
+    }
+    // yt-dlp finds the Deno that `setup` installed (its JS runtime for YouTube) in `<home>/bin`.
+    if let Some(bin) = ytdlp.parent() {
+        cmd.env("PATH", rustler_tools::ytdlp_install::path_with_bin(bin));
     }
     cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
     let mut child = cmd.spawn().map_err(|e| {
@@ -267,8 +273,11 @@ async fn run_ytdlp(
         .map_err(|e| RustlerError::new(ErrorCode::Internal, "yt-dlp", format!("waiting for yt-dlp: {e}")))?;
     let err_tail = err_task.await.unwrap_or_default();
     if !status.success() {
-        let (hint, retryable) = classify_ytdlp_error(&err_tail);
-        let mut e = RustlerError::new(ErrorCode::Provider, "yt-dlp", format!("yt-dlp failed: {}", trunc(err_tail.trim(), 800))).hint(hint);
+        let (hint, retryable) = match rustler_tools::ytdlp_install::classify_probe_failure(&err_tail) {
+            Some(issue) => (issue.hint, false),
+            None => classify_ytdlp_error(&err_tail),
+        };
+        let mut e =RustlerError::new(ErrorCode::Provider, "yt-dlp", format!("yt-dlp failed: {}", trunc(err_tail.trim(), 800))).hint(hint);
         if retryable {
             e = e.retryable();
         }
@@ -816,7 +825,10 @@ pub async fn import(ctx: Ctx, input: ImportIn) -> rustler_core::Result<Outcome<I
     }
     let sections: Vec<TimeRange> = input.sections.iter().flatten().map(|s| parse_section(s)).collect::<Result<_, _>>()?;
     let audio_only = input.audio_only.unwrap_or(false);
-    let format = format_selector(input.quality.as_deref().unwrap_or("720"), audio_only)?;
+    // Explicit --quality wins, then the `download.quality` setting, then 720.
+    let configured_quality: Option<String> = crate::config_cmds::setting(&ctx, "download.quality");
+    let quality = input.quality.clone().or(configured_quality).unwrap_or_else(|| "720".to_string());
+    let format = format_selector(&quality, audio_only)?;
     let paths = ToolPaths::from_home(&ctx.home);
     let mut warnings = Vec::new();
     let mut sources = Vec::new();
