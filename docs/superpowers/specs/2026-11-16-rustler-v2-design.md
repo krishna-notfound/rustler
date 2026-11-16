@@ -1,6 +1,6 @@
 # Rustler v2 — Open Timeline, Agent Templates, OpusClip-Level Quality — Design
 
-Status: **Approach A approved by user 2026-11-16; design doc awaiting final approval** · Date: 2026-11-16
+Status: **Approach A approved by user 2026-11-16 (proceeding per user: analyse → plan → build)** · Date: 2026-11-16
 Inputs: Muse's live-test feature list (2026-11-15, 23 items, in the conversation), the user's new requirements
 (2026-11-16), `docs/research/opusclip.md` (OpusClip analysis + 44-row gap table), the 5-clip trial report
 (clips-trial-1, `docs/progress-log.md`), and v1 (`2026-11-15-rustler-design.md`, 119 commands).
