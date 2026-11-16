@@ -776,6 +776,28 @@ pub struct ImportIn {
     pub sections: Option<Vec<String>>,
     /// Source name. Default: file stem / video title.
     pub name: Option<String>,
+    /// URL only: maximum video height: `480`, `720`, `1080` or `best` (largest stream). Default `720`: a much
+    /// smaller download, and plenty for a 1080x1920 short cut from a 16:9 source.
+    pub quality: Option<String>,
+    /// URL only: download audio only (no video). The source can be transcribed and analysed but `clip create`
+    /// needs a video stream.
+    pub audio_only: Option<bool>,
+}
+
+/// yt-dlp `-f` selector for a download quality (`480|720|1080|best`). Audio-only ignores the quality.
+pub fn format_selector(quality: &str, audio_only: bool) -> rustler_core::Result<String> {
+    if audio_only {
+        return Ok("ba/b".to_string());
+    }
+    match quality.trim().to_ascii_lowercase().as_str() {
+        "best" => Ok("bv*+ba/b".to_string()),
+        h @ ("480" | "720" | "1080") => Ok(format!("bv*[height<={h}]+ba/b[height<={h}]")),
+        other => Err(validation(
+            "source.import",
+            format!("unknown quality `{other}`"),
+            "use one of 480, 720, 1080, best (default 720), or --audio-only",
+        )),
+    }
 }
 
 #[derive(Serialize, JsonSchema, Debug)]
@@ -793,6 +815,8 @@ pub async fn import(ctx: Ctx, input: ImportIn) -> rustler_core::Result<Outcome<I
         return Err(validation("source.import", "input is empty", "pass a file path or URL: `rustler source import <file-or-url>`"));
     }
     let sections: Vec<TimeRange> = input.sections.iter().flatten().map(|s| parse_section(s)).collect::<Result<_, _>>()?;
+    let audio_only = input.audio_only.unwrap_or(false);
+    let format = format_selector(input.quality.as_deref().unwrap_or("720"), audio_only)?;
     let paths = ToolPaths::from_home(&ctx.home);
     let mut warnings = Vec::new();
     let mut sources = Vec::new();
@@ -800,15 +824,22 @@ pub async fn import(ctx: Ctx, input: ImportIn) -> rustler_core::Result<Outcome<I
     if is_url(&raw) {
         require_network(&project, true, "downloading a video")?;
         if ctx.dry_run {
-            return Ok(Outcome::dry_run(json!({"download": raw, "sections": input.sections, "sources": sections.len().max(1)})));
+            let args = download_args(&format, audio_only);
+            return Ok(Outcome::dry_run(json!({
+                "download": raw, "sections": input.sections, "sources": sections.len().max(1),
+                "format": format, "audio_only": audio_only, "yt_dlp_args": args,
+            })));
         }
         let ranges: Vec<Option<TimeRange>> = if sections.is_empty() { vec![None] } else { sections.iter().copied().map(Some).collect() };
         let total = ranges.len();
         for (n, range) in ranges.into_iter().enumerate() {
-            let s = import_url(&ctx, &store, &project, &paths, &raw, range, input.name.as_deref(), n, total, &mut warnings).await?;
+            let s = import_url(&ctx, &store, &project, &paths, &raw, range, input.name.as_deref(), &format, audio_only, n, total, &mut warnings).await?;
             sources.push(s);
         }
     } else {
+        if input.quality.is_some() || audio_only {
+            warnings.push("--quality and --audio-only only apply to URLs; the local file is imported as it is".to_string());
+        }
         if !sections.is_empty() {
             return Err(validation(
                 "source.import",
@@ -863,6 +894,16 @@ pub async fn import(ctx: Ctx, input: ImportIn) -> rustler_core::Result<Outcome<I
     Ok(Outcome::Done(ImportOut { sources, warnings, next }))
 }
 
+/// Leading yt-dlp arguments for a download: the format selector and, for video, the mp4 merge.
+fn download_args(format: &str, audio_only: bool) -> Vec<String> {
+    let mut a = vec!["-f".to_string(), format.to_string()];
+    if !audio_only {
+        a.push("--merge-output-format".into());
+        a.push("mp4".into());
+    }
+    a
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn import_url(
     ctx: &Ctx,
@@ -872,6 +913,8 @@ async fn import_url(
     url: &str,
     range: Option<TimeRange>,
     name: Option<&str>,
+    format: &str,
+    audio_only: bool,
     n: usize,
     total: usize,
     warnings: &mut Vec<String>,
@@ -882,11 +925,8 @@ async fn import_url(
     std::fs::create_dir_all(&dir)
         .map_err(|e| RustlerError::new(ErrorCode::Internal, "source.import", format!("cannot create {}: {e}", dir.display())))?;
     let result = async {
-        let mut a: Vec<OsString> = vec![
-            "-f".into(),
-            "bv*[height<=1080]+ba/b[height<=1080]".into(),
-            "--merge-output-format".into(),
-            "mp4".into(),
+        let mut a: Vec<OsString> = download_args(format, audio_only).into_iter().map(OsString::from).collect();
+        a.extend::<Vec<OsString>>(vec![
             "--no-playlist".into(),
             "--newline".into(),
             "--no-colors".into(),
@@ -895,7 +935,7 @@ async fn import_url(
             paths.bin.clone().into_os_string(),
             "-o".into(),
             dir.join("media.%(ext)s").into_os_string(),
-        ];
+        ]);
         if let Some(r) = range {
             a.push("--download-sections".into());
             a.push(format!("*{}-{}", clock_arg(r.start), clock_arg(r.end)).into());

@@ -1,7 +1,7 @@
 //! source.* and project.* command tests.
 mod support;
 
-use rustler_commands::source_cmds::{parse_json3, parse_section};
+use rustler_commands::source_cmds::{format_selector, parse_json3, parse_section};
 use rustler_core::{ErrorCode, ProjectStore};
 use serde_json::json;
 use support::*;
@@ -442,4 +442,51 @@ async fn live_section_import_saves_source_info_and_highlights_shows_heatmap() {
     let rows = sig["rows"].as_array().unwrap();
     eprintln!("SIGNALS heatmap per window: {:?}", rows.iter().map(|r| r["heatmap"].clone()).collect::<Vec<_>>());
     assert!(rows.iter().any(|r| !r["heatmap"].is_null()), "highlights.signals shows no heatmap: {sig}");
+}
+
+#[test]
+fn format_selector_defaults_to_720() {
+    assert_eq!(format_selector("720", false).unwrap(), "bv*[height<=720]+ba/b[height<=720]");
+    assert_eq!(format_selector("480", false).unwrap(), "bv*[height<=480]+ba/b[height<=480]");
+    assert_eq!(format_selector("1080", false).unwrap(), "bv*[height<=1080]+ba/b[height<=1080]");
+    assert_eq!(format_selector("best", false).unwrap(), "bv*+ba/b");
+    for q in ["480", "720", "1080", "best", "anything-ignored"] {
+        assert_eq!(format_selector(q, true).unwrap(), "ba/b");
+    }
+    let e = format_selector("999", false).unwrap_err();
+    assert_eq!(e.code, ErrorCode::Validation);
+    assert!(e.hint.is_some());
+}
+
+#[tokio::test]
+async fn audio_only_import_has_no_video() {
+    let reg = registry();
+    let (_dir, ctx) = project();
+    let mut dry = ctx.clone();
+    dry.dry_run = true;
+    let url = "https://example.com/v";
+    // default quality: 720p
+    let v = ok(&reg, "source.import", &dry, json!({"input": url})).await;
+    assert_eq!(v["would"]["format"], "bv*[height<=720]+ba/b[height<=720]");
+    assert_eq!(v["would"]["audio_only"], false);
+    // audio only: audio format, no merge into mp4, no video
+    let v = ok(&reg, "source.import", &dry, json!({"input": url, "audio_only": true})).await;
+    assert_eq!(v["would"]["format"], "ba/b");
+    assert_eq!(v["would"]["audio_only"], true);
+    assert!(!v["would"]["yt_dlp_args"].to_string().contains("merge-output-format"));
+    let v = ok(&reg, "source.import", &dry, json!({"input": url, "quality": "best"})).await;
+    assert_eq!(v["would"]["format"], "bv*+ba/b");
+    // invalid quality is rejected before any network work
+    let e = expect_code(run(&reg, "source.import", &dry, json!({"input": url, "quality": "999"})).await, ErrorCode::Validation);
+    assert!(e.hint.is_some());
+}
+
+#[tokio::test]
+#[ignore = "needs network + yt-dlp + ffmpeg"]
+async fn audio_only_import_live() {
+    let reg = registry();
+    let (_dir, ctx) = project();
+    let v = ok(&reg, "source.import", &ctx, json!({"input": "https://www.youtube.com/watch?v=jNQXAC9IVRw", "audio_only": true})).await;
+    assert_eq!(v["sources"][0]["probe"]["has_video"], false);
+    assert_eq!(v["sources"][0]["probe"]["has_audio"], true);
 }
