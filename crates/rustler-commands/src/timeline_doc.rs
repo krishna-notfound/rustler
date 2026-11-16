@@ -113,7 +113,7 @@ fn clip_rel(id: &ClipId) -> PathBuf {
 }
 
 fn extras_snapshot_rel(id: &ClipId, revision: u64) -> PathBuf {
-    Path::new("clips").join(id.as_str()).join("history").join(format!("{revision}.extras.json"))
+    extras::history_rel(id, revision)
 }
 
 // ---------------------------------------------------------------------------------------------

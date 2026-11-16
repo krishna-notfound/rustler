@@ -87,13 +87,35 @@ top 8 %, right 13 %), as close to the middle of attention as possible.
 | `blur-fit` from 16:9 | 0.78 (just below the video band, which ends at 0.658) | captions on blur, picture untouched |
 | `split-vertical` | `split + 0.06` (straddling the seam), e.g. 0.50 for split 0.44 | between face and gameplay centre; hides the hard seam |
 | `split-vertical`, action in upper gameplay | 0.74-0.76 | lower gameplay is usually less important |
-| Source has burned-in subtitles | move ours away from that band, or `blur-fit` and put ours below | never stack two caption tracks |
+| Source has burned-in subtitles | `caption place` (moves ours off that band), or `blur-fit` and put ours below, or `mask add` over theirs | never stack two caption tracks |
 
 Never set `position_y` above 0.78 (its bottom edge would sit in the platform's caption/username
 area) or below ~0.18 (top UI). Two-line chunks rise about 0.05 above `position_y`.
 
 Check with `rustler render preview-frame clp_X --out-t <t>` at a moment where the face is lowest or
 largest, before a full render.
+
+### Let Rustler measure it: `caption place`
+
+```
+rustler caption place clp_X                 # measure + suggest, changes nothing
+rustler caption place clp_X --apply true    # set the suggestion (one revision; history undo reverts it)
+```
+
+Per segment it maps onto the 9:16 canvas (through the layout, fit and crop path): the source's own
+**burned-in text** (an edge-density scan of the source range every 0.5 s, `subtitles` = text that keeps
+changing, `static` = title/logo/watermark; plus the `analyze ocr` caption band when `ocr.json` exists) and the
+**faces** (`analyze faces` data, else the engine's face detector on the segment). Then it scores every
+`position_y` from 0.10 to 0.85 and suggests the closest one to the current spot that clears subtitles and
+faces, weighted by segment length. Read `segments[].at_current` (what the current spot covers),
+`at_suggested`, `safe_ranges` and `best_y`; `remaining_conflicts` lists segments no single position can
+clear (captions are one position per clip). Then **look**: `render preview-frame` at the segment with source
+text. If the source subtitles sit where ours must go, hide them instead with `mask add` (a blur box on the
+canvas band listed in `source_text`). The scan reads no text; a busy shelf or table edge can show up as
+`static` text, so trust the frame over the number.
+
+QC repeats the subtitle part as `caption_over_source_text` (warn when our caption band overlaps, or sits within 0.03 of, the
+source's burned-in subtitles for 0.5 s or more; fix hint `caption place`).
 
 ## 4. Words per line
 

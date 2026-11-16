@@ -87,9 +87,116 @@ pub fn update(
     store.write_json(&rel(clip), &map)
 }
 
+// ---------------------------------------------------------------------------------------------
+// Layer edits as clip revisions (history undo covers every layer command)
+// ---------------------------------------------------------------------------------------------
+
+/// `clips/<id>/history/<revision>.extras.json`: the sidecar as it was at `revision`.
+pub fn history_rel(clip: &ClipId, revision: u64) -> PathBuf {
+    Path::new("clips").join(clip.as_str()).join("history").join(format!("{revision}.extras.json"))
+}
+
+fn clip_json_rel(clip: &ClipId) -> PathBuf {
+    Path::new("clips").join(clip.as_str()).join("clip.json")
+}
+
+/// Revision of the clip on disk (0 when there is no clip.json yet).
+fn disk_revision(store: &ProjectStore, clip: &ClipId) -> Result<u64> {
+    let rel = clip_json_rel(clip);
+    if !store.resolve(&rel).is_file() {
+        return Ok(0);
+    }
+    let v: Value = store.read_json(&rel)?;
+    Ok(v.get("revision").and_then(Value::as_u64).unwrap_or(0))
+}
+
+/// Saves `clip` as a new revision on top of `base` (like `ProjectStore::save_clip`) and first
+/// snapshots the sidecar as the layers of `base`, so `history undo` / `restore` to `base` puts
+/// overlays, effects, sfx, images, masks ... back as they were. Every clip save that keeps the
+/// sidecar as it is (caption/layout changes, refine, render and QC records) goes through here.
+pub fn save_clip(store: &ProjectStore, clip: &mut Clip, base: u64) -> Result<()> {
+    {
+        let _g = LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        // Only when the save can succeed: a stale `base` must not overwrite an older snapshot.
+        if base > 0 && disk_revision(store, &clip.id)? == base {
+            let map = read(store, &clip.id)?;
+            store.write_json(&history_rel(&clip.id, base), &map)?;
+        }
+    }
+    store.save_clip(clip, base)
+}
+
+/// Read-modify-write of the whole sidecar as ONE new clip revision: the sidecar of the current
+/// revision is snapshotted to `history/<rev>.extras.json`, `f` edits the map, the map is written
+/// and clip.json is saved at `rev + 1` (nothing else in it changes). `history undo` then removes
+/// exactly this change. When `f` leaves the map as it was, nothing is written and the revision
+/// stays; when `f` errors nothing is written. Returns `f`'s value and the new revision (if any).
+pub fn commit<R>(store: &ProjectStore, clip: &ClipId, f: impl FnOnce(&mut Map<String, Value>) -> Result<R>) -> Result<(R, Option<u64>)> {
+    let _g = LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let before = read(store, clip)?;
+    let mut map = before.clone();
+    let out = f(&mut map)?;
+    if map == before {
+        return Ok((out, None));
+    }
+    let rel = clip_json_rel(clip);
+    if !store.resolve(&rel).is_file() {
+        // No clip document (unit tests on a bare sidecar): plain write.
+        store.write_json(&self::rel(clip), &map)?;
+        return Ok((out, None));
+    }
+    let mut c: Clip = store.read_json(&rel)?;
+    let base = c.revision;
+    store.write_json(&history_rel(clip, base), &before)?;
+    store.write_json(&self::rel(clip), &map)?;
+    if let Err(e) = store.save_clip(&mut c, base) {
+        let _ = store.write_json(&self::rel(clip), &before);
+        return Err(e);
+    }
+    Ok((out, Some(c.revision)))
+}
+
+/// [`commit`] of one key: `f` gets the current value (`None` when absent) and returns the new
+/// one (`None` removes the key).
+pub fn update_revision(store: &ProjectStore, clip: &ClipId, key: &str, f: impl FnOnce(Option<Value>) -> Result<Option<Value>>) -> Result<Option<u64>> {
+    let ((), rev) = commit(store, clip, |map| {
+        if let Some(v) = f(map.remove(key))? {
+            map.insert(key.to_string(), v);
+        }
+        Ok(())
+    })?;
+    Ok(rev)
+}
+
+/// Typed edit of one key of a sidecar map (for [`commit`] closures that touch several keys);
+/// the key is removed when `empty(&T)` after `f`.
+pub fn edit_key<T, R>(map: &mut Map<String, Value>, key: &str, empty: impl Fn(&T) -> bool, f: impl FnOnce(&mut T) -> Result<R>) -> Result<R>
+where
+    T: serde::Serialize + DeserializeOwned + Default,
+{
+    let mut v: T = match map.remove(key) {
+        None | Some(Value::Null) => T::default(),
+        Some(v) => serde_json::from_value(v).map_err(|e| {
+            RustlerError::new(ErrorCode::Internal, "extras", format!("extras.json key '{key}' is invalid: {e}"))
+                .hint(format!("fix or remove '{key}' in clips/<clip_id>/extras.json"))
+        })?,
+    };
+    let out = f(&mut v)?;
+    if !empty(&v) {
+        let value = serde_json::to_value(&v).map_err(|e| RustlerError::new(ErrorCode::Internal, "extras", e.to_string()))?;
+        map.insert(key.to_string(), value);
+    }
+    Ok(out)
+}
+
 /// Sidecar keys that never change the picture or the sound: posting copy, scores/retention, cover,
 /// reports and bookkeeping. Writing them does not make a render stale.
 pub const NON_RENDER_KEYS: &[&str] = &["post", "meta", "cover", "smart_defaults", "template_ref", "variant_of", "variant_info"];
+
+/// True when two sidecar maps hold the same picture/sound keys.
+pub fn same_render_view(a: &Map<String, Value>, b: &Map<String, Value>) -> bool {
+    render_view(a.clone()) == render_view(b.clone())
+}
 
 /// `clips/<id>/renders/<render_id>.extras.json`: the render-relevant part of the sidecar a render was made from.
 pub fn render_snapshot_rel(clip: &ClipId, render: &RenderId) -> PathBuf {

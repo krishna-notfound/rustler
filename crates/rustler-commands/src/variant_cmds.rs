@@ -456,6 +456,31 @@ fn resolve_ids(store: &ProjectStore, stage: &str, ids: &Option<Vec<ClipId>>, all
     Ok(out)
 }
 
+/// The agent's score (`clip.score_set`: `meta.score.total`) and the retention score
+/// (`clip.retention`: `meta.retention.score`) of a clip, when recorded.
+pub(crate) fn scores_of(store: &ProjectStore, id: &ClipId) -> (Option<f64>, Option<f64>) {
+    let Ok(map) = extras::load(store, id) else { return (None, None) };
+    let meta = map.get(crate::director_cmds::META_KEY);
+    let num = |p: &str| meta.and_then(|m| m.pointer(p)).and_then(Value::as_f64).filter(|x| x.is_finite());
+    (num("/score/total"), num("/retention/score"))
+}
+
+/// Best first: higher agent score, then higher retention score; clips without a score after
+/// those with one; ties keep the given order. Returns `(id, agent, retention)` in rank order.
+pub(crate) fn rank_by_score(store: &ProjectStore, ids: &[ClipId]) -> Vec<(ClipId, Option<f64>, Option<f64>)> {
+    let mut v: Vec<(usize, ClipId, Option<f64>, Option<f64>)> = ids
+        .iter()
+        .enumerate()
+        .map(|(k, id)| {
+            let (a, r) = scores_of(store, id);
+            (k, id.clone(), a, r)
+        })
+        .collect();
+    let key = |x: Option<f64>| x.map_or(f64::NEG_INFINITY, |v| v);
+    v.sort_by(|a, b| key(b.2).total_cmp(&key(a.2)).then(key(b.3).total_cmp(&key(a.3))).then(a.0.cmp(&b.0)));
+    v.into_iter().map(|(_, id, a, r)| (id, a, r)).collect()
+}
+
 fn mtime(p: &Path) -> Option<SystemTime> {
     std::fs::metadata(p).ok()?.modified().ok()
 }
@@ -667,12 +692,33 @@ pub struct ExportBatchIn {
     pub require_brief: Option<bool>,
     /// Export even when the clip was edited after its last render (default false).
     pub allow_stale: Option<bool>,
+    /// `score` (default): best first by the agent's score (`clip score-set`), then the retention
+    /// score (`clip retention`); `given`: the order of clip_ids / the project.
+    pub order: Option<ExportOrder>,
+    /// Prefix each export name with its rank (`01-<name>`, `02-<name>`, ...). Default false: the
+    /// rank is in the output and in each `<name>.report.json`.
+    pub rank_in_name: Option<bool>,
+}
+
+/// Order of `export.batch`.
+#[derive(Deserialize, JsonSchema, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ExportOrder {
+    #[default]
+    Score,
+    Given,
 }
 
 #[derive(Serialize, JsonSchema, Clone, Debug)]
 pub struct Exported {
+    /// 1 = best (by agent score, then retention score; or the given order).
+    pub rank: usize,
     pub clip_id: ClipId,
     pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_score: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retention_score: Option<f64>,
     pub video: PathBuf,
     pub report: PathBuf,
     pub qc_passed: bool,
@@ -682,6 +728,9 @@ pub struct Exported {
 
 #[derive(Serialize, JsonSchema, Clone, Debug)]
 pub struct SkippedClip {
+    /// Rank the clip would have had.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rank: Option<usize>,
     pub clip_id: ClipId,
     pub name: String,
     pub reasons: Vec<String>,
@@ -691,6 +740,8 @@ pub struct SkippedClip {
 
 #[derive(Serialize, JsonSchema)]
 pub struct ExportBatchOut {
+    /// `score` | `given`.
+    pub order: String,
     pub exported: Vec<Exported>,
     pub skipped: Vec<SkippedClip>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -710,6 +761,18 @@ async fn export_batch(ctx: Ctx, i: ExportBatchIn) -> Result<ExportBatchOut> {
     const STAGE: &str = "export.batch";
     let store = ctx.store()?;
     let ids = resolve_ids(&store, STAGE, &i.clip_ids, i.all)?;
+    let order = i.order.unwrap_or_default();
+    let ranked: Vec<(ClipId, Option<f64>, Option<f64>)> = match order {
+        ExportOrder::Score => rank_by_score(&store, &ids),
+        ExportOrder::Given => ids
+            .iter()
+            .map(|id| {
+                let (a, r) = scores_of(&store, id);
+                (id.clone(), a, r)
+            })
+            .collect(),
+    };
+    let rank_in_name = i.rank_in_name.unwrap_or(false);
     let require_qc = i.require_qc.unwrap_or(true);
     let want_brief = i.require_brief.unwrap_or(true);
     let allow_stale = i.allow_stale.unwrap_or(false);
@@ -718,15 +781,26 @@ async fn export_batch(ctx: Ctx, i: ExportBatchIn) -> Result<ExportBatchOut> {
     if want_brief && brief.is_none() {
         warnings.push("the project has no brief; only QC was required (set one with `rustler brief set`)".to_string());
     }
+    if order == ExportOrder::Score {
+        let unscored: Vec<String> = ranked.iter().filter(|(_, a, r)| a.is_none() && r.is_none()).map(|(id, _, _)| id.to_string()).collect();
+        if !unscored.is_empty() {
+            warnings.push(format!(
+                "{} clip(s) have no agent or retention score and are ranked last in the given order: {} (score them with `rustler clip score-set <clip_id> ...` / `rustler clip retention <clip_id>`)",
+                unscored.len(),
+                unscored.join(", ")
+            ));
+        }
+    }
     let reg = inner();
     let mut exported = Vec::new();
     let mut skipped = Vec::new();
-    for (k, id) in ids.iter().enumerate() {
-        ctx.progress.emit(ProgressEvent { stage: "export.batch".into(), pct: Some(k as f32 / ids.len() as f32), message: Some(id.to_string()), eta_s: None });
+    for (k, (id, agent_score, retention_score)) in ranked.iter().enumerate() {
+        let rank = k + 1;
+        ctx.progress.emit(ProgressEvent { stage: "export.batch".into(), pct: Some(k as f32 / ranked.len() as f32), message: Some(id.to_string()), eta_s: None });
         let mut clip = match store.load_clip(id) {
             Ok(c) => c,
             Err(e) => {
-                skipped.push(SkippedClip { clip_id: id.clone(), name: id.to_string(), reasons: vec![e.message], fix: vec!["rustler clip list".into()] });
+                skipped.push(SkippedClip { rank: Some(rank), clip_id: id.clone(), name: id.to_string(), reasons: vec![e.message], fix: vec!["rustler clip list".into()] });
                 continue;
             }
         };
@@ -734,6 +808,7 @@ async fn export_batch(ctx: Ctx, i: ExportBatchIn) -> Result<ExportBatchOut> {
         let mut fix: Vec<String> = Vec::new();
         if clip.renders.is_empty() {
             skipped.push(SkippedClip {
+                rank: Some(rank),
                 clip_id: id.clone(),
                 name: clip.name.clone(),
                 reasons: vec!["no render yet".into()],
@@ -786,20 +861,28 @@ async fn export_batch(ctx: Ctx, i: ExportBatchIn) -> Result<ExportBatchOut> {
             }
         }
         if !reasons.is_empty() {
-            skipped.push(SkippedClip { clip_id: id.clone(), name: clip.name.clone(), reasons, fix });
+            skipped.push(SkippedClip { rank: Some(rank), clip_id: id.clone(), name: clip.name.clone(), reasons, fix });
             continue;
         }
-        let input = json!({"clip_id": id, "allow_fail": !require_qc});
+        let mut input = json!({"clip_id": id, "allow_fail": !require_qc});
+        let export_name = if rank_in_name { format!("{rank:02}-{}", clip.name) } else { clip.name.clone() };
+        if rank_in_name {
+            input["name"] = json!(export_name);
+        }
         match reg.dispatch("export.clip", input, silent(&ctx)).await {
             Ok(v) => exported.push(Exported {
+                rank,
                 clip_id: id.clone(),
-                name: clip.name.clone(),
+                name: export_name.clone(),
+                agent_score: *agent_score,
+                retention_score: *retention_score,
                 video: v.get("video").and_then(Value::as_str).map(PathBuf::from).unwrap_or_default(),
                 report: v.get("report").and_then(Value::as_str).map(PathBuf::from).unwrap_or_default(),
                 qc_passed: v.get("qc_passed").and_then(Value::as_bool).unwrap_or(qc_passed),
                 brief: brief_status,
             }),
             Err(e) => skipped.push(SkippedClip {
+                rank: Some(rank),
                 clip_id: id.clone(),
                 name: clip.name.clone(),
                 reasons: vec![format!("export failed: {}", e.message)],
@@ -807,8 +890,23 @@ async fn export_batch(ctx: Ctx, i: ExportBatchIn) -> Result<ExportBatchOut> {
             }),
         }
     }
+    // The rank goes into each export's report too (`<name>.report.json` -> "rank").
     if !ctx.dry_run {
-        log_event(&ctx, &store, "export.batch", json!({"exported": exported.len(), "skipped": skipped.len()}))?;
+        let of = ranked.len();
+        for e in &exported {
+            let p = store.resolve(&e.report);
+            let Some(mut v) = std::fs::read(&p).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()) else { continue };
+            if let Value::Object(m) = &mut v {
+                m.insert(
+                    "rank".into(),
+                    json!({"position": e.rank, "of": of, "order": if order == ExportOrder::Score { "score" } else { "given" }, "agent_score": e.agent_score, "retention_score": e.retention_score}),
+                );
+                if let Err(err) = std::fs::write(&p, serde_json::to_vec_pretty(&v).unwrap_or_default()) {
+                    warnings.push(format!("could not add the rank to {}: {err}", p.display()));
+                }
+            }
+        }
+        log_event(&ctx, &store, "export.batch", json!({"exported": exported.len(), "skipped": skipped.len(), "order": if order == ExportOrder::Score { "score" } else { "given" }}))?;
     }
     let mut next = Vec::new();
     if !skipped.is_empty() {
@@ -817,7 +915,7 @@ async fn export_batch(ctx: Ctx, i: ExportBatchIn) -> Result<ExportBatchOut> {
     if !exported.is_empty() {
         next.push("publishing is manual: upload the exported files with each clip's `rustler brief description <clip_id>` text".to_string());
     }
-    Ok(ExportBatchOut { exported, skipped, warnings, next })
+    Ok(ExportBatchOut { order: if order == ExportOrder::Score { "score".into() } else { "given".into() }, exported, skipped, warnings, next })
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -867,10 +965,13 @@ pub fn register(reg: &mut Registry) {
     ));
     reg.register(typed(
         "export.batch",
-        "Export many clips: runs QC and the brief check, exports the passing ones and lists the skipped with reasons and fixes",
+        "Export many clips best first (agent score from clip.score_set, then retention score; --order given keeps your order): runs QC and the brief check, exports the passing ones with their rank (output, report.json, optional --rank-in-name true prefix 01-) and lists the skipped with reasons and fixes",
         &[],
         long,
-        vec![Example { description: "export everything that passes", cli: "rustler export batch --all true" }],
+        vec![
+            Example { description: "export everything that passes, best first", cli: "rustler export batch --all true" },
+            Example { description: "rank in the file names", cli: "rustler export batch --all true --rank-in-name true" },
+        ],
         export_batch,
     ));
 }

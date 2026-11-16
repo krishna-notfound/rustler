@@ -87,7 +87,9 @@ pub struct SfxEntry {
 // Storage helpers (also used by fx_cmds)
 // ---------------------------------------------------------------------------------------------
 
-/// Read-modify-write of one extras key holding `T`; the key is removed when `empty(&T)`.
+/// Read-modify-write of one extras key holding `T`; the key is removed when `empty(&T)`. A real
+/// change is saved as a new clip revision (extras snapshot first), so `history undo` removes
+/// just this edit.
 pub(crate) fn modify_key<T, R>(
     store: &ProjectStore,
     clip: &ClipId,
@@ -98,22 +100,7 @@ pub(crate) fn modify_key<T, R>(
 where
     T: Serialize + DeserializeOwned + Default,
 {
-    let mut out = None;
-    extras::update(store, clip, key, |cur| {
-        let mut v: T = match cur {
-            None | Some(serde_json::Value::Null) => T::default(),
-            Some(v) => serde_json::from_value(v).map_err(|e| {
-                RustlerError::new(ErrorCode::Internal, "extras", format!("extras.json key '{key}' is invalid: {e}"))
-                    .hint(format!("fix or remove '{key}' in clips/{clip}/extras.json"))
-            })?,
-        };
-        out = Some(f(&mut v)?);
-        if empty(&v) {
-            return Ok(None);
-        }
-        serde_json::to_value(&v).map(Some).map_err(|e| RustlerError::new(ErrorCode::Internal, "extras", e.to_string()))
-    })?;
-    Ok(out.expect("closure ran"))
+    Ok(extras::commit(store, clip, |map| extras::edit_key(map, key, empty, f))?.0)
 }
 
 /// Runs `f` on the stored value: for real (saved) or, in dry-run, on a copy (nothing saved).

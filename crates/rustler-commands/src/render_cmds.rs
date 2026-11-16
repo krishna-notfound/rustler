@@ -336,7 +336,7 @@ async fn render_run(ctx: Ctx, i: RenderRunIn) -> Result<RenderRunOut> {
         created_at: Utc::now(),
         qc: None,
     });
-    store.save_clip(&mut fresh, base)?;
+    crate::extras::save_clip(&store, &mut fresh, base)?;
     log_event(
         &ctx,
         &store,

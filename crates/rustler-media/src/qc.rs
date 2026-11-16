@@ -32,8 +32,8 @@ const DURATION_TOLERANCE_S: f64 = 0.10;
 const FIRST_FRAME_MIN_LUMA: f64 = 16.0;
 const LONG_SILENCE_S: f64 = 1.5;
 const HOOK_WINDOW_S: f64 = 3.0;
-const SAFE_ZONE_MIN_Y: f64 = 0.10;
-const SAFE_ZONE_MAX_Y: f64 = 0.85;
+pub const SAFE_ZONE_MIN_Y: f64 = 0.10;
+pub const SAFE_ZONE_MAX_Y: f64 = 0.85;
 const CONTACT_SHEET_NOTE: &str = "12-frame contact sheet; look at this image before declaring the clip done";
 
 /// The report as persisted and returned by `qc.run`: the frozen [`QcReport`] fields plus
@@ -610,6 +610,7 @@ pub async fn run_qc_with(
     // v2 checks: faces (engine), hook text, platform duration
     if st.video.is_some() {
         checks.extend(face_checks(clip, extras));
+        checks.extend(source_text_check(clip, extras));
         checks.push(hook_text_check(clip, extras));
         checks.push(duration_check(&cid, actual_dur, extras));
         checks.push(camera_motion_check(&cid, &extras.crop_paths));
@@ -700,6 +701,69 @@ pub struct QcExtras {
     /// in seconds, keys)`, for the
     /// engine-free `camera_motion` check. Empty = no tracked crop (the check passes).
     pub crop_paths: Vec<(String, f64, Vec<CropKey>)>,
+    /// Burned-in source subtitles as they land on the canvas (`caption.place` scan):
+    /// `None` = not measured (no check), `Some(Err(reason))` = the scan could not run.
+    pub source_text: Option<std::result::Result<Vec<SourceTextSpan>, String>>,
+}
+
+/// Gap (fraction of the frame height) kept between our caption band and a source subtitle band.
+pub const SOURCE_TEXT_MARGIN: f64 = 0.03;
+
+/// A burned-in subtitle band of the source on the canvas during one output span.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SourceTextSpan {
+    pub segment_id: String,
+    pub out_start: f64,
+    pub out_end: f64,
+    /// Canvas band, fractions of the frame height.
+    pub y0: f64,
+    pub y1: f64,
+}
+
+/// `caption_over_source_text`: our caption band must not sit on the source's own burned-in
+/// subtitles (double captions). `None` when captions are off or the source was not scanned.
+pub fn source_text_check(clip: &Clip, extras: &QcExtras) -> Option<QcCheck> {
+    if !clip.captions.enabled {
+        return None;
+    }
+    let cid = clip.id.to_string();
+    let expected = "our caption band clear of the source's burned-in subtitles (no double captions)";
+    let spans = match extras.source_text.as_ref()? {
+        Ok(s) => s,
+        Err(reason) => {
+            return Some(check(
+                "caption_over_source_text",
+                QcStatus::Pass,
+                json!({ "skipped": reason }),
+                expected,
+                Some(format!("measure it: rustler caption place {cid}")),
+            ));
+        }
+    };
+    let y = clip.captions.position_y;
+    let (lo, hi) = caption_band(y);
+    // Right next to each other reads as stacked double captions too.
+    let m = SOURCE_TEXT_MARGIN;
+    let hits: Vec<&SourceTextSpan> = spans.iter().filter(|s| s.y0 - m < hi && s.y1 + m > lo).collect();
+    let secs: f64 = hits.iter().map(|s| (s.out_end - s.out_start).max(0.0)).sum();
+    let warn = secs >= 0.5;
+    Some(check(
+        "caption_over_source_text",
+        if warn { QcStatus::Warn } else { QcStatus::Pass },
+        json!({
+            "position_y": y,
+            "band": [r2(lo), r2(hi)],
+            "source_subtitle_spans": spans.len(),
+            "overlap_s": r2(secs),
+            "overlaps": hits.iter().map(|s| json!({"segment_id": s.segment_id, "out_start": r2(s.out_start), "out_end": r2(s.out_end), "source_text_band": [r2(s.y0), r2(s.y1)]})).collect::<Vec<_>>(),
+        }),
+        expected,
+        warn.then(|| {
+            format!(
+                "our captions sit on the source's own burned-in subtitles for {secs:.1} s (double captions); see where they can go: rustler caption place {cid} (apply its suggestion with --apply true), or hide the source text with a mask: rustler mask add {cid} ..."
+            )
+        }),
+    ))
 }
 
 /// Where in the frame a face matters for a clip's layout.

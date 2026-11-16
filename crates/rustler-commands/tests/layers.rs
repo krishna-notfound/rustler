@@ -86,7 +86,8 @@ async fn image_crud_validation_dry_run_and_revision() {
     assert_eq!((d["dry_run"].as_bool(), d["id"].as_str()), (Some(true), Some("img_2")));
     assert_eq!(extras_json(&store, &id)["images"].as_array().unwrap().len(), 1);
 
-    // Revision-checked: a stale base_revision is a conflict and writes nothing.
+    // Revision-checked: a stale base_revision is a conflict and writes nothing (each layer change is a
+    // new revision, so the clip is now at rev + 1).
     let e = call(&reg, &ctx, "image.add", json!({"clip_id": id, "file": f, "rect": rect(0.1, 0.5, 0.3, 0.2), "base_revision": rev + 7}))
         .await
         .unwrap_err();
@@ -95,7 +96,7 @@ async fn image_crud_validation_dry_run_and_revision() {
         &reg,
         &ctx,
         "image.add",
-        json!({"clip_id": id, "file": f, "rect": rect(0.1, 0.5, 0.3, 0.2), "start": 1.0, "end": 2.0, "z": 3, "base_revision": rev}),
+        json!({"clip_id": id, "file": f, "rect": rect(0.1, 0.5, 0.3, 0.2), "start": 1.0, "end": 2.0, "z": 3, "base_revision": rev + 1}),
     )
     .await
     .unwrap();

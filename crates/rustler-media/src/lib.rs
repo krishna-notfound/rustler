@@ -19,6 +19,7 @@ pub mod punchin;
 pub mod qc;
 pub mod render;
 pub mod retention;
+pub mod textband;
 pub mod tiles;
 
 pub use audio_analysis::analyze_audio;

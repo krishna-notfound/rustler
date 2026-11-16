@@ -209,7 +209,7 @@ where
         v.warnings.extend(out.warnings);
         return Ok(v);
     }
-    store.save_clip(&mut clip, base)?;
+    crate::extras::save_clip(&store, &mut clip, base)?;
     log_event(
         ctx,
         &store,

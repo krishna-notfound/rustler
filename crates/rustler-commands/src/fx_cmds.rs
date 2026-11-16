@@ -641,7 +641,7 @@ async fn progress_bar(ctx: Ctx, i: ProgressBarIn) -> Result<ProgressBarOut> {
     };
     if !ctx.dry_run {
         let value = bar.clone();
-        extras::update(&store, &clip.id, PROGRESS_BAR_KEY, |_| {
+        extras::update_revision(&store, &clip.id, PROGRESS_BAR_KEY, |_| {
             value.map(|b| serde_json::to_value(b).map_err(|e| RustlerError::new(ErrorCode::Internal, STAGE, e.to_string()))).transpose()
         })?;
         log_event(&ctx, &store, STAGE, serde_json::json!({"clip_id": clip.id, "enabled": i.enabled}))?;

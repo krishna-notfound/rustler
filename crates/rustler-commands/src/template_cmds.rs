@@ -2813,6 +2813,11 @@ pub struct CreateIn {
     /// Capture the look of this clip.
     #[serde(default)]
     pub from_clip: Option<ClipId>,
+    /// Build the look from a learned style: a reference set analysed with `reference analyze`
+    /// (caption position / words per line / colours -> style, hook look, loudness; pacing, zoom
+    /// and music become notes; never automatic zooms).
+    #[serde(default)]
+    pub from_reference: Option<String>,
     /// A whole template document (instead of from_clip); name and version are set for you.
     #[serde(default)]
     pub template: Option<Value>,
@@ -2843,11 +2848,33 @@ pub struct SavedOut {
     pub next: Vec<String>,
 }
 
-fn source_template(ctx: &Ctx, stage: &str, name: &str, from_clip: Option<&ClipId>, template: Option<Value>, include_text: bool) -> Result<(Template, Vec<String>)> {
+fn source_template(
+    ctx: &Ctx,
+    stage: &str,
+    name: &str,
+    from_clip: Option<&ClipId>,
+    from_reference: Option<&str>,
+    template: Option<Value>,
+    include_text: bool,
+) -> Result<(Template, Vec<String>)> {
+    if let Some(set) = from_reference {
+        if from_clip.is_some() || template.is_some() {
+            return Err(verr(stage, "give one of from_clip, from_reference or template"));
+        }
+        let store = ctx.store()?;
+        let rel = crate::reference_cmds::profile_rel(set);
+        if !store.resolve(&rel).is_file() {
+            return Err(RustlerError::new(ErrorCode::NotFound, stage, format!("reference set '{set}' has no learned profile")).hint(format!(
+                "analyse it first: `rustler reference analyze {set}` (sets: `rustler reference list`)"
+            )));
+        }
+        let profile: Value = store.read_json(&rel)?;
+        return crate::style_template::from_profile(name, set, &profile).map_err(|e| with_stage(e, stage));
+    }
     match (from_clip, template) {
         (Some(_), Some(_)) => Err(verr(stage, "give from_clip or template, not both")),
-        (None, None) => Err(verr(stage, "nothing to save: give from_clip (capture a clip's look) or template (JSON)")
-            .hint("e.g. `rustler template create my-look --from-clip clp_x`")),
+        (None, None) => Err(verr(stage, "nothing to save: give from_clip (capture a clip's look), from_reference (a learned style) or template (JSON)")
+            .hint("e.g. `rustler template create my-look --from-clip clp_x` or `--from-reference my-style`")),
         (Some(c), None) => {
             let store = ctx.store()?;
             let (doc, _) = timeline_doc::assemble(&store, c)?;
@@ -2898,7 +2925,7 @@ async fn create(ctx: Ctx, i: CreateIn) -> Result<SavedOut> {
         return Err(verr(STAGE, format!("template '{name}' already exists ({} v{})", s.scope, s.version))
             .hint(format!("save a new version with `rustler template update {name} ...`, or pick another name")));
     }
-    let (mut t, notes) = source_template(&ctx, STAGE, &name, i.from_clip.as_ref(), i.template, i.include_text.unwrap_or(false))?;
+    let (mut t, notes) = source_template(&ctx, STAGE, &name, i.from_clip.as_ref(), i.from_reference.as_deref(), i.template, i.include_text.unwrap_or(false))?;
     t.version = 1;
     if let Some(d) = i.description.filter(|d| !d.trim().is_empty()) {
         t.description = d;
@@ -2957,7 +2984,7 @@ async fn update(ctx: Ctx, i: UpdateIn) -> Result<SavedOut> {
         }
         (base.clone(), Vec::new())
     } else {
-        source_template(&ctx, STAGE, &name, i.from_clip.as_ref(), i.template, i.include_text.unwrap_or(false))?
+        source_template(&ctx, STAGE, &name, i.from_clip.as_ref(), None, i.template, i.include_text.unwrap_or(false))?
     };
     t.name = name.clone();
     t.schema = TEMPLATE_SCHEMA.into();
@@ -3553,7 +3580,7 @@ pub fn register(reg: &mut Registry) {
     let read = Annotations { read_only: true, ..write };
     reg.register(typed(
         "template.create",
-        "Save a reusable look as a template (version 1): capture a clip's whole look (--from-clip: caption style/position/words per line, layout, hook title look, text looks, brand images, progress bar, loudness/denoise/music/sfx and effect patterns, transitions, canvas; text content only with --include-text) or write it as JSON (--template). Stored in templates/<name>@1.json (project) or <home>/templates/ (--scope global)",
+        "Save a reusable look as a template (version 1): capture a clip's whole look (--from-clip: caption style/position/words per line, layout, hook title look, text looks, brand images, progress bar, loudness/denoise/music/sfx and effect patterns, transitions, canvas; text content only with --include-text), build it from a learned style (--from-reference <set> after `reference analyze`: caption position/words per line/colours, hook look, loudness; pacing, zoom and music as notes, never automatic zooms) or write it as JSON (--template). Stored in templates/<name>@1.json (project) or <home>/templates/ (--scope global)",
         &["name"],
         write,
         vec![

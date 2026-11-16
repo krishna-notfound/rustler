@@ -91,6 +91,10 @@ rustler export batch --all true
   no render, a stale render (edited after rendering; `--allow-stale true` overrides), failing QC
   (`--require-qc false`), failing brief (`--require-brief false`). Do not turn the gates off to
   "get the count"; fix the clips. It is the batch version of `export clip`.
+- Order: best first by your score (`clip score-set`), then the retention score (`clip retention`); clips with
+  neither come last (a warning names them). Each export carries its `rank` (output and `<name>.report.json`);
+  `--rank-in-name true` names the files `01-<name>`, `02-<name>`, ...; `--order given` keeps your order.
+  `clip list --sort score` shows the same ranking before you export.
 - Single clip: `export clip clp_X --name <brief-slug>-<nn>-<short-title>`. The report embeds the QC
   result and the brief status.
 - Neither batch command replaces **looking**: open each contact sheet (`qc run` path) before you

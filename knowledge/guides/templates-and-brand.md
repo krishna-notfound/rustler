@@ -136,6 +136,17 @@ template and saves it (a taken version with other content becomes the next free 
 
 ## From a reference set
 
-After `reference analyze` (see `learn-style-from-videos`), write the template JSON from the profile and
-what you saw on the sheets, with `"based_on": {"reference_set": "<name>"}`; apply it to one clip, compare
-the frames with the reference sheets, `template update`, then apply to the batch.
+After `reference analyze` (see `learn-style-from-videos`):
+
+```
+rustler template create my-learned --from-reference my-style
+```
+
+maps the learned profile onto a template: caption `position_y` (bottom of the measured caption band, kept in
+0.10-0.85), `max_words_per_line` (median words per line), a built-in caption style close to the measured
+accent colour (`clean-white` when the captions are plain white), the hook look (position and how long it
+stays, only when most references open with on-screen text), and the loudness target. Pacing (cuts per
+minute), zoom rate, music yes/no and the common shot type go to `notes` with the command to act on them:
+the template never adds zooms (Rustler adds no automatic zooms; place punch-ins yourself) and picks no music
+track. Fonts, caption animation, transitions and brand images are not derived. Apply it to one clip with
+`--dry-run`, compare the frames with the reference sheets, `template update`, then apply to the batch.

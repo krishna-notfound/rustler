@@ -1092,7 +1092,31 @@ async fn history_undo(ctx: Ctx, input: HistoryUndoInput) -> Result<EditOut> {
     if origin <= 1 {
         return Err(nothing());
     }
-    restore_revision(&ctx, STAGE, &store, &old, origin - 1, STAGE).map_err(|e| if e.code == ErrorCode::NotFound { nothing() } else { e })
+    // Skip revisions that only recorded a render or a QC report (same segments, captions and
+    // layers as now), so undo after `render run` / `qc run` still removes the last real edit.
+    let mut target = origin - 1;
+    while target > 1 && same_content(&store, &old, target) {
+        target -= 1;
+    }
+    restore_revision(&ctx, STAGE, &store, &old, target, STAGE).map_err(|e| if e.code == ErrorCode::NotFound { nothing() } else { e })
+}
+
+/// True when snapshot `revision` has the same clip content (ignoring render records) and the
+/// same picture/sound layers as the current clip. Unknown (no layer snapshot) counts as different.
+fn same_content(store: &ProjectStore, current: &Clip, revision: u64) -> bool {
+    let Ok(snap) = store.load_clip_snapshot(&current.id, revision) else { return false };
+    let strip = |c: &Clip| {
+        let mut c = c.clone();
+        c.renders.clear();
+        c.revision = 0;
+        c
+    };
+    if strip(&snap) != strip(current) {
+        return false;
+    }
+    let rel = crate::extras::history_rel(&current.id, revision);
+    let Ok(then) = store.read_json::<serde_json::Map<String, serde_json::Value>>(&rel) else { return false };
+    crate::extras::load(store, &current.id).is_ok_and(|now| crate::extras::same_render_view(&then, &now))
 }
 
 #[derive(Deserialize, JsonSchema, Debug)]
