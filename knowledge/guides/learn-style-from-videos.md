@@ -65,7 +65,12 @@ When a number and a sheet disagree, say so in your write-up and trust the sheet.
 
 ## 3. Turn it into a spec
 
-Write a plain spec the human can read, then turn it into a template (`template create`, see
+Quick start: `rustler template create my-look --from-reference my-style` builds a template from the profile
+(caption position / words per line / closest caption style, hook look, loudness) and lists everything else in
+`notes` (pacing, zoom rate, music, layouts; never automatic zooms). Read the notes, then refine it with what you
+saw on the sheets (`template update`).
+
+Or write a plain spec the human can read, then turn it into a template (`template create`, see
 `templates-and-brand`; put `"based_on": {"reference_set": "my-style"}` in the JSON):
 
 ```

@@ -72,6 +72,12 @@ fn set_rel(name: &str) -> PathBuf {
     Path::new("references").join(name)
 }
 
+/// `references/<name>/profile.json` (written by `reference.analyze`); a name that is not a valid
+/// set name maps to a path that never exists.
+pub(crate) fn profile_rel(name: &str) -> PathBuf {
+    if valid_name(name) { set_rel(name).join("profile.json") } else { Path::new("references").join(".invalid").join("profile.json") }
+}
+
 fn load_set(store: &ProjectStore, name: &str, stage: &str) -> Result<RefSet> {
     if !valid_name(name) {
         return Err(validation(stage, format!("bad reference set name '{name}'")).hint("use letters, digits, - _ . (max 64)"));

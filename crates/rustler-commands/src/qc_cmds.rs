@@ -176,7 +176,7 @@ pub(crate) async fn execute_qc_with(
     if let Some(rec) = rec {
         rec.qc = Some(store.relativize(&report_path));
     }
-    store.save_clip(&mut clip, base)?;
+    crate::extras::save_clip(&store, &mut clip, base)?;
     store.append_event(&Event {
         ts: Utc::now(),
         actor: ctx.actor,
@@ -291,7 +291,14 @@ async fn gather_extras(ctx: &Ctx, store: &ProjectStore, clip: &Clip, render_path
         .unwrap_or(serde_json::Value::Null);
     // The engine is only started when face checks were asked for (`--faces` / `qc_faces`).
     let faces = if want_faces && wants_faces(clip) && render_path.is_file() { track_faces(ctx, paths, render_path).await } else { None };
+    // Burned-in source subtitles under our captions (engine-free scan, cached per source range).
+    let source_text = if clip.captions.enabled {
+        Some(crate::caption_place_cmds::subtitle_spans(store, paths, clip).await.map_err(|e| format!("source text scan failed: {}", e.message)))
+    } else {
+        None
+    };
     QcExtras {
+        source_text,
         faces,
         faces_off: !want_faces,
         overlay_starts: overlay_starts(&raw),

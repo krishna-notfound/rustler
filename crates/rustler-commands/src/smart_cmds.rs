@@ -1665,7 +1665,7 @@ fn apply_layout_plan(store: &ProjectStore, clip: &Clip, analyses: &[SegmentAnaly
 
 fn save_step(ctx: &Ctx, store: &ProjectStore, old: &Clip, mut new: Clip, stage: &str, summary: String, detail: serde_json::Value) -> Result<(Clip, SmartStep, Vec<String>)> {
     let base = old.revision;
-    store.save_clip(&mut new, base)?;
+    crate::extras::save_clip(store, &mut new, base)?;
     let warnings = extras::carry_crop_paths(store, old, &new)?;
     log_event(ctx, store, "clip.smart_defaults", json!({"clip_id": new.id, "stage": stage, "from_revision": base, "to_revision": new.revision, "detail": detail}))?;
     let step = SmartStep { stage: stage.to_string(), revision: new.revision, summary };

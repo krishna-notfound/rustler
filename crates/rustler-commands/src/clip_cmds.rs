@@ -553,7 +553,7 @@ where
     if ctx.dry_run {
         return Ok(view(clip, true, Vec::new(), warnings));
     }
-    store.save_clip(&mut clip, base)?;
+    crate::extras::save_clip(&store, &mut clip, base)?;
     log_event(ctx, &store, kind, serde_json::json!({"clip_id": clip.id, "revision": clip.revision}))?;
     Ok(view(clip, false, Vec::new(), warnings))
 }
@@ -762,6 +762,24 @@ async fn clip_show(ctx: Ctx, i: ClipIdIn) -> Result<ClipShow> {
 #[derive(Deserialize, JsonSchema, Default)]
 pub struct EmptyIn {}
 
+/// Order of `clip.list`.
+#[derive(Deserialize, JsonSchema, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ClipSort {
+    /// Project order (creation).
+    #[default]
+    Created,
+    /// Best first: the agent's score (`clip score-set`), then the retention score (`clip retention`).
+    Score,
+}
+
+#[derive(Deserialize, JsonSchema, Default)]
+pub struct ClipListIn {
+    /// `created` (default) | `score` (best first; unscored clips last).
+    #[serde(default)]
+    pub sort: Option<ClipSort>,
+}
+
 #[derive(Serialize, JsonSchema)]
 pub struct ClipListItem {
     pub id: ClipId,
@@ -771,6 +789,15 @@ pub struct ClipListItem {
     pub segments: usize,
     pub renders: usize,
     pub summary: String,
+    /// Position when sorted by score (1 = best).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rank: Option<usize>,
+    /// `clip score-set` total (0-100), when recorded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_score: Option<f64>,
+    /// `clip retention` score (0-100), when recorded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retention_score: Option<f64>,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -778,12 +805,24 @@ pub struct ClipListOut {
     pub clips: Vec<ClipListItem>,
 }
 
-async fn clip_list(ctx: Ctx, _i: EmptyIn) -> Result<ClipListOut> {
+async fn clip_list(ctx: Ctx, i: ClipListIn) -> Result<ClipListOut> {
     let store = ctx.store()?;
     let project = store.load_project()?;
+    let sort = i.sort.unwrap_or_default();
+    let order: Vec<(ClipId, Option<f64>, Option<f64>)> = match sort {
+        ClipSort::Score => crate::variant_cmds::rank_by_score(&store, &project.clips),
+        ClipSort::Created => project
+            .clips
+            .iter()
+            .map(|id| {
+                let (a, r) = crate::variant_cmds::scores_of(&store, id);
+                (id.clone(), a, r)
+            })
+            .collect(),
+    };
     let mut clips = Vec::new();
-    for id in &project.clips {
-        let c = store.load_clip(id)?;
+    for (k, (id, agent_score, retention_score)) in order.into_iter().enumerate() {
+        let c = store.load_clip(&id)?;
         let duration = TimeMap::from_segments(&c.segments).duration();
         clips.push(ClipListItem {
             id: c.id.clone(),
@@ -793,6 +832,9 @@ async fn clip_list(ctx: Ctx, _i: EmptyIn) -> Result<ClipListOut> {
             segments: c.segments.len(),
             renders: c.renders.len(),
             summary: clip_summary(&c, duration),
+            rank: (sort == ClipSort::Score).then_some(k + 1),
+            agent_score,
+            retention_score,
         });
     }
     Ok(ClipListOut { clips })
@@ -913,8 +955,25 @@ pub struct MusicOut {
     pub next: Vec<String>,
 }
 
+/// Saves the typed sidecar (music bed, crop paths, other keys kept) as one new clip revision, so
+/// `history undo` removes just this change.
 fn save_extras(store: &ProjectStore, id: &ClipId, extras: &ClipExtras) -> Result<()> {
-    store.write_json(&extras_rel(id), extras)
+    let value = serde_json::to_value(extras).map_err(|e| RustlerError::new(ErrorCode::Internal, "extras", e.to_string()))?;
+    let serde_json::Value::Object(mut new) = value else {
+        return Err(RustlerError::new(ErrorCode::Internal, "extras", "extras did not serialize to an object"));
+    };
+    // Absent and empty mean the same; keep the file free of `null` / `{}` noise.
+    if new.get("music").is_some_and(serde_json::Value::is_null) {
+        new.remove("music");
+    }
+    if new.get("crop_paths").and_then(serde_json::Value::as_object).is_some_and(|m| m.is_empty()) {
+        new.remove("crop_paths");
+    }
+    crate::extras::commit(store, id, |map| {
+        *map = new;
+        Ok(())
+    })?;
+    Ok(())
 }
 
 async fn audio_add_music(ctx: Ctx, i: AddMusicIn) -> Result<MusicOut> {
@@ -1265,7 +1324,14 @@ pub fn register(reg: &mut Registry) {
         vec![],
         clip_show,
     ));
-    reg.register(typed("clip.list", "List clips of the project", &[], READ, vec![], clip_list));
+    reg.register(typed(
+        "clip.list",
+        "List clips of the project with their agent / retention scores; --sort score lists them best first (agent score, then retention score) with a rank",
+        &[],
+        READ,
+        vec![Example { description: "best clips first", cli: "rustler clip list --sort score" }],
+        clip_list,
+    ));
     reg.register(typed(
         "caption.list_styles",
         "List caption style presets (use the name with --caption-style / caption set --style)",

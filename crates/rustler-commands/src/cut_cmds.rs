@@ -375,7 +375,7 @@ pub async fn refine(ctx: Ctx, input: RefineIn) -> Result<RefineOut> {
     let changed = new != old;
     let mut revision = old.revision;
     if changed && !ctx.dry_run {
-        store.save_clip(&mut new, old.revision)?;
+        crate::extras::save_clip(&store, &mut new, old.revision)?;
         revision = new.revision;
         // A moved segment start shifts its face-tracked crop path (keys are segment-relative).
         warnings.extend(crate::extras::carry_crop_paths(&store, &old, &new)?);

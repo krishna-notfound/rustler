@@ -7,7 +7,7 @@
 use crate::clip_cmds::log_event;
 use crate::extras;
 use rustler_core::{Canvas, Clip, ClipId, ErrorCode, ProjectStore, RustlerError, TimeMap};
-use crate::audio_cmds::{SFX_KEY, SfxEntry, change, next_id as next_sfx_id};
+use crate::audio_cmds::{SFX_KEY, SfxEntry, load_sfx, next_id as next_sfx_id};
 use rustler_media::compile::{
     OVERLAY_MAX_CHARS, OverlayAnim, OverlayLayout, OverlayStyle, TextOverlay, clean_overlay_text, display_text, overlay_layout,
 };
@@ -128,25 +128,20 @@ pub fn load_overlays(store: &ProjectStore, clip: &ClipId) -> Result<Vec<TextOver
     Ok(extras::get(store, clip, KEY)?.unwrap_or_default())
 }
 
-/// Read-modify-write of the overlay list; `f` returns a value passed back to the caller.
-fn modify<T>(store: &ProjectStore, clip: &ClipId, f: impl FnOnce(&mut Vec<TextOverlay>) -> Result<T>) -> Result<T> {
-    let mut out = None;
-    extras::update(store, clip, KEY, |cur| {
-        let mut list: Vec<TextOverlay> = match cur {
-            None | Some(serde_json::Value::Null) => Vec::new(),
-            Some(v) => serde_json::from_value(v).map_err(|e| {
-                RustlerError::new(ErrorCode::Internal, "overlay", format!("extras.json overlays are invalid: {e}"))
-            })?,
-        };
-        out = Some(f(&mut list)?);
-        if list.is_empty() {
-            return Ok(None);
-        }
-        serde_json::to_value(&list)
-            .map(Some)
-            .map_err(|e| RustlerError::new(ErrorCode::Internal, "overlay", e.to_string()))
+/// Read-modify-write of the overlay list (and, through `more`, other keys such as the hook's
+/// whoosh) as ONE new clip revision; `f` returns a value passed back to the caller.
+fn modify_with<T>(
+    store: &ProjectStore,
+    clip: &ClipId,
+    f: impl FnOnce(&mut Vec<TextOverlay>) -> Result<T>,
+    more: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>, &T) -> Result<()>,
+) -> Result<T> {
+    let (out, _) = extras::commit(store, clip, |map| {
+        let out = extras::edit_key(map, KEY, Vec::is_empty, f)?;
+        more(map, &out)?;
+        Ok(out)
     })?;
-    Ok(out.expect("closure ran"))
+    Ok(out)
 }
 
 fn duration_of(clip: &Clip) -> f64 {
@@ -251,15 +246,6 @@ async fn hook_sfx(ctx: &Ctx, stage: &str, spec: &str, at: f64, volume_db: Option
     })
 }
 
-/// Saves `entry` in the clip's sfx list; returns its id.
-fn save_sfx(ctx: &Ctx, store: &ProjectStore, clip: &ClipId, mut entry: SfxEntry) -> Result<String> {
-    change(ctx, store, clip, SFX_KEY, Vec::is_empty, |list: &mut Vec<SfxEntry>| {
-        entry.id = next_sfx_id("sfx", list.iter().map(|e| e.id.as_str()));
-        list.push(entry.clone());
-        Ok(entry.id.clone())
-    })
-}
-
 async fn add_text(ctx: Ctx, i: AddTextIn) -> Result<OverlayOut> {
     const STAGE: &str = "overlay.add_text";
     let store = ctx.store()?;
@@ -293,18 +279,29 @@ async fn add_text(ctx: Ctx, i: AddTextIn) -> Result<OverlayOut> {
         Some(spec) => Some(hook_sfx(&ctx, STAGE, spec, start, i.sfx_volume_db).await?),
         None => None,
     };
-    if let Some(entry) = sfx {
-        o.sfx_id = Some(save_sfx(&ctx, &store, &clip.id, entry)?);
-    }
-
     if ctx.dry_run {
+        if sfx.is_some() {
+            o.sfx_id = Some(next_sfx_id("sfx", load_sfx(&store, &clip.id)?.iter().map(|e| e.id.as_str())));
+        }
         o.id = next_id(&load_overlays(&store, &clip.id)?);
     } else {
-        o = modify(&store, &clip.id, |list| {
-            o.id = next_id(list);
-            list.push(o.clone());
-            Ok(o.clone())
-        })?;
+        // Overlay and its whoosh are one revision (one `history undo` removes both).
+        o = extras::commit(&store, &clip.id, |map| {
+            if let Some(mut entry) = sfx {
+                let sid = extras::edit_key(map, SFX_KEY, Vec::is_empty, |list: &mut Vec<SfxEntry>| {
+                    entry.id = next_sfx_id("sfx", list.iter().map(|e| e.id.as_str()));
+                    list.push(entry.clone());
+                    Ok(entry.id.clone())
+                })?;
+                o.sfx_id = Some(sid);
+            }
+            extras::edit_key(map, KEY, Vec::is_empty, |list: &mut Vec<TextOverlay>| {
+                o.id = next_id(list);
+                list.push(o.clone());
+                Ok(o.clone())
+            })
+        })?
+        .0;
         log_event(&ctx, &store, STAGE, serde_json::json!({"clip_id": clip.id, "overlay_id": o.id, "text": o.text}))?;
     }
     let v = view(o, &clip.canvas);
@@ -433,10 +430,10 @@ async fn edit(ctx: Ctx, i: EditIn) -> Result<OverlayOut> {
         apply_edit(STAGE, o, &i, duration)?;
         Ok(o.clone())
     };
-    // A hook's whoosh follows its start.
-    let move_sfx = |ctx: &Ctx, o: &TextOverlay| -> Result<()> {
+    // A hook's whoosh follows its start (same revision).
+    let move_sfx = |map: &mut serde_json::Map<String, serde_json::Value>, o: &TextOverlay| -> Result<()> {
         if let (Some(id), Some(_)) = (&o.sfx_id, i.start) {
-            change(ctx, &store, &clip.id, SFX_KEY, Vec::is_empty, |list: &mut Vec<SfxEntry>| {
+            extras::edit_key(map, SFX_KEY, Vec::is_empty, |list: &mut Vec<SfxEntry>| {
                 if let Some(e) = list.iter_mut().find(|e| &e.id == id) {
                     e.at = Some(o.start);
                 }
@@ -448,8 +445,7 @@ async fn edit(ctx: Ctx, i: EditIn) -> Result<OverlayOut> {
     let o = if ctx.dry_run {
         apply(&mut load_overlays(&store, &clip.id)?)?
     } else {
-        let o = modify(&store, &clip.id, apply)?;
-        move_sfx(&ctx, &o)?;
+        let o = modify_with(&store, &clip.id, apply, move_sfx)?;
         log_event(&ctx, &store, STAGE, serde_json::json!({"clip_id": clip.id, "overlay_id": o.id}))?;
         o
     };
@@ -499,14 +495,16 @@ async fn remove(ctx: Ctx, i: RemoveIn) -> Result<RemoveOut> {
     let remaining = if ctx.dry_run {
         apply(&mut load_overlays(&store, &clip.id)?)?.0
     } else {
-        let (r, sfx_id) = modify(&store, &clip.id, apply)?;
-        if let Some(id) = sfx_id {
-            // The hook's whoosh goes with it.
-            change(&ctx, &store, &clip.id, SFX_KEY, Vec::is_empty, |list: &mut Vec<SfxEntry>| {
-                list.retain(|e| e.id != id);
-                Ok(())
-            })?;
-        }
+        // The hook's whoosh goes with it (same revision).
+        let (r, _) = modify_with(&store, &clip.id, apply, |map, (_, sfx_id)| {
+            if let Some(id) = sfx_id {
+                extras::edit_key(map, SFX_KEY, Vec::is_empty, |list: &mut Vec<SfxEntry>| {
+                    list.retain(|e| &e.id != id);
+                    Ok(())
+                })?;
+            }
+            Ok(())
+        })?;
         log_event(&ctx, &store, STAGE, serde_json::json!({"clip_id": clip.id, "overlay_id": i.overlay_id}))?;
         r
     };

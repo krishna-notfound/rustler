@@ -256,11 +256,11 @@ async fn music_bed_is_stored_in_extras_and_crop_commands_validate() {
     assert_eq!(m["music"]["duck"], true);
     let extras: Value = serde_json::from_slice(&std::fs::read(f.store.root.join("clips").join(&id).join("extras.json")).unwrap()).unwrap();
     assert!(extras["music"]["path"].as_str().unwrap().ends_with("bed.mp3"));
-    assert!(extras["crop_paths"].is_object());
-    // clip.show surfaces it, the clip revision is untouched
+    assert!(extras.get("crop_paths").is_none(), "no empty crop_paths written");
+    // clip.show surfaces it; adding music is one new revision (history undo removes it)
     let shown = call(&f.reg, &f.ctx, "clip.show", json!({"clip_id": id})).await.unwrap();
     assert!(shown["extras"]["music"].is_object());
-    assert_eq!(shown["clip"]["revision"], v["revision"]);
+    assert_eq!(shown["clip"]["revision"].as_u64(), v["revision"].as_u64().map(|r| r + 1));
 
     let e = call(&f.reg, &f.ctx, "audio.add_music", json!({"clip_id": id, "path": f._tmp.path().join("missing.mp3")})).await.unwrap_err();
     assert_eq!(e.code, ErrorCode::NotFound);
