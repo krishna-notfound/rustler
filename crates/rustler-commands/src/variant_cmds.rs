@@ -472,9 +472,12 @@ pub fn render_is_fresh(store: &ProjectStore, clip: &Clip, quality: Option<Render
         reference = reference.max(q);
     }
     let dir = store.clip_dir(&clip.id);
-    ["clip.json", "extras.json"]
-        .iter()
-        .all(|f| mtime(&dir.join(f)).is_none_or(|t| t <= reference + FRESH_SLACK))
+    let newer = |f: &str| mtime(&dir.join(f)).is_some_and(|t| t > reference + FRESH_SLACK);
+    if newer("clip.json") {
+        return false;
+    }
+    // A newer sidecar only matters when its picture/sound keys changed (cover, copy and scores do not).
+    !newer("extras.json") || extras::render_extras_unchanged(store, &clip.id, &r.id) == Some(true)
 }
 
 // ---------------------------------------------------------------------------------------------

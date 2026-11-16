@@ -1056,7 +1056,9 @@ fn stale_reason(store: &ProjectStore, clip: &rustler_core::Clip, render: &rustle
         }
     }
     let extras = store.clip_dir(&clip.id).join("extras.json");
-    if mtime(&extras).is_some_and(|t| t > render.created_at) {
+    if mtime(&extras).is_some_and(|t| t > render.created_at)
+        && crate::extras::render_extras_unchanged(store, &clip.id, &render.id) != Some(true)
+    {
         return Some("overlays/music/effects (extras.json) changed after the render".to_string());
     }
     None

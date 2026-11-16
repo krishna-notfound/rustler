@@ -7,7 +7,7 @@
 //! Writes are atomic (`ProjectStore::write_json`: temp file + rename) and serialized within the
 //! process.
 
-use rustler_core::{Clip, ClipId, ErrorCode, ProjectStore, RustlerError, Segment};
+use rustler_core::{Clip, ClipId, ErrorCode, ProjectStore, RenderId, RustlerError, Segment};
 use rustler_media::facepath::CropKey;
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
@@ -85,6 +85,37 @@ pub fn update(
         map.insert(key.to_string(), v);
     }
     store.write_json(&rel(clip), &map)
+}
+
+/// Sidecar keys that never change the picture or the sound: posting copy, scores/retention, cover,
+/// reports and bookkeeping. Writing them does not make a render stale.
+pub const NON_RENDER_KEYS: &[&str] = &["post", "meta", "cover", "smart_defaults", "template_ref", "variant_of", "variant_info"];
+
+/// `clips/<id>/renders/<render_id>.extras.json`: the render-relevant part of the sidecar a render was made from.
+pub fn render_snapshot_rel(clip: &ClipId, render: &RenderId) -> PathBuf {
+    Path::new("clips").join(clip.as_str()).join("renders").join(format!("{render}.extras.json"))
+}
+
+fn render_view(mut map: Map<String, Value>) -> Map<String, Value> {
+    for k in NON_RENDER_KEYS {
+        map.remove(*k);
+    }
+    map
+}
+
+/// Records the render-relevant sidecar for `render` (call right after a successful render).
+pub fn snapshot_for_render(store: &ProjectStore, clip: &ClipId, render: &RenderId) -> Result<()> {
+    let view = render_view(load(store, clip)?);
+    store.write_json(&render_snapshot_rel(clip, render), &view)
+}
+
+/// `Some(true)` when the sidecar's picture/sound keys are the same as when `render` was made;
+/// `None` when that render has no snapshot (made by an older build).
+pub fn render_extras_unchanged(store: &ProjectStore, clip: &ClipId, render: &RenderId) -> Option<bool> {
+    let snap = store.resolve(&render_snapshot_rel(clip, render));
+    let then: Map<String, Value> = serde_json::from_slice(&std::fs::read(snap).ok()?).ok()?;
+    let now = render_view(load(store, clip).ok()?);
+    Some(Value::Object(then) == Value::Object(now))
 }
 
 /// Keeps face-tracked crops attached after a timeline edit.
@@ -199,6 +230,23 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let store = ProjectStore { root: tmp.path().to_path_buf() };
         (tmp, store, ClipId::new())
+    }
+
+    #[test]
+    fn render_snapshot_ignores_copy_cover_and_scores() {
+        let (_t, s, c) = store();
+        let r = RenderId::new();
+        assert_eq!(render_extras_unchanged(&s, &c, &r), None, "no snapshot yet");
+        update(&s, &c, "overlays", |_| Ok(Some(json!([{"id": "ovl_1"}])))).unwrap();
+        update(&s, &c, "post", |_| Ok(Some(json!({"title": "a"})))).unwrap();
+        snapshot_for_render(&s, &c, &r).unwrap();
+        assert_eq!(render_extras_unchanged(&s, &c, &r), Some(true));
+        for key in ["post", "meta", "cover"] {
+            update(&s, &c, key, |_| Ok(Some(json!({"changed": key})))).unwrap();
+        }
+        assert_eq!(render_extras_unchanged(&s, &c, &r), Some(true), "copy, scores and cover do not change the render");
+        update(&s, &c, "overlays", |_| Ok(Some(json!([{"id": "ovl_2"}])))).unwrap();
+        assert_eq!(render_extras_unchanged(&s, &c, &r), Some(false), "an overlay change does");
     }
 
     #[test]
