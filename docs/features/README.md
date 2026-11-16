@@ -27,7 +27,7 @@ Status reflects `docs/progress-log.md` (2026-11-15) and the docs pass that ran t
 | f11 | `f11_agent_skill_and_docs.md` | Knowledge book (17 guides, 10 prompts), guide/prompt commands, agent skill and AGENTS.md (`skills/rustler/`) | 2 | f10 | Built |
 | f12 | `f12_edit_ops_and_history.md` | Edit ops (trim, split, delete, move, pauses, words) and history undo/restore | 2 | f03 | Built |
 | f13 | — (not written) | OpenAI-compatible LLM/vision/STT/TTS, keys, JSON recovery, cost | 2 | f02 | Dropped (no AI APIs — user decision) |
-| f14 | `f14_face_tracking_and_reframe.md` | YuNet tracks, smoothed crop path, crop.track_face / crop.clear (`crop.track_speaker` is in f29) | 3 | f04, f08 | Built |
+| f14 | `f14_face_tracking_and_reframe.md` | YuNet tracks + landmarks, offline camera planner (styles locked/smooth/follow, look-room, eased moves, crop cuts), crop.track_face / crop.clear, QC camera_motion (`crop.track_speaker` is in f29) | 3 | f04, f08 | Built |
 | f15 | `f15_layout_region_system.md` | Region layouts, picture-in-picture, presets, `layout.detect_webcam` streamer split (keyframes not built) | 3 | f08, f12 | Verified |
 | f16 | `f16_caption_engine_v2.md` | 4 caption presets (ASS via libass) + SRT export; template schema, metrics, VTT not built | 3 | f08, f14 | Verified |
 | f17 | `f17_audio_post.md` | Music bed with ducking, 2-pass loudnorm, denoise, word-anchored SFX, volume (voice-over not built) | 3 | f08, f12 | Verified |
