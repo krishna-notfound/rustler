@@ -48,7 +48,7 @@ judges. After this feature the agent can measure where a clip loses attention (`
 
 1. Visual change = segment cut (different source / gap > 0.25 s / layout change), transition, scene cut inside a
    segment (source `scenes.json`), effect start (punch-in also its end; zoom-slow/shake keep motion over their
-   range), text overlay / image / cutaway appearing, frame-difference spike on the render (`scene > 0.25`).
+   range), text overlay / image / cutaway appearing, frame-difference spike on the render (`scene > 0.12`, see retention::SCENE_SPIKE).
 2. Dead zone: > 2.5 s without a visual change (static) or ≥ 0.8 s of silence.
 3. The latest render is used only when no clip edit was logged after it (else timeline-only + warning).
 4. No transcript → speech metrics null and neutral points, with a warning; no audio data → neutral energy.

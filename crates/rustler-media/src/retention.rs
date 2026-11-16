@@ -24,8 +24,10 @@ pub const SILENCE_MIN_S: f64 = 0.8;
 pub const HOOK_TEXT_BEFORE_S: f64 = 0.3;
 /// Speech that starts before this time counts as a first-frame hook.
 pub const FAST_SPEECH_S: f64 = 0.5;
-/// ffmpeg scene score above which a frame is a visible change.
-pub const SCENE_SPIKE: f64 = 0.25;
+/// ffmpeg scene score (on 240 px wide frames) above which a frame is a visible change. Measured
+/// on the trial renders: camera cuts 0.27-0.52, jump cuts in a talking head 0.13-0.20, gestures
+/// and caption changes below 0.10, so 0.12 catches jump cuts that 0.25 would miss.
+pub const SCENE_SPIKE: f64 = 0.12;
 /// Mean scene score over the first second above which the opening counts as moving.
 pub const MOTION_FIRST_SECOND: f64 = 0.02;
 /// Visual changes closer than this are one change.
@@ -199,11 +201,11 @@ pub struct RetentionAnalysis {
 }
 
 fn r2(x: f64) -> f64 {
-    (x * 100.0).round() / 100.0
+    (x * 100.0).round() / 100.0 + 0.0
 }
 
 fn r1(x: f64) -> f64 {
-    (x * 10.0).round() / 10.0
+    (x * 10.0).round() / 10.0 + 0.0
 }
 
 /// Overlap of `[a, b]` with `[c, d]`.
