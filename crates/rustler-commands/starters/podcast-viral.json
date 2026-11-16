@@ -1,0 +1,21 @@
+{
+  "schema": "rustler.template@1",
+  "name": "podcast-viral",
+  "version": 1,
+  "description": "Talking-head / podcast short: hormozi-pop captions (3 words a line) at 0.70, a big boxed hook title (<= 7 words) for the first 3 s, a punch-in every 5 s, yellow progress bar, -14 LUFS.",
+  "created_by": "built-in",
+  "based_on": { "trial": "clips-trial-1 (Vinh Giang x Raj Shamani, 5 clips, all QC pass)" },
+  "notes": [
+    "Framing is per shot and is NOT set by this template: close-ups use center-crop + `rustler crop track-face <clip>`, wide two-person shots use blur-fit (`rustler clip set-layout <clip> --preset blur-fit --segment-id <seg>`).",
+    "Write the hook title yourself (<= 7 words) with `rustler overlay add-text <clip> \"...\"`, then apply the template again to restyle it; or pass overrides {\"hook\": {\"text\": \"...\"}}.",
+    "The trial found the hook text too small at 0.085; this template uses 0.1."
+  ],
+  "canvas": { "width": 1080, "height": 1920, "fps": 30.0 },
+  "captions": { "enabled": true, "preset": "hormozi-pop", "position_y": 0.7, "max_words_per_line": 3 },
+  "hook": { "position_y": 0.12, "font_size_factor": 0.1, "box": true, "duration": 3.0, "max_words": 7 },
+  "progress_bar": { "enabled": true, "color": "#FFE000", "height": 8, "position": "top" },
+  "audio": { "loudnorm": true, "target_lufs": -14.0, "true_peak": -2.0 },
+  "effects": [
+    { "kind": "punch-in", "at": "every", "every_s": 5.0, "duration": 1.5, "amount": 1.12 }
+  ]
+}

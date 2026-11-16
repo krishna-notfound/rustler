@@ -161,7 +161,8 @@ fn locate_error(doc: &Value) -> Option<String> {
         .or_else(|| each::<WordOverride>(doc, "/tracks/captions/word_overrides"))
 }
 
-async fn apply(ctx: Ctx, i: ApplyIn) -> Result<ApplyOut> {
+/// `timeline.apply` (also called by `template.apply`).
+pub async fn apply(ctx: Ctx, i: ApplyIn) -> Result<ApplyOut> {
     const STAGE: &str = "timeline.apply";
     let store = ctx.store()?;
     let dry = ctx.dry_run || i.dry_run.unwrap_or(false);

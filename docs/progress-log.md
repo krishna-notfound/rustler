@@ -581,3 +581,21 @@ merge, then templates (Opus), knowledge refresh, clips.auto, `rustler setup run`
   the clip at the start (it used to follow its words to after the hook).
 - Not done / open: v1 layer commands (overlay/image/mask/...) still write extras without a revision bump, so undo
   takes them together with the previous revision; `cut_cmds` (edit refine) saves without an extras snapshot.
+
+### 2026-11-17 — Templates (Task 1.5, f35)
+- Built `template.create/update/show/list/delete/apply/diff/export/import` (+9 commands) in `template_cmds.rs`.
+  A template (`rustler.template@1`) is a clip's look without content: captions, layout, hook look, text looks,
+  brand images, progress bar, loudness/denoise/music, sfx + effect patterns (start / cuts / every N s / time),
+  transitions, canvas, fonts. Storage `templates/<name>@<ver>.json` (project) or `<home>/templates/`.
+- `template.apply` builds a JSON-Patch per clip and goes through `timeline.apply` (all clips dry-run validated
+  first; one revision each; `history undo` reverts). Added items carry `by_template`, so re-applying is a no-op.
+  Missing asset/font/style/file -> `not_found` naming it (`template show` lists `missing`).
+- Starters `podcast-viral` and `streamer-split` (embedded JSON, trial learnings: hormozi-pop, hook <= 7 words
+  at font 0.10/0.09, punch-ins, progress bar, split for streamers; no assets needed).
+- `clip.create --template` and config `template.default` (default that cannot apply = warning).
+- Export/import zip bundles the template with caption style, fonts, assets and plain files.
+- Tests: `--test templates` 5 passed (+3 unit); clip, config, timeline, timeline_edit, variant suites green;
+  `cargo check --workspace --tests` clean; `cargo test -p rustler-knowledge` ok. Not done: a real render of a
+  templated clip; spec fields layout_rules/cutaway_rules/cleanup/keyword_highlight/export/post_defaults (out of scope,
+  rejected as unknown fields).
+- Small shared edits: `timeline_cmds::apply` is now `pub`; `ClipCreateIn` gained `template`.

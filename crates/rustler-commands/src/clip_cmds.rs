@@ -414,6 +414,9 @@ pub struct ClipCreateIn {
     pub captions: Option<bool>,
     /// Caption style preset name (see caption.list_styles).
     pub caption_style: Option<String>,
+    /// Template (`name` or `name@version`) applied after creation and the smart defaults (default:
+    /// config `template.default`).
+    pub template: Option<String>,
     /// Skip the smart defaults (per-shot layout + framing, filler and pause trim); also off when
     /// the setting `clip.smart_defaults` is false. Default false.
     pub raw: Option<bool>,
@@ -474,7 +477,25 @@ async fn clip_create(ctx: Ctx, i: ClipCreateIn) -> Result<ClipView> {
         created_at: Utc::now(),
     };
     let next = default_next(&clip);
+    // Template: an explicit one must resolve (and its assets exist) before anything is written;
+    // a configured default that does not resolve is only a warning.
+    let template = match i.template.as_deref() {
+        Some(spec) => Some(crate::template_cmds::prepare(&ctx, "clip.create", spec, None)?),
+        None => match crate::config_cmds::setting::<String>(&ctx, "template.default").filter(|s| !s.trim().is_empty()) {
+            Some(spec) => match crate::template_cmds::prepare(&ctx, "clip.create", &spec, None) {
+                Ok(t) => Some(t),
+                Err(e) => {
+                    warnings.push(format!("default template '{spec}' (config template.default) not applied: {}", e.message));
+                    None
+                }
+            },
+            None => None,
+        },
+    };
     if ctx.dry_run {
+        if let Some(t) = &template {
+            warnings.push(format!("template {}@{} would be applied after creation", t.name, t.version));
+        }
         return Ok(view(clip, true, next, warnings));
     }
     store.save_clip(&mut clip, 0)?;
@@ -490,14 +511,28 @@ async fn clip_create(ctx: Ctx, i: ClipCreateIn) -> Result<ClipView> {
     // Smart defaults (v2 §5.5): per-shot layout + framing, filler and pause trim, each a revision
     // the report tells how to undo. `--raw` or `clip.smart_defaults = false` keeps the raw clip.
     let smart_on = !i.raw.unwrap_or(false) && crate::config_cmds::setting_or_default::<bool>(&ctx, "clip.smart_defaults").unwrap_or(true);
-    if !smart_on {
-        return Ok(view(clip, false, next, warnings));
+    let (mut clip, report) = if smart_on {
+        let opts = crate::smart_cmds::SmartOptions { layout: !explicit_layout, cleanup: true };
+        let (c, r) = crate::smart_cmds::apply_smart_defaults(&ctx, &store, clip, opts).await?;
+        (c, Some(r))
+    } else {
+        (clip, None)
+    };
+    // The template goes last, on top of the smart defaults (one more undoable revision).
+    if let Some(tpl) = template {
+        match crate::template_cmds::apply_to(&ctx, &tpl, std::slice::from_ref(&clip.id), false).await {
+            Ok(r) => {
+                warnings.extend(r.into_iter().flat_map(|c| c.warnings));
+                clip = store.load_clip(&clip.id)?;
+            }
+            Err(e) => warnings.push(format!("clip created, but template {} was not applied: {}", tpl.name, e.message)),
+        }
     }
-    let opts = crate::smart_cmds::SmartOptions { layout: !explicit_layout, cleanup: true };
-    let (clip, report) = crate::smart_cmds::apply_smart_defaults(&ctx, &store, clip, opts).await?;
     let mut v = view(clip, false, next, warnings);
-    v.next = default_next(&v.clip);
-    v.smart = Some(report);
+    if report.is_some() {
+        v.next = default_next(&v.clip);
+        v.smart = report;
+    }
     Ok(v)
 }
 

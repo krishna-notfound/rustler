@@ -65,8 +65,8 @@ When a number and a sheet disagree, say so in your write-up and trust the sheet.
 
 ## 3. Turn it into a spec
 
-Write a plain spec the human can read and later turn into a template (the `template.*` commands arrive
-with the templates feature; until they exist, keep the spec as a note and apply it with today's commands):
+Write a plain spec the human can read, then turn it into a template (`template create`, see
+`templates-and-brand`; put `"based_on": {"reference_set": "my-style"}` in the JSON):
 
 ```
 style: my-style           based_on: reference set my-style (5 videos)
