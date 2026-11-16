@@ -5,6 +5,7 @@ pub mod asset_cmds;
 pub mod audio_cmds;
 pub mod brief_cmds;
 pub mod campaign_cmds;
+pub mod card_cmds;
 pub mod clip_cmds;
 pub mod config_cmds;
 pub mod cut_cmds;
@@ -22,6 +23,7 @@ pub mod overlay_cmds;
 pub mod post_cmds;
 pub mod project_cmds;
 pub mod qc_cmds;
+pub mod reference_cmds;
 pub mod render_cmds;
 pub mod see_cmds;
 pub mod setup_cmds;
@@ -56,6 +58,7 @@ pub fn register_all(reg: &mut Registry) {
     fx_cmds::register(reg);
     render_cmds::register(reg);
     qc_cmds::register(reg);
+    reference_cmds::register(reg);
     fix_cmds::register(reg);
     layout_cmds::register(reg);
     layer_cmds::register(reg);
@@ -68,6 +71,7 @@ pub fn register_all(reg: &mut Registry) {
     config_cmds::register(reg);
     campaign_cmds::register(reg);
     post_cmds::register(reg);
+    card_cmds::register(reg);
     timeline_cmds::register(reg);
     timeline_edit_cmds::register(reg);
 }

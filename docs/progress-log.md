@@ -491,6 +491,34 @@ Not started (stopped right at launch, nothing saved): **timeline doc + timeline 
 Resume order: finish cards + references → merge; launch timeline + smart defaults; then templates (Opus, needs the
 timeline doc), hooks/captions presets, cleanup/cover; then knowledge refresh, `clips.auto`, release v0.2.0 + trial.
 Before releasing: run `rustler setup run` with the new build so the engine has the landmark output (look-room).
+- 2026-11-17: Merged **agent graphics** (f1.4): `asset.render_card` (PNG cards from a JSON spec: gradients, rounded
+  boxes, shadows, measured text wrap/fit, images) and `text.create_style` / `text.styles`. Real POV hook card + lower
+  third rendered and checked. Running: style references (1.6), timeline doc + edit commands (Opus), smart defaults +
+  light active speaker (Opus). Next after them: templates (Opus), hook/caption presets, cleanup/cover, knowledge,
+  clips.auto, release v0.2.0.
+
+## 2026-11-16 - Style references (Task 1.6, f32)
+
+- Built `reference.import/list/show/analyze` (4 commands; registry now +4), engine method `reference.measure`
+  (`engine/rustler_engine/reference.py`, light: OpenCV + numpy, YuNet when available), guide `learn-style-from-videos`, prompt
+  `learn_style_from_folder`. A set lives in `<project>/references/<name>/` (proxies 540 px short side 15 fps, 16 kHz wavs, sheets,
+  `profile.json`); originals are never touched. Output `image` lists contact sheets then first-3-second filmstrips (MCP shows them).
+- Tests: engine `test_reference.py` (10: known cuts at 3/6/9 s, caption band y~0.75 + words per line + yellow fill, hook gone by ~2.5 s,
+  zoom-in 1.0 -> 1.5, cut in dark low-contrast footage, flat-colour cut, fade is not a cut, no caption in plain video, music heuristic
+  speech vs speech+music, bad params) all pass; command tests `tests/reference.rs` (synthetic captioned 12 s clip with cuts at 4/8 s,
+  `.srt` sidecar 120 wpm, zoom clip, skipped broken file, replace, errors) + 5 unit tests pass; `cargo test -p rustler-knowledge` ok.
+- Real run on copies of the 5 trial exports (210 s for `reference analyze`, ~10 s of measuring per 40 s video, rest is sheets/loudness):
+  cuts/min 6.5, 16.7, 9.4, 4.8, 14.4 (median 9.4; median shot 3.8 s); caption band y 0.69-0.73 in all 5 (matches the sheets: bold
+  uppercase white with green highlight word, 2-3 words, black outline; colours measured #e8e6df/#4df873 style); hook box in the first
+  ~3.2 s in 5/5 (matches); loudness -14.0 LUFS in all (the render target); speech 159-254 wpm from the sidecars; layouts: face_closeup
+  34 of 38 shots, the chart insert in clips 02/04 shows as `multi_face`. Zoom: dark footage leaves only 0-13 percent of frame pairs
+  measurable, so zoom is reported as under-counted (0 events; one in clip 05), not as "no zooms". Known misses: a head turn adds one
+  spurious cut in clip 02 (34.3 s), animated charts can look like caption text (the caption pick prefers the edge-dense band that
+  changes within shots; verified correct on all 5 after tuning).
+- Decisions: punch-in jump cuts (same scene, new scale) are reported as zoom events, not cuts; speech rate only from `.srt/.vtt`
+  sidecars (no transcription of references); `reference.import` keeps only the first 180 s of each video (`--max-seconds`).
+- Open: templates (Task 1.5) should consume `profile.json` (`based_on {reference_set}`); the engine copy in `~/.rustler/engine` needs
+  `rustler setup` to pick up `reference.py`.
 
 ### 2026-11-17 — Timeline v2 document + timeline edit commands (f33, branch `worktree-agent-ae7f9cafc65fc59fc`)
 - `rustler.timeline@2` (`rustler_core::Timeline`, item types in `rustler_core::timeline`): every extras key maps 1:1

@@ -225,7 +225,7 @@ pub fn preset_infos(home: &Path, project: Option<&Path>) -> Vec<rustler_captions
 #[derive(Deserialize, JsonSchema, Default)]
 #[serde(default)]
 pub struct ListIn {
-    /// font | music | sfx | image | caption_style | layout | template
+    /// font | music | sfx | image | caption_style | layout | template | text_style
     pub kind: Option<AssetKind>,
     /// Only assets carrying this tag.
     pub tag: Option<String>,
@@ -560,7 +560,7 @@ async fn asset_show(ctx: Ctx, i: IdIn) -> Result<ShowOut> {
         AssetKind::Layout => {
             next.push(format!("rustler clip set-layout <clip_id> {}", row.entry.name));
         }
-        AssetKind::Template => {}
+        AssetKind::Template | AssetKind::TextStyle => {}
     }
     Ok(ShowOut { asset: row, preview, style, next })
 }
@@ -633,7 +633,7 @@ fn check_extension(kind: AssetKind, path: &Path) -> Result<()> {
         AssetKind::Font => &["ttf", "otf"],
         AssetKind::Music | AssetKind::Sfx => &["mp3", "wav", "ogg", "m4a", "aac", "flac", "opus"],
         AssetKind::Image => &["png", "jpg", "jpeg", "webp", "gif"],
-        AssetKind::CaptionStyle | AssetKind::Layout => &["json"],
+        AssetKind::CaptionStyle | AssetKind::Layout | AssetKind::TextStyle => &["json"],
         AssetKind::Template => &[],
     };
     if ok.is_empty() || ok.contains(&ext.as_str()) {
