@@ -118,3 +118,6 @@ renders, checks quality, fixes problems, and delivers finished short-form clips.
   agent as **director** — analyse the campaign requirements, understand what holds viewers and goes viral
   (retention is the game: "if we can't make someone hold and watch our reel, we won't go viral"), full control
   over assets/music/templates, creative hook thinking; goal = maximum views. Git default branch renamed to `main`.
+- 2026-11-16: User approved the v2 design + plan ("go ahead and build"). Add-ons: agents add custom templates by
+  analysing videos (reference → template), more system-level control (agent-settable defaults via `config.*`),
+  720p default is fine but the agent can choose any quality per import or as its default.
