@@ -276,6 +276,16 @@ async fn music_bed_is_stored_in_extras_and_crop_commands_validate() {
     let e = call(&f.reg, &f.ctx, "crop.track_face", json!({"clip_id": id})).await.unwrap_err();
     assert_eq!(e.code, ErrorCode::Validation);
     assert!(e.hint.unwrap().contains("center-crop"));
+    // A clip mixing center-crop and blur-fit segments: the whole-clip call tracks the center-crop
+    // ones and skips the rest instead of failing (dry run: no engine needed).
+    let w = call(&f.reg, &f.ctx, "clip.add_segment", json!({"clip_id": id, "source_id": f.src.id, "start_unit": 2, "layout": "center-crop"}))
+        .await
+        .unwrap();
+    assert_eq!(w["segments"][1]["layout"]["preset"], "center-crop");
+    let mut dry = f.ctx.clone();
+    dry.dry_run = true;
+    let t = call(&f.reg, &dry, "crop.track_face", json!({"clip_id": id})).await.unwrap();
+    assert_eq!(t["dry_run"], true);
     let c = call(&f.reg, &f.ctx, "crop.clear", json!({"clip_id": id})).await.unwrap();
     assert_eq!(c["cleared"], 0);
 }
