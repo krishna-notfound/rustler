@@ -754,7 +754,7 @@ async fn export_batch(ctx: Ctx, i: ExportBatchIn) -> Result<ExportBatchOut> {
                     clip = c;
                 }
             }
-            if let Some(q) = clip.renders.last().and_then(|r| r.qc.as_ref()).and_then(|p| store.read_json::<QcView>(p).ok()) {
+            if let Some(q) = clip.renders.last().and_then(|r| r.qc.as_ref()).and_then(|p| crate::qc_cmds::read_qc(&store, p)) {
                 qc_passed = q.report.passed;
                 if !q.report.passed {
                     let (r, f) = qc_failures(&q);

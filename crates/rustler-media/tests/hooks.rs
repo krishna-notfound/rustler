@@ -57,6 +57,25 @@ fn there_are_five_hook_presets_with_distinct_names_and_animations() {
 }
 
 #[test]
+fn every_hook_preset_has_the_common_minimum_size_and_wraps_instead_of_shrinking() {
+    for s in OverlayStyle::HOOKS {
+        assert!((s.default_font_size_factor() - 0.10).abs() < 1e-9, "{} default size", s.name());
+        assert!(
+            (TextOverlay::new("ovl_1", "x", 0.0, 3.0, s).font_size_factor - 0.10).abs() < 1e-9,
+            "{} new overlays start at 0.10",
+            s.name()
+        );
+        // 5 words that do not fit one line at 108 px: two lines at full size, inside the 86% safe width
+        let l = overlay_layout(&ov("Nobody tells you this part", s), &canvas());
+        assert_eq!(l.font_size, 108, "{}: {l:?}", s.name());
+        assert!(l.lines.len() <= 2 && l.fits, "{}: {l:?}", s.name());
+        assert!(l.width <= 1080.0 * 0.86 + 1.0, "{} stays in the safe width: {}", s.name(), l.width);
+    }
+    // the plain hook-top is untouched
+    assert!((OverlayStyle::HookTop.default_font_size_factor() - 0.085).abs() < 1e-9);
+}
+
+#[test]
 fn old_overlays_keep_their_exact_ass_event() {
     let o = ov("He quit his job", OverlayStyle::HookTop);
     let ass = overlays_ass(&[o], &canvas(), 10.0).unwrap();

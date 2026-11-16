@@ -18,8 +18,10 @@ use std::collections::HashSet;
 
 type Result<T> = rustler_core::Result<T>;
 
-/// Colour of a keyword when the caller gives none and the clip's preset has no accent.
-const DEFAULT_COLOR: &str = "#FFE000";
+/// Colour of a keyword when the caller gives none and the clip's preset has no karaoke colour to avoid.
+const DEFAULT_COLOR: &str = "#2BFF5E";
+/// The alternative when the preset's active-word colour is close to [`DEFAULT_COLOR`].
+const ALT_COLOR: &str = "#FFD60A";
 /// `auto` marks about one word in this many.
 const WORDS_PER_KEYWORD: usize = 6;
 
@@ -48,11 +50,33 @@ pub const EMPHASIS_HINGLISH: &[&str] = &[
     "कभी", "नहीं", "सबसे", "पैसा", "पैसे", "लाख", "करोड़", "सच", "झूठ", "राज़", "गलती", "ज़बरदस्त", "बिल्कुल",
 ];
 
+/// English number words (lower case). "one" is left out on purpose: it is mostly a pronoun or article.
+pub const NUMBER_WORDS_EN: &[&str] = &[
+    "zero", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "thirteen",
+    "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty", "thirty", "forty", "fifty",
+    "sixty", "seventy", "eighty", "ninety", "hundred", "hundreds", "dozen",
+];
+
+/// Hindi number words, Roman and Devanagari. Words that are also common English or Hindi words
+/// ("do", "ek", "teen", "एक", "दो") are left out.
+pub const NUMBER_WORDS_HINDI: &[&str] = &[
+    "chaar", "paanch", "panch", "chhe", "chhah", "saat", "aath", "nau", "das", "gyarah", "barah", "bees", "tees",
+    "chalis", "pachas", "sattar", "assi", "nabbe", "sau", "hazaar", "hazar",
+    "तीन", "चार", "पाँच", "पांच", "छह", "छः", "सात", "आठ", "नौ", "दस", "ग्यारह", "बारह", "बीस", "तीस", "चालीस", "पचास",
+    "साठ", "सत्तर", "अस्सी", "नब्बे", "सौ", "हज़ार", "हजार",
+];
+
 /// Capitalised words that are not names (sentence openers, pronouns, weekdays are not listed).
 const NOT_NAMES: &[&str] = &[
     "i", "i'm", "i'll", "i've", "i'd", "the", "a", "an", "and", "but", "so", "or", "if", "when", "what", "why", "how",
     "who", "this", "that", "these", "those", "it", "its", "it's", "we", "you", "he", "she", "they", "my", "your", "our",
     "yes", "no", "ok", "okay", "well", "now", "then", "there", "here", "just", "like", "also", "because", "mr", "mrs", "ms",
+    "you're", "you've", "you'll", "you'd", "we're", "we've", "we'll", "they're", "they've", "they'll", "he's", "she's",
+    "that's", "there's", "what's", "let's", "here's", "who's", "don't", "can't", "won't", "isn't", "wasn't", "didn't",
+    "definitely", "actually", "basically", "honestly", "obviously", "maybe", "perhaps", "sometimes", "usually",
+    "exactly", "absolutely", "certainly", "again", "still", "even", "every", "some", "many", "most", "all", "any",
+    "one", "for", "with", "from", "not", "do", "does", "did", "are", "is", "was", "were", "have", "has", "had", "can",
+    "could", "would", "should", "will", "let", "see", "look", "think", "imagine", "remember", "listen", "thank", "thanks",
 ];
 
 /// Why a word was marked.
@@ -90,18 +114,62 @@ pub struct ClipWord {
     pub at: f64,
 }
 
-/// True when the (trimmed) word ends a sentence.
+/// True when the (trimmed) word ends a sentence, or is a bare marker with no letters or digits at all
+/// (a speaker-turn ">>" or "-" starts a new sentence).
 fn ends_sentence(t: &str) -> bool {
+    let t = t.trim();
+    if !t.chars().any(char::is_alphanumeric) {
+        return true;
+    }
     t.trim_end_matches(|c: char| matches!(c, '"' | '\'' | ')' | ']')).ends_with(['.', '?', '!', '…', '।'])
 }
 
-/// Classifies one word; `prev` is the word before it in the clip.
+/// What the whole clip says about how its words are spelled: used so that a capital letter at a
+/// sentence start is not taken for a name.
+#[derive(Default, Clone, Debug)]
+pub struct Spelling {
+    /// Normalised words that also appear with a lower-case first letter.
+    lower: HashSet<String>,
+    /// Normalised words that appear with a capital first letter at least twice.
+    repeated_caps: HashSet<String>,
+}
+
+impl Spelling {
+    /// Counts the clip's words.
+    pub fn of<'a>(texts: impl IntoIterator<Item = &'a str>) -> Self {
+        let mut caps: std::collections::HashMap<String, u32> = Default::default();
+        let mut out = Self::default();
+        for t in texts {
+            let n = norm_word(t);
+            let core = t.trim().trim_matches(|c: char| !c.is_alphanumeric());
+            match core.chars().next() {
+                Some(c) if c.is_uppercase() => *caps.entry(n).or_default() += 1,
+                Some(c) if c.is_lowercase() => {
+                    out.lower.insert(n);
+                }
+                _ => {}
+            }
+        }
+        out.repeated_caps = caps.into_iter().filter(|(_, c)| *c >= 2).map(|(n, _)| n).collect();
+        out
+    }
+}
+
+/// Classifies one word; `prev` is the word before it in the clip. Without the clip's spelling, see
+/// [`classify_in`].
 pub fn classify(word: &str, prev: Option<&str>) -> Option<Reason> {
+    classify_in(word, prev, &Spelling::default())
+}
+
+/// [`classify`] with the clip's spelling. A name is a Title Case word (not ALL CAPS, not a common
+/// opener) that is never written in lower case elsewhere in the clip and that is either inside a
+/// sentence (not the first word of the clip or of a sentence) or capitalised at least twice.
+pub fn classify_in(word: &str, prev: Option<&str>, spelling: &Spelling) -> Option<Reason> {
     let n = norm_word(word);
     if n.is_empty() {
         return None;
     }
-    if n.chars().any(|c| c.is_ascii_digit()) {
+    if n.chars().any(|c| c.is_ascii_digit()) || NUMBER_WORDS_EN.contains(&n.as_str()) || NUMBER_WORDS_HINDI.contains(&n.as_str()) {
         return Some(Reason::Number);
     }
     if EMPHASIS_EN.contains(&n.as_str()) || EMPHASIS_HINGLISH.contains(&n.as_str()) {
@@ -111,24 +179,23 @@ pub fn classify(word: &str, prev: Option<&str>) -> Option<Reason> {
     let mut chars = core.chars();
     let (Some(first), true) = (chars.next(), core.chars().count() >= 3) else { return None };
     let rest_has_upper = chars.clone().any(char::is_uppercase);
-    // Title Case inside a sentence: not the first word of the clip or of a sentence, not ALL CAPS.
-    if first.is_uppercase() && !rest_has_upper && !NOT_NAMES.contains(&n.as_str()) {
-        if let Some(p) = prev {
-            if !ends_sentence(p) {
-                return Some(Reason::Name);
-            }
-        }
+    if !first.is_uppercase() || rest_has_upper || NOT_NAMES.contains(&n.as_str()) || spelling.lower.contains(&n) {
+        return None;
     }
-    None
+    let mid_sentence = prev.is_some_and(|p| !ends_sentence(p));
+    (mid_sentence || spelling.repeated_caps.contains(&n)).then_some(Reason::Name)
 }
 
 /// The auto proposal: numbers first, then emphasis words, then names; at most `max` words, none
 /// next to another marked word. Returned in clip order as `(index, reason)`.
 pub fn propose(words: &[ClipWord], max: usize) -> Vec<(usize, Reason)> {
+    let spelling = Spelling::of(words.iter().map(|w| w.text.as_str()));
     let mut cands: Vec<(usize, Reason)> = words
         .iter()
         .enumerate()
-        .filter_map(|(k, w)| classify(&w.text, k.checked_sub(1).map(|p| words[p].text.as_str())).map(|r| (k, r)))
+        .filter_map(|(k, w)| {
+            classify_in(&w.text, k.checked_sub(1).map(|p| words[p].text.as_str()), &spelling).map(|r| (k, r))
+        })
         .collect();
     cands.sort_by(|a, b| b.1.priority().cmp(&a.1.priority()).then(a.0.cmp(&b.0)));
     let mut chosen: Vec<(usize, Reason)> = Vec::new();
@@ -143,6 +210,18 @@ pub fn propose(words: &[ClipWord], max: usize) -> Vec<(usize, Reason)> {
     }
     chosen.sort_by_key(|(k, _)| *k);
     chosen
+}
+
+/// Default keyword colour when the caller gives none: green, or yellow when the preset's
+/// active-word (karaoke) colour is green, so a keyword never looks like the spoken-word highlight.
+/// `active` is the preset's `0x00BBGGRR` active-word colour; `None` when the preset has none.
+pub fn default_keyword_colour(active: Option<u32>) -> String {
+    let Some(active) = active else { return DEFAULT_COLOR.to_string() };
+    let ch = |c: u32, sh: u32| ((c >> sh) & 0xFF) as i32;
+    // DEFAULT_COLOR #2BFF5E in 0x00BBGGRR order.
+    let green = 0x005E_FF2B_u32;
+    let d: i32 = [0, 8, 16].iter().map(|&sh| (ch(active, sh) - ch(green, sh)).pow(2)).sum();
+    if d < 140 * 140 { ALT_COLOR.to_string() } else { DEFAULT_COLOR.to_string() }
 }
 
 /// Words the agent named: `a, b` and repeated entries both work; matched ignoring case and punctuation.
@@ -200,12 +279,12 @@ pub struct KeywordsIn {
     pub clip_id: ClipId,
     /// Words to mark (comma list ok; case and punctuation ignored); every occurrence in the clip.
     pub words: Option<Vec<String>>,
-    /// Propose keywords by the rules: numbers, emphasis words (English + Hinglish), names in Title Case.
+    /// Propose keywords by the rules: numbers, emphasis words (English + Hinglish), names in Title Case inside a sentence (never a sentence opener), number words.
     /// Review with `--dry-run` first; change single words with `caption word`.
     pub auto: Option<bool>,
     /// With `auto`: at most this many words (default: one per about 6 words of the clip).
     pub max: Option<u32>,
-    /// Keyword colour `#RRGGBB` (default: the accent colour of the clip's caption preset, else #FFE000).
+    /// Keyword colour `#RRGGBB` (default: green #2BFF5E, or yellow #FFD60A when the caption preset's active-word colour is green; keyword-highlight keeps its own accent).
     pub color: Option<String>,
     pub base_revision: Option<u64>,
 }
@@ -259,9 +338,14 @@ async fn caption_keywords(ctx: Ctx, i: KeywordsIn) -> Result<KeywordsOut> {
         None => {
             let paths = ToolPaths::from_home(&ctx.home);
             let custom = crate::asset_cmds::custom_presets(&paths.home, Some(&store.root));
-            rustler_captions::find_preset_in(&clip.captions.preset, &custom)
-                .map(|p| rustler_captions::custom::hex_colour(p.active_colour & 0x00FF_FFFF))
-                .unwrap_or_else(|| DEFAULT_COLOR.to_string())
+            match rustler_captions::find_preset_in(&clip.captions.preset, &custom) {
+                // `static` presets (keyword-highlight) have no active-word colour: the preset accent is the default.
+                Some(p) if p.active == rustler_captions::presets::ActiveStyle::Static => {
+                    rustler_captions::custom::hex_colour(p.active_colour & 0x00FF_FFFF)
+                }
+                Some(p) => default_keyword_colour(Some(p.active_colour & 0x00FF_FFFF)),
+                None => default_keyword_colour(None),
+            }
         }
     };
     let tm = TimeMap::from_segments(&clip.segments);
@@ -452,6 +536,57 @@ mod tests {
         let idx: Vec<usize> = all.iter().map(|(k, _)| *k).collect();
         assert_eq!(idx, vec![2, 5, 7]);
         assert!(propose(&cw(&["just", "plain", "words"]), 3).is_empty());
+    }
+
+    #[test]
+    fn sentence_openers_and_speaker_markers_are_not_names() {
+        // the trial-2 clip 04 words: ">>" markers start sentences without a full stop
+        let w = cw(&[">>", "Three.", ">>", "Definitely", "three.", ">>", "You're", "as", "good", "as", "you", "can", "communicate."]);
+        let p = propose(&w, 10);
+        assert!(p.iter().all(|(_, r)| *r != Reason::Name), "{p:?}");
+        // "Three." is a number word, "Definitely" and "You're" are nothing
+        assert_eq!(classify("Three.", Some(">>")), Some(Reason::Number));
+        assert_eq!(classify("Definitely", Some(">>")), None);
+        assert_eq!(classify("You're", Some(">>")), None);
+        // a capital mid-sentence is still a name, but not when the clip also writes the word in lower case
+        assert_eq!(classify("Vietnamese", Some("the")), Some(Reason::Name));
+        let w = cw(&["we", "love", "Honestly", "it", "and", "honestly", "more"]);
+        assert!(propose(&w, 5).iter().all(|(_, r)| *r != Reason::Name));
+        let w = cw(&["we", "met", "Priyanka", "and", "then", "priyanka", "left"]);
+        assert!(propose(&w, 5).iter().all(|(_, r)| *r != Reason::Name));
+        // a repeated capitalised word that is never lower case is a name even at sentence starts
+        let w = cw(&["Raj", "spoke.", "Then", "Raj", "left."]);
+        let sp = Spelling::of(w.iter().map(|x| x.text.as_str()));
+        assert_eq!(classify_in("Raj", None, &sp), Some(Reason::Name));
+        assert_eq!(classify_in("Raj", Some("spoke."), &sp), Some(Reason::Name));
+        assert_eq!(classify_in("Then", Some("spoke."), &sp), None);
+        // a word capitalised once at a sentence start is not a name
+        assert_eq!(classify_in("Raj", Some("spoke."), &Spelling::default()), None);
+    }
+
+    #[test]
+    fn number_words_count_as_numbers() {
+        for t in ["three", "Ten", "hundred,", "twenty", "सौ", "paanch", "hazaar"] {
+            assert_eq!(classify(t, Some("a")), Some(Reason::Number), "{t}");
+        }
+        // too common to be numbers
+        for t in ["one", "do", "teen", "एक"] {
+            assert_eq!(classify(t, Some("a")), None, "{t}");
+        }
+        let w = cw(&["it", "took", "three", "years"]);
+        assert_eq!(propose(&w, 3), vec![(2, Reason::Number)]);
+    }
+
+    #[test]
+    fn default_colour_differs_from_the_active_word_colour() {
+        // hormozi-pop is green (0x005EFF2B): keywords go yellow; yellow and other presets get green
+        assert_eq!(default_keyword_colour(Some(0x005E_FF2B)), "#FFD60A");
+        assert_eq!(default_keyword_colour(Some(0x0000_E0FF)), "#2BFF5E");
+        assert_eq!(default_keyword_colour(None), "#2BFF5E");
+        for p in rustler_captions::presets::PRESET_TABLE.iter().filter(|p| p.active != rustler_captions::presets::ActiveStyle::Static) {
+            let hex = default_keyword_colour(Some(p.active_colour & 0x00FF_FFFF));
+            assert_ne!(hex, rustler_captions::custom::hex_colour(p.active_colour & 0x00FF_FFFF), "{}", p.name);
+        }
     }
 
     #[test]

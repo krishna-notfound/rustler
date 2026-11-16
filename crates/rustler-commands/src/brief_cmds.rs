@@ -585,7 +585,7 @@ pub fn transitions_total(map: &serde_json::Map<String, Value>) -> f64 {
 }
 
 fn latest_qc(store: &ProjectStore, clip: &Clip) -> Option<QcView> {
-    clip.renders.last().and_then(|r| r.qc.as_ref()).and_then(|p| store.read_json::<QcView>(p).ok())
+    clip.renders.last().and_then(|r| r.qc.as_ref()).and_then(|p| crate::qc_cmds::read_qc(store, p))
 }
 
 /// Seconds without a trailing `.0`.
