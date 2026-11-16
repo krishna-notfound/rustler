@@ -825,7 +825,10 @@ pub async fn import(ctx: Ctx, input: ImportIn) -> rustler_core::Result<Outcome<I
     }
     let sections: Vec<TimeRange> = input.sections.iter().flatten().map(|s| parse_section(s)).collect::<Result<_, _>>()?;
     let audio_only = input.audio_only.unwrap_or(false);
-    let format = format_selector(input.quality.as_deref().unwrap_or("720"), audio_only)?;
+    // Explicit --quality wins, then the `download.quality` setting, then 720.
+    let configured_quality: Option<String> = crate::config_cmds::setting(&ctx, "download.quality");
+    let quality = input.quality.clone().or(configured_quality).unwrap_or_else(|| "720".to_string());
+    let format = format_selector(&quality, audio_only)?;
     let paths = ToolPaths::from_home(&ctx.home);
     let mut warnings = Vec::new();
     let mut sources = Vec::new();

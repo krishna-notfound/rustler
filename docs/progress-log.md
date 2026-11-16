@@ -421,3 +421,12 @@ Resume: for each branch, re-launch an agent on its worktree with "continue Task 
 `git merge main`", then merge to main in this order: settings/posting → layers → camera → director. Then release v0.1.2,
 then wave C (timeline doc + insert/cold-open/merge/duplicate/speed/freeze, cards, references) per
 `docs/superpowers/plans/2026-11-16-rustler-v2.md` FAST PARALLEL SCHEDULE.
+
+## 2026-11-17 — resumed
+- Merged **0.6 settings** (`config.get/set/unset/list`, project overrides global; used by source.import quality,
+  render.batch parallel, qc.faces) and **1.7 posting JSON + campaigns** (`campaign.create/show/list/delete/mark`,
+  `clip.meta_context`, `clip.meta_set`; export writes `<name>.post.json`; QC `meta_present`, `campaign_compliant`;
+  guide campaigns-and-posting + prompt write_clip_meta). 333 tests passed on the branch.
+- Disk was down to 2.3 GB (a link error) → removed old `target/release` → 33.7 GB free. Keep an eye on disk:
+  each worktree build is several GB.
+- Still running: layers (1.3, Opus), smooth camera (Opus), director/retention (Opus).
