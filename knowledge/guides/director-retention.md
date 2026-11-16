@@ -18,7 +18,9 @@ decide what holds a stranger and you make every edit earn its place. Nothing her
    pay: retention + volume. Per-clip pay: match the creator exactly, fewer polished clips.
 2. Pick moments (`finding-hooks`), cut them (`cut-points`), frame them (`layouts-and-framing`).
 3. `rustler clip retention <clip_id>` — read `retention_score`, `breakdown`, `first_frame_hook`,
-   `dead_zones` (each with exact fix commands) and `ending`.
+   `dead_zones` (each with exact fix commands), `take_fixes` (restarts and repeats, action `bad_take`, each
+   with the `edit remove-words` command that keeps the cleaner take; see `rustler edit find-bad-takes`) and
+   `ending`.
 4. Apply the fixes that make sense for *this* moment (not all of them), re-run `clip retention`.
 5. `rustler render run <clip_id> --quality draft`, then `clip retention` again: with a current render it also
    measures frame differences and the real audio (`measured_on: render`).
@@ -61,6 +63,13 @@ rustler render preview-frame clp_X --out-t 1.0     # look: settled state; the fi
 
 `--sfx` takes a file, `asset:<id>` (`asset list --kind sfx`) or a URL; the whoosh lives and dies with the hook
 (moving or removing the hook moves or removes it). Hook text ≤ 7 words, one idea, same payoff as the first spoken line.
+
+`clips auto` lists 2-3 **suggested** hook lines per clip in `fixes_suggested` (action `hook_title`, from the
+opening question and the strongest lines, ≤ 7 words, plain text, each with its `overlay add-text ... --style
+hook-big` command) and, when the clip opens on a question, a `cold_open` suggestion (`edit cold-open <clip_id>
+--start S --end E` on the strongest answer line). They come from word signals only (emphasis words, numbers,
+"you", questions) and can quote a misheard word or a half-sentence: treat them as a starting point, rewrite
+them, and never run one you have not read.
 Keep the hook out of the caption band (captions sit near 70% of the height; hooks default to 14-17%).
 
 Rules: the hook text (`overlay add-text --style hook-top`, ≤ 7 words) and the first spoken line must point at

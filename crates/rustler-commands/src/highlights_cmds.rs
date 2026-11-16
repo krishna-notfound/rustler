@@ -468,6 +468,8 @@ heatmap 9 (mean most-replayed value, null for non-URL sources), \
 pace 8 (wpm vs the source median: 0 at 0.8x, 1 at 1.3x), \
 length_fit 8 (1 inside the platform's sweet spot, falling to 0 at 15 s outside it), \
 scenes 4 (scene cuts per 10 s, capped at 1). \
+Intro trailer: when the source opens with a montage of lines said again later (see intro_trailer), windows overlapping it are not ranked (include_intro: true keeps them) \
+and a window holding the original of a trailer line gets +5 points (trailer_line: the channel's editors picked that line). \
 Windows that start with a weak opener (so/and/um/like/toh/matlab/...) are never generated. \
 Selection: best window per start unit, then greedy by score with a diversity penalty of up to 15 points for nearness to an already chosen window; windows may not overlap in time.";
 
@@ -482,6 +484,21 @@ pub struct CandidatesIn {
     pub max_len: Option<f64>,
     /// `shorts` (default; sweet spot 20-45 s), `reels` (15-45 s) or `tiktok` (25-60 s): only affects the length_fit score.
     pub platform: Option<String>,
+    /// Also rank windows inside the source's intro trailer (default false: they are skipped and reported in `intro_trailer`).
+    pub include_intro: Option<bool>,
+}
+
+/// The source's opening montage and what ranking did with it.
+#[derive(Serialize, JsonSchema, Clone, Debug)]
+pub struct IntroReport {
+    #[serde(flatten)]
+    pub trailer: crate::intro_trailer::IntroTrailer,
+    /// True when windows overlapping it were left out (false with include_intro: true).
+    pub excluded: bool,
+    /// Start units whose best window overlapped the trailer and was left out.
+    pub skipped_windows: usize,
+    /// What happened, in words.
+    pub note: String,
 }
 
 #[derive(Serialize, JsonSchema, Clone, Debug)]
@@ -537,6 +554,9 @@ pub struct CandidatesOut {
     pub scoring: Scoring,
     pub available: Availability,
     pub candidates: Vec<Candidate>,
+    /// The source's intro trailer (a montage of lines said again later), when one was found.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub intro_trailer: Option<IntroReport>,
     pub warnings: Vec<String>,
     pub note: String,
     pub next: Vec<String>,
@@ -642,9 +662,15 @@ fn score_window(d: &Data, i: usize, j: usize, sweet: (f64, f64)) -> Scored {
     Scored { i, j, score: round(total, 1), parts, feats: f }
 }
 
+/// Points a window gets for holding the original of a line the source's intro trailer features.
+pub const TRAILER_BONUS: f64 = 5.0;
+
 fn reasons_for(s: &Scored, units: &[Unit]) -> Vec<String> {
     let f = &s.feats;
     let mut r = Vec::new();
+    if let Some(p) = s.parts.iter().find(|p| p.feature == "trailer_line") {
+        r.push(p.note.clone());
+    }
     let note = |name: &str| s.parts.iter().find(|p| p.feature == name).map(|p| p.note.clone()).unwrap_or_default();
     let val = |name: &str| s.parts.iter().find(|p| p.feature == name).and_then(|p| p.value);
     if val("hook").is_some_and(|v| v >= 0.6) {
@@ -737,6 +763,56 @@ pub async fn candidates(ctx: Ctx, input: CandidatesIn) -> rustler_core::Result<C
     }
     let considered = best_per_start.len();
 
+    // 1b. intro trailer: skip windows in the opening montage, reward the originals of its lines.
+    let include_intro = input.include_intro.unwrap_or(false);
+    let mut intro = crate::intro_trailer::detect(&d.words, d.duration, d.scene_starts.as_deref()).map(|t| IntroReport {
+        trailer: t,
+        excluded: !include_intro,
+        skipped_windows: 0,
+        note: String::new(),
+    });
+    if let Some(rep) = intro.as_mut() {
+        let (ts, te) = (rep.trailer.start, rep.trailer.end);
+        let before = best_per_start.len();
+        if !include_intro {
+            best_per_start.retain(|c| d.units[c.j].end <= ts + 1e-9 || d.units[c.i].start >= te - 1e-9);
+        }
+        rep.skipped_windows = before - best_per_start.len();
+        let mut boosted = 0usize;
+        for c in &mut best_per_start {
+            let (cs, ce) = (d.units[c.i].start, d.units[c.j].end);
+            if cs < te {
+                continue;
+            }
+            if let Some(r) = crate::intro_trailer::original_inside(&rep.trailer, cs, ce) {
+                c.score = round((c.score + TRAILER_BONUS).min(100.0), 1);
+                c.parts.push(Part {
+                    feature: "trailer_line".into(),
+                    value: Some(1.0),
+                    weight: 0.0,
+                    points: Some(TRAILER_BONUS),
+                    note: format!("the source's intro trailer features this line at {} (\"{}\")", mmss(r.early_start), r.text),
+                });
+                boosted += 1;
+            }
+        }
+        rep.note = if include_intro {
+            format!(
+                "intro trailer {}-{} kept in the ranking (include_intro); {boosted} windows hold the original of a trailer line (+{TRAILER_BONUS} points)",
+                mmss(ts),
+                mmss(te)
+            )
+        } else {
+            format!(
+                "intro trailer {}-{} skipped: {} windows overlapping it were not ranked (the same lines play later, uncut); {boosted} windows hold the original of a trailer line (+{TRAILER_BONUS} points); pass include_intro: true to rank the trailer too",
+                mmss(ts),
+                mmss(te),
+                rep.skipped_windows
+            )
+        };
+        warnings.push(rep.note.clone());
+    }
+
     // 2. greedy selection: no overlap, diversity penalty for proximity
     let spread = (d.duration / (2.0 * count as f64)).max(30.0);
     let mut pool = best_per_start;
@@ -820,6 +896,7 @@ pub async fn candidates(ctx: Ctx, input: CandidatesIn) -> rustler_core::Result<C
         },
         available: availability(&d),
         candidates,
+        intro_trailer: intro,
         warnings,
         note: "Candidates are evidence, not decisions: scores come from deterministic signals only and cannot judge meaning, humour or whether the clip stands alone. Read each window and apply the finding-hooks rubric.".to_string(),
         next,

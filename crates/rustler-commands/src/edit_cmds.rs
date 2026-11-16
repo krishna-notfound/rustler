@@ -107,7 +107,7 @@ pub fn register(reg: &mut Registry) {
     ));
     reg.register(typed(
         "edit.remove_words",
-        "Cut exact word spans out: filler words (um, uh, umm, uhh, hmm, erm) by default, or listed words / word indices.",
+        "Cut exact word spans out: filler words (um, uh, umm, uhh, hmm, erm) by default, or listed words / word indices (neighbouring words go as one span, the gap between them too).",
         &["clip_id"],
         edit,
         vec![
@@ -923,7 +923,10 @@ async fn remove_words(ctx: Ctx, input: RemoveWordsInput) -> Result<EditOut> {
     let mut removed_words: Vec<RemovedWord> = Vec::new();
     for seg in &old.segments {
         let t = tr.require(&seg.source_id, STAGE)?;
-        for w in &t.words {
+        // Words removed back to back (transcript neighbours) are cut as one span, the gap
+        // between them included, so no sliver of breath is left between two cut words.
+        let mut prev_removed: Option<usize> = None;
+        for (p, w) in t.words.iter().enumerate() {
             if w.end <= seg.start || w.start >= seg.end {
                 continue;
             }
@@ -931,7 +934,13 @@ async fn remove_words(ctx: Ctx, input: RemoveWordsInput) -> Result<EditOut> {
             if !(by_index || patterns.contains(&norm_token(&w.text))) {
                 continue;
             }
-            cuts_by_seg.entry(seg.id.clone()).or_default().push((w.start.max(seg.start), w.end.min(seg.end)));
+            let cuts = cuts_by_seg.entry(seg.id.clone()).or_default();
+            let span = (w.start.max(seg.start), w.end.min(seg.end));
+            match (prev_removed, cuts.last_mut()) {
+                (Some(q), Some(last)) if q + 1 == p => last.1 = span.1.max(last.1),
+                _ => cuts.push(span),
+            }
+            prev_removed = Some(p);
             removed_words.push(RemovedWord { segment_id: seg.id.clone(), i: w.i, text: w.text.clone(), start: w.start, end: w.end });
         }
     }

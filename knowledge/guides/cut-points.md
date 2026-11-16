@@ -114,6 +114,30 @@ Guidance (from production pacing rules):
   more feels choppy unless the speaker moves a lot.
 - `history undo clp_X` reverts the last edit if it sounds wrong.
 
+### Restarts and repeats (bad takes)
+
+Speakers restart: "I think... I think the real thing is", "the the", a sentence begun, dropped and said again.
+Find them (read-only, nothing is cut):
+
+```
+rustler edit find-bad-takes clp_X                       # findings: kind, confidence, times, cut_text, kept_text, command
+rustler edit find-bad-takes clp_X --min-confidence 0.7  # only the surest ones
+```
+
+Each finding is `stutter` (same word twice in a row), `restart` (a phrase said twice at once), `false_start` (a
+phrase begun, abandoned after a few words, restated) or `repeated_sentence`, with the exact
+`rustler edit remove-words clp_X --word-indices '[i,j]'` that removes the **first** attempt and keeps the later,
+cleaner take. Neighbouring words go as one span (the gap between them too). Word indices stay valid after other
+cuts, so apply the ones you agree with in any order and `history undo` any that sound wrong.
+
+- Read before cutting: a line said three times in a row ("Listen to less advice. Listen to less advice.") is
+  usually emphasis; it is listed with confidence 0.35 (hidden at the default 0.4) and says so in its `why`.
+- Needs exact word timings (whisper). A captions-based transcript is skipped and named in `skipped_sources`:
+  run `rustler analyze transcribe <source>` first.
+- Whisper smooths many disfluencies out of its text, so a clean report does not prove a clean take: listen.
+- `clip retention` lists the same findings in `take_fixes` (action `bad_take`); `clips auto` lists them in
+  `fixes_suggested` and never applies them.
+
 ## 6. Multi-segment clips and montages
 
 Use when the best version of a moment is spread out: a question at 12:10 and its answer at 14:40, or

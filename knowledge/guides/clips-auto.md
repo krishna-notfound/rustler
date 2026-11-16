@@ -18,7 +18,7 @@ changes it, and you can do any step yourself at any time.
 |---|---|
 | resolve (URL) | `source info` (one cached lookup), `source fetch-transcript` (captions, no download). **No captions:** it downloads the audio only (`source import <url> --audio-only true`) and transcribes it with whisper base (`analyze quick <src> --transcribe always --model base`) to rank; `source.transcript_via` says `captions` or `whisper`, `source.transcript_s` how long it took |
 | resolve (source) | `analyze quick` when the source has no transcript |
-| rank | `highlights candidates`, then a first-2-seconds hook score (question, emphasis word, number, "you", loud or fast opening; weak openers lose points). Picks never overlap each other or a clip you already made on that moment |
+| rank | `highlights candidates`, then a first-2-seconds hook score (question, emphasis word, number, "you", loud or fast opening; weak openers lose points). Picks never overlap each other or a clip you already made on that moment. **Intro trailer:** when the source opens with a montage of lines that are said again later (podcasts often do), moments inside it are not ranked and the originals are (a window holding the original of a trailer line gets +5 points); `ranking.intro_trailer` shows the range, each repeated line with where its original plays, and how many windows were skipped. `--include-intro true` ranks the trailer too; your own `ranges` are made as given, with a warning when one sits in the trailer |
 | create | URL: `source import --sections` per pick (padded 3 s, 720p unless `--download-quality`, 2 sections at a time, progress `clips.auto.import` with `eta_s`) + `analyze quick --transcribe always` (whisper on the section: exact word timings and no caption markup; the fetched captions only when whisper is missing); then `clip create` (smart defaults, `--template`), `clip meta-set --campaign-id` when `--campaign` is given |
 | fix | `clip retention --timeline-only`; applies only `trim_head`, `trim_tail`, `remove_pauses` (re-measured after each). Trims never cut into the first or last word (they stop 0.2 s from it); trims and pause cuts are **skipped** when the word timings are approximate (a captions-based transcript); a silence fix after which the hook or ending scores worse is restored (`rolled_back`). After the cuts, the punch-ins **your template** placed (an explicit punch-in pattern; the starters have none) are re-checked: one closer than 0.5 s to a cut, across one or on a graphic makes it re-plan the template's punch-ins with the template's own pattern (`fixes_applied` action `template_punch_ins`). Punch-ins, text pops and cutaways are listed in `fixes_suggested` with their commands, never applied |
 | render | `render batch` (progress `clips.auto.render` with `eta_s`; the GPU encoder when `rustler doctor` lists a working one, else libx264) |
@@ -48,7 +48,7 @@ off), smart defaults on (`--raw true` turns them off).
 Per clip: `why` (candidate score, `hook_2s` with notes and the words said in the first 2 s, reasons),
 `retention` (`before_fixes` and the latest `score`, `measured_on: render`), `fixes_applied` (each with a `status`:
 `applied`, `no_change`, `skipped`, `rolled_back` or `failed`, `changed`, a `note` saying why, and an `undo` command),
-`fixes_suggested` (always present: what the render measurement still suggests; a skipped or rolled-back fix says so in its `why`), `qc` (failed / warned checks), `export` (video, post, report) and `change[]`.
+`fixes_suggested` (always present: what the render measurement still suggests; a skipped or rolled-back fix says so in its `why`; plus, never applied: `bad_take` restarts and repeats with their `edit remove-words` command, 2-3 `hook_title` lines (≤ 7 words, with the `overlay add-text ... --style hook-big` command) and a `cold_open` (`edit cold-open` on the strongest answer line) when the clip opens on a question; a dry run lists the hook and cold-open suggestions with `<clip_id>`), `qc` (failed / warned checks), `export` (video, post, report) and `change[]`.
 Names are `auto-<rank>-<time in the original video>-<source title slug>` with `-2`, `-3` ... when the name is
 taken, so a run never replaces another clip's export; `export clip` itself refuses a name another clip exported
 unless `--overwrite true`. A clip that failed has `failed_stage` (import, analyze, create, render, qc, export) and `error`; the other clips
@@ -61,7 +61,8 @@ Then, for every exported clip:
 2. Write the copy: `rustler clip meta-context <clip_id>`, then `rustler clip meta-set <clip_id> --input-json @meta.json`,
    then `rustler export clip <clip_id>` to refresh the post JSON.
 3. Record your own score: `rustler clip score-set <clip_id> --hook H --flow F --value V --trend T --notes "why"`.
-4. Add what only you can judge: a hook title (`rustler overlay add-text`), text pops and cutaways from
+4. Add what only you can judge: a hook title (`rustler overlay add-text`; the `hook_title` suggestions are a
+   starting point, rewrite them), a cold open, the bad-take cuts you agree with, text pops and cutaways from
    `fixes_suggested`.
 
 ## Change a decision
@@ -73,6 +74,9 @@ Then, for every exported clip:
 | smart defaults | the `undo_all` command in `change[]` (`rustler history restore <clip_id> --revision 1`) |
 | the look | `rustler template apply <name> --clip-ids <clip_id>` |
 | a suggested punch-in | run its command from `fixes_suggested` yourself (`rustler effect add <clip_id> punch-in ...`) |
+| a restart / repeat | read `rustler edit find-bad-takes <clip_id>`, run the `edit remove-words` command you agree with; `rustler history undo <clip_id>` takes it back |
+| hook title, cold open | rewrite a `hook_title` line and run `rustler overlay add-text <clip_id> "..." --style hook-big`; `rustler edit cold-open <clip_id> --start S --end E` |
+| the intro-trailer skip | `rustler clips auto ... --include-intro true`, or `rustler highlights candidates <source> --include-intro true` |
 | the template punch-in re-plan | the `undo` in `fixes_applied` (`rustler history restore <clip_id> <revision before it>`) |
 | a trim / pause cut it made | the `undo` in `fixes_applied` (`rustler history restore <clip_id> <revision before it>`) |
 | the cover frame | `rustler clip cover <clip_id> --out-t <seconds>`, then `rustler export clip <clip_id>` |
