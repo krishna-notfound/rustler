@@ -141,10 +141,10 @@ rustler clip meta-set clp_X --input-json @meta.json   # per platform; export wri
 Whole-clip control: `timeline show clp_X` / `timeline apply clp_X --base-revision N --input-json @patch.json`;
 also `edit insert-segment|speed|freeze`, `clip merge|duplicate`, layers `image|cutaway|mask add`, `asset render-card`.
 Campaign jobs: `campaign create|analyze|mark`. Style from examples: `reference import|analyze`. Settings: `config list|set`.
-Optional one-command pipeline: `rustler clips auto`. Guides: `templates-and-brand`, `director-retention`,
+Optional one-command pipeline: `rustler clips auto --source-id src_X --count 3 --template podcast-viral` (`--dry-run` first; never publishes, post copy stays yours; guide `clips-auto`). Guides: `templates-and-brand`, `director-retention`,
 `campaigns-and-posting`, `learn-style-from-videos`, `editing-toolkit`.
 
-## Command groups (178 commands; `rustler commands list` is the authority)
+## Command groups (179 commands; `rustler commands list` is the authority)
 
 Each edit is a new revision (`history undo clp_X` reverts). Flags: `rustler commands describe <group.action>`.
 
@@ -173,6 +173,7 @@ Each edit is a new revision (`history undo clp_X` reverts). Flags: `rustler comm
 | campaign | `create`, `list`, `show`, `delete`, `analyze`, `mark` |
 | render, qc, fix | `render run/preview-frame/batch`; `qc run/compare`; `fix suggest/apply` |
 | export | `clip`, `batch` |
+| clips | `auto` (one-call pipeline: pick, create, fix, render, QC, cover, export) |
 | brief, variant | `brief set/show/clear/check/description`; `variant create/list/compare` |
 
 Time-anchored items (overlays, effects, `--at` sound effects) do not follow later cuts: add them after
@@ -199,4 +200,4 @@ and nudge with `layout edit-region <clip> top --nudge`.
 `layouts-and-framing`, `captions-and-style`, `audio`, `quality-checklist`, `hinglish`, `platform-specs`,
 `troubleshooting`, `cli-reference-conventions` (complete command map), `streamer-clips`, `editing-toolkit`,
 `briefs-and-batches`, `assets`, `campaigns-and-posting`, `director-retention`, `learn-style-from-videos`,
-`templates-and-brand`.
+`templates-and-brand`, `clips-auto`.

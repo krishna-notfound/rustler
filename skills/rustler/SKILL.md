@@ -10,7 +10,7 @@ audio events, faces, speakers), renders frames, compiles one FFmpeg render and r
 transcripts, LOOK at images, pick moments and judge results. Every command prints one JSON envelope on
 stdout (`ok`, `data`, `warnings`, or `error` with `hint`); progress goes to stderr. Exit codes: 0 ok,
 2 usage, 3 not found, 4 missing dependency, 5 network, 6 media, 7 QC failed, 8 cancelled, 9 revision
-conflict, 10 internal. 178 commands; the knowledge book is the manual (`rustler guide list`).
+conflict, 10 internal. 179 commands; the knowledge book is the manual (`rustler guide list`).
 
 ## 1. Bootstrap and discovery
 
@@ -84,7 +84,7 @@ rustler clip meta-set clp_X --input-json @meta.json   # per platform; export wri
 Whole-clip control: `timeline show clp_X` / `timeline apply clp_X --base-revision N --input-json @patch.json`;
 also `edit insert-segment|speed|freeze`, `clip merge|duplicate`, layers `image|cutaway|mask add`, `asset render-card`.
 Campaign jobs: `campaign create|analyze|mark`. Style from examples: `reference import|analyze`. Settings: `config list|set`.
-Optional one-command pipeline: `rustler clips auto`. Guides: `templates-and-brand`, `director-retention`,
+Optional one-command pipeline: `rustler clips auto --source-id src_X --count 3 --template podcast-viral` (`--dry-run` first; never publishes, post copy stays yours; guide `clips-auto`). Guides: `templates-and-brand`, `director-retention`,
 `campaigns-and-posting`, `learn-style-from-videos`, `editing-toolkit`.
 
 ## 3. Command groups (each command: `rustler group action`; flags via `commands describe`)
@@ -114,6 +114,7 @@ Optional one-command pipeline: `rustler clips auto`. Guides: `templates-and-bran
 | campaign | `create`, `list`, `show`, `delete`, `analyze`, `mark` |
 | render, qc, fix | `render run/preview-frame/batch`; `qc run/compare`; `fix suggest/apply` |
 | export | `clip`, `batch` |
+| clips | `auto` (one-call pipeline: pick, create, fix, render, QC, cover, export) |
 | brief, variant | `brief set/show/clear/check/description`; `variant create/list/compare` |
 
 ## 4. Fixing and styling (every edit is a new revision; `history undo clp_X` reverts)
@@ -156,7 +157,7 @@ the cut is final. `--expect-revision N` guards concurrent edits (exit 9: re-read
 `layouts-and-framing`, `captions-and-style`, `audio`, `quality-checklist`, `hinglish`, `platform-specs`,
 `troubleshooting`, `cli-reference-conventions` (the full command map), `streamer-clips`, `editing-toolkit`,
 `briefs-and-batches`, `assets`, `campaigns-and-posting`, `director-retention`, `learn-style-from-videos`,
-`templates-and-brand`.
+`templates-and-brand`, `clips-auto`.
 
 Prompts: `make_viral_clips`, `clip_from_stream`, `streamer_split_clip`, `quick_scan_source`,
 `hinglish_podcast_clips`, `batch_from_brief`, `polish_clip`, `review_clip`, `fix_qc_failures`, `restyle_clip`,

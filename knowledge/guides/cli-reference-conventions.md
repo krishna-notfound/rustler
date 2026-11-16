@@ -115,7 +115,7 @@ Start: `rustler mcp serve` (stdio). Then:
 - **Guides** (this knowledge book) are exposed by the server too (`rustler://guides/<id>`); read
   `start-here` first.
 
-## 7. Command map (all 178 registered commands)
+## 7. Command map (all 179 registered commands)
 
 Every registered command, by area. `<x>` = positional, `--x` = flag, `*` = required, `?` = optional.
 `<clip>` = clip id, `<src>` = source id. Only the useful arguments are listed:
@@ -311,6 +311,12 @@ Each has `add`, `edit`, `list`, `remove` (all take `<clip>`; times in seconds or
 | `campaign.mark <clip> <rule_id> --pass* --reason*` | record the outcome of an agent-checked rule (what you saw) |
 
 Guides: `director-retention`, `campaigns-and-posting`, `templates-and-brand`, `editing-toolkit`.
+
+### One-call pipeline
+
+| Command | What it does |
+|---|---|
+| `clips.auto {source-id? \| url?, count?, min-len?, max-len?, platform?, template?, campaign?, ranges?, quality?, fixes?, raw?, cover?, pad?, dry-run?}` | picks moments (hook score for the first 2 s), creates clips with smart defaults and a template, applies cheap retention fixes, renders, runs QC, picks the cover and exports with an EMPTY post JSON (you write the copy with `clip.meta_set`); never publishes. `--dry-run` shows the plan. Guide `clips-auto` |
 
 ### Briefs, variants, batches
 

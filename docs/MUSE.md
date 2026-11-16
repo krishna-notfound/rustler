@@ -29,6 +29,7 @@ Tell Muse to read, in this order: `rustler guide show start-here` (the v2 recomm
 `rustler guide show templates-and-brand`, `rustler guide show director-retention`,
 `rustler guide show campaigns-and-posting`, then
 `rustler prompt show make_viral_clips --args '{"source":"<url>","count":"5"}'`.
+Fast first pass over a whole source: `rustler clips auto --source-id <src> --count 5 --template podcast-viral --dry-run`, then without `--dry-run` (guide `clips-auto`; it never publishes and leaves the post copy for you to write).
 Several clips with one look: `rustler prompt show apply_template_batch`. A paid campaign: `rustler prompt show direct_campaign`.
 If Muse speaks MCP: `rustler mcp serve` (stdio). Skill file: `skills/rustler/SKILL.md`.
 

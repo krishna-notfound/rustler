@@ -219,8 +219,10 @@ rustler export clip clp_X --name moment-1
 
 Never publish: exports are files for a human to post. Settings that change the defaults (smart defaults on or
 off, default template, QC faces) live in `rustler config list` / `rustler config set`. Optional one-command
-pipeline: `rustler clips auto` (it chains these steps; you still read the results and look at the contact
-sheets).
+pipeline: `rustler clips auto --source-id src_X --count 3 --template podcast-viral` (or `--url`; `--dry-run` shows the
+plan first) picks moments, creates the clips with smart defaults and the template, applies cheap retention fixes,
+renders, runs QC, picks the cover and exports. It never publishes and leaves the post copy empty for you to write
+(`clip meta-set`); read its report and look at every contact sheet. Guide: `clips-auto`.
 
 ## 4. Rules (non-negotiable)
 
@@ -270,6 +272,7 @@ section was trimmed, or a model fell back to CPU. Details: `cli-reference-conven
 - One look for many clips, brand kit, starters `podcast-viral` and `streamer-split` → `templates-and-brand` (prompt `apply_template_batch`)
 - Copy a style from example shorts → `learn-style-from-videos` (prompt `learn_style_from_folder`)
 - Campaign rules, posting copy, post JSON → `campaigns-and-posting` (prompt `write_clip_meta`)
+- A fast first pass over a whole source in one call, then correcting it → `clips-auto`
 - A job brief, several clips, variants, batch export → `briefs-and-batches`
 - Music, sound effects, fonts, custom caption styles → `assets`, then `audio`
 - Hindi/English mix → `hinglish`
