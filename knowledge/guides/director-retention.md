@@ -43,6 +43,26 @@ Hook formulas (pick the one the moment really supports; never promise what the c
 | Controversy | a take people want to argue with | "Grammar doesn't matter. Here's what does." |
 | Cold open | the strongest line first, then cut back to the setup | open on the punchline, then "here's what happened" |
 
+**Hook styles.** `rustler overlay hook-styles` lists the viral presets; each animates in and can add a whoosh at its start:
+
+| Style | Look and entry | Use for |
+|---|---|---|
+| `hook-big` | two bold uppercase lines, white with thick black outline, ~10% of the width; pops in | bold claim, result first, number |
+| `hook-box-yellow` | black text on a yellow box; slides in from above | pattern interrupt, number, controversy |
+| `hook-outline` | yellow text, thick black outline; typed out letter by letter | question, cold open lines |
+| `hook-pov` | left-aligned dark box, yellow "POV:" (added if you leave it out); slides in from the left | POV formula |
+| `hook-question` | dark box, the closing "?" in red (added if missing); zooms in | question formula |
+
+```
+rustler overlay add-text clp_X "He quit his job for this" --style hook-big --start 0 --end 2.5 --sfx asset:<whoosh_id>
+rustler overlay add-text clp_X "you finally quit your job" --style hook-pov --anim typewriter   # --anim none|pop|zoom-in|slide|typewriter
+rustler render preview-frame clp_X --out-t 1.0     # look: settled state; the first frame shows the start of the animation
+```
+
+`--sfx` takes a file, `asset:<id>` (`asset list --kind sfx`) or a URL; the whoosh lives and dies with the hook
+(moving or removing the hook moves or removes it). Hook text ≤ 7 words, one idea, same payoff as the first spoken line.
+Keep the hook out of the caption band (captions sit near 70% of the height; hooks default to 14-17%).
+
 Rules: the hook text (`overlay add-text --style hook-top`, ≤ 7 words) and the first spoken line must point at
 the same payoff. Start on a word, never on breath or "so, um". A leading silence shows up as a `silence` dead
 zone at 0 with a `trim_head` fix.
@@ -66,6 +86,14 @@ Ways to break a static stretch, in order of subtlety:
 - **Jump cut**: remove a pause (`edit remove-pauses`) or a weak sentence; the reframe itself is a change.
 - **Layout change**: split-screen to the listener's reaction, or wide → tight.
 - **Cutaway / B-roll**: show what is talked about. Only real, licensed footage from the project.
+
+- **Flash / whip at a cut**: `rustler transition set <clip_id> <segment_id> flash` (0.1 s white flash; `flashblack` for
+  black) or `whip` (0.2 s horizontal smear into the next shot). They overlap the two shots, so the clip gets
+  0.1-0.2 s shorter. Use on a topic change or a punchline, at most once every ~8 s, never on every cut.
+
+**Cover frame.** After the final render: `rustler clip cover <clip_id> --auto`, then open the returned image. It picks a
+sharp frame with a face in a good place and not on a cut or transition; the picture comes from the render, so
+captions and the hook are in it. Not happy: `--out-t <seconds>`. `export clip` copies it as `<name>.cover.jpg`.
 
 Do not stack changes on top of each other in the same half-second; rhythm beats density.
 

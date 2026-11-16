@@ -3,6 +3,7 @@
 pub mod ass;
 pub mod chunk;
 pub mod custom;
+pub mod emoji;
 pub mod presets;
 
 pub use ass::{

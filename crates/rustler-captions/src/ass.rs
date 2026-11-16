@@ -201,6 +201,16 @@ fn write_ass_impl(
     let size = (f64::from(canvas.width) * p.size_factor).round() as u32;
     let margin_v = (f64::from(canvas.height) * (1.0 - track.position_y)).round().max(0.0) as u32;
 
+    // Keyword presets: a word with its own colour and no explicit size gets the preset's keyword size.
+    let keyword_paints: Option<Vec<Paint>> = (p.keyword_scale > 0.0).then(|| {
+        colors
+            .unwrap_or_default()
+            .iter()
+            .map(|c| if c.colour.is_some() && c.scale.is_none() { Paint { scale: Some(p.keyword_scale), ..*c } } else { *c })
+            .collect()
+    });
+    let colors: Option<&[Paint]> = keyword_paints.as_deref().or(colors);
+
     let mut out = String::new();
     out.push_str("[Script Info]\nScriptType: v4.00+\n");
     out.push_str(&format!("PlayResX: {}\nPlayResY: {}\n", canvas.width, canvas.height));
@@ -256,6 +266,25 @@ fn write_ass_impl(
             })
             .collect();
         let next_start = chunks.get(ci + 1).and_then(|c| c.first()).map(|w| w.out_start);
+        if p.active == ActiveStyle::Static {
+            // One event per chunk: the whole line at once, only keyword words painted.
+            let (Some(first), Some(last)) = (chunk.first(), chunk.last()) else { continue };
+            let start = first.out_start;
+            let tail = last.out_end + TAIL;
+            let end = next_start.map_or(tail, |ns| tail.min(ns)).max(start + 0.01);
+            let line = disp
+                .iter()
+                .enumerate()
+                .filter(|(_, d)| !d.is_empty())
+                .map(|(j, d)| paint(j, d))
+                .collect::<Vec<_>>()
+                .join(" ");
+            if !line.is_empty() {
+                out.push_str(&format!("Dialogue: 0,{},{},Default,,0,0,0,,{lead}{line}
+", ass_time(start), ass_time(end)));
+            }
+            continue;
+        }
         for (i, w) in chunk.iter().enumerate() {
             if disp[i].is_empty() {
                 continue;
@@ -281,6 +310,7 @@ fn write_ass_impl(
                 out.push_str(&format!("Dialogue: {layer},{s},{e},{style},,0,0,0,,{text}\n"));
             };
             match p.active {
+                ActiveStyle::Static => unreachable!("static captions are written per chunk above"),
                 ActiveStyle::Recolor => {
                     let t = join(&|j, d| {
                         if j == i { format!(r"{{\c{ac}{}}}{d}{reset}", active_size(j)) } else { paint(j, d) }
