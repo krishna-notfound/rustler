@@ -727,3 +727,9 @@ directed 77–94; 10 bugs). Four parallel fix branches (Opus x3, Sonnet x1, buil
   when those keys differ (`extras::NON_RENDER_KEYS`: post, meta, cover, smart_defaults, template_ref, variant_*).
 - Open: `clips auto` runs remove-pauses after the template, so new cuts are not re-checked against the punch-in
   0.5 s rule; "Vietnamese"/"Western" (proper adjectives) still count as names by design.
+- **v0.2.1 released** (2026-11-16): full `cargo test --workspace --no-fail-fast` green (96 targets, 763 tests);
+  Windows zip + Linux tarball (WSL, zig glibc-2.31), SHA256SUMS, marked latest; `install.sh` re-verified in WSL with a
+  fresh HOME (`--no-setup`): v0.2.1 (f1388da). Installed engine refreshed with `rustler setup run`. Re-check with the
+  v0.2.1 binary on a copy of the trial-2 project (`D:\rustler-build\trial3`): `timeline show` and `template apply
+  --dry-run` now succeed on all five directed clips (all failed on v0.2.0 because of their hook styles); re-applying
+  `podcast-viral` to clip 05 adds no second set of punch-ins.

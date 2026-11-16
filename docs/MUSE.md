@@ -11,7 +11,7 @@ Muse needs a GitHub token with read access to `krishna-notfound/rustler`
 export RUSTLER_TOKEN=<token>
 curl -fsSL -H "Authorization: Bearer $RUSTLER_TOKEN" -H "Accept: application/vnd.github.raw" \
   https://api.github.com/repos/krishna-notfound/rustler/contents/scripts/install.sh | bash
-# installs ~/.rustler/app/rustler, puts it on PATH, runs `rustler setup run` (lite, ~0.5 GB; latest release is v0.2.0, pin with `--version v0.2.0`)
+# installs ~/.rustler/app/rustler, puts it on PATH, runs `rustler setup run` (lite, ~0.5 GB; latest release is v0.2.1, pin with `--version v0.2.1`; after upgrading run `rustler setup run` again)
 rustler doctor run            # must say "ready": true
 rustler doctor run --network  # probes YouTube through yt-dlp; tells you which fix below you need
 ```
