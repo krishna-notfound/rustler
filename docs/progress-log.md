@@ -430,3 +430,9 @@ then wave C (timeline doc + insert/cold-open/merge/duplicate/speed/freeze, cards
 - Disk was down to 2.3 GB (a link error) → removed old `target/release` → 33.7 GB free. Keep an eye on disk:
   each worktree build is several GB.
 - Still running: layers (1.3, Opus), smooth camera (Opus), director/retention (Opus).
+- Merged **director layer** (f31): `clip.retention` (per-second retention map of the output clip, dead zones with
+  exact fix commands, 0–100 retention score), `clip.score_set` (agent's hook/flow/value/trend score; in export
+  report + post.json), `campaign.analyze` (rules, duration, payout strategy, clip counts by source length), guide
+  `director-retention` + prompts `direct_campaign`, `hook_lab`. Workspace tests on the branch: 581 passed, 0 failed.
+  Real run on the 5 trial clips: retention scores 43–63 (all have hooks; low pacing/dead zones). Applying the 5
+  suggested punch-ins on clip 04 raised it 43 → 80. Registry: 122 commands.
