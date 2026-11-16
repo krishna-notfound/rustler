@@ -11,8 +11,14 @@
 //! 3. create — URL: `source.import --sections` per pick (padded), `analyze.quick`; then
 //!    `clip.create` (smart defaults + template), `clip.meta_set` (campaign), `clip.retention`
 //!    (edit timeline) and only the cheap retention fixes that exist as commands
-//!    (trim head/tail silence, remove pauses, punch-ins). Text pops and cutaways are creative:
-//!    they are listed, never applied.
+//!    (trim head/tail silence, remove pauses, punch-ins). Trims never cut into the first/last word
+//!    and, like pause cuts, are skipped on approximate (captions-based) word timings; a fix that
+//!    changes nothing is reported `no_change`; a silence fix after which the hook or ending scores
+//!    worse is restored (`rolled_back`). Text pops and cutaways are creative: they are listed in
+//!    `fixes_suggested`, never applied.
+//!
+//! Clip and export names are unique (`auto-<rank>-<time>-<source slug>`, `-2` when taken), so a
+//! run never overwrites another clip's export.
 //! 4. render — `render.batch` (progress with `eta_s`), `clip.retention` on the render, `qc.run`,
 //!    `clip.cover --auto` (best effort), `export.clip` (writes `<name>.post.json`: title/description/hashtags stay empty for the
 //!    agent to write with `clip.meta_set`; Rustler never writes copy and never publishes).
@@ -131,13 +137,42 @@ pub struct Why {
 #[derive(Serialize, JsonSchema, Clone, Debug)]
 pub struct AppliedFix {
     pub action: String,
+    /// The command as run (trims may be shortened to keep whole words; see `note`).
     pub command: String,
+    /// applied | no_change (ran, the clip is the same) | skipped (not run, see `note`) |
+    /// rolled_back (ran, made the hook or ending worse, restored) | failed (see `error`)
+    pub status: String,
+    /// False only when something went wrong (`status: failed`); read `status` and `changed`.
     pub ok: bool,
+    /// True when the clip is different now because of this fix.
+    pub changed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Why it was skipped, shortened, rolled back or changed nothing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
     /// Command that takes this fix back out.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub undo: Option<String>,
+}
+
+impl AppliedFix {
+    fn new(action: &str, command: &str, status: &str) -> Self {
+        AppliedFix {
+            action: action.into(),
+            command: command.into(),
+            status: status.into(),
+            ok: status != "failed",
+            changed: status == "applied",
+            error: None,
+            note: None,
+            undo: None,
+        }
+    }
+    fn note(mut self, n: impl Into<String>) -> Self {
+        self.note = Some(n.into());
+        self
+    }
 }
 
 #[derive(Serialize, JsonSchema, Clone, Debug)]
@@ -213,10 +248,11 @@ pub struct AutoClip {
     pub why: Why,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retention: Option<RetentionSummary>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    /// Every cheap fix tried, with its `status` (applied, no_change, skipped, rolled_back, failed).
     pub fixes_applied: Vec<AppliedFix>,
-    /// Retention fixes that need your judgement (text pops, cutaways) or were turned off.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    /// What the latest retention measurement (the render when there is one) still suggests: text
+    /// pops and cutaways (never applied: they need your judgement), more punch-ins, and trims that
+    /// were skipped or rolled back (their `why` says so). Always present; empty means no dead zones.
     pub fixes_suggested: Vec<SuggestedFix>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub render: Option<Value>,
@@ -533,6 +569,62 @@ fn stamp(t: f64) -> String {
     if t >= 3600 { format!("{}h{:02}m{:02}s", t / 3600, (t % 3600) / 60, t % 60) } else { format!("{:02}m{:02}s", t / 60, t % 60) }
 }
 
+/// A short file-name-safe slug of a source title: its first words (at most 3 words / 24
+/// characters), lower case ASCII letters and digits; a trailing `[11:54-12:40]` section label is
+/// dropped. Empty when nothing ASCII is left.
+pub fn title_slug(title: &str) -> String {
+    let t = match title.rfind(" [") {
+        Some(k) if title.trim_end().ends_with(']') => &title[..k],
+        _ => title,
+    };
+    let mut out = String::new();
+    for w in t.split(|c: char| !c.is_ascii_alphanumeric()).filter(|w| !w.is_empty()).take(3) {
+        let w = w.to_ascii_lowercase();
+        if !out.is_empty() && out.len() + 1 + w.len() > 24 {
+            break;
+        }
+        if !out.is_empty() {
+            out.push('-');
+        }
+        out.push_str(&w[..w.len().min(24)]);
+    }
+    out
+}
+
+/// `base`, or `base-2`, `base-3`, ... : the first not in `taken` (lower-cased: export file names
+/// compare case-insensitively on Windows).
+pub fn unique_name(base: &str, taken: &std::collections::HashSet<String>) -> String {
+    let mut name = base.to_string();
+    let mut n = 2;
+    while taken.contains(&name.to_lowercase()) {
+        name = format!("{base}-{n}");
+        n += 1;
+    }
+    name
+}
+
+/// Names in use (lower case): clip names of the project and the stems of files in `exports/`.
+fn taken_names(store: &ProjectStore) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    if let Ok(p) = store.load_project() {
+        for id in &p.clips {
+            if let Ok(c) = store.load_clip(id) {
+                out.insert(c.name.to_lowercase());
+            }
+        }
+    }
+    for e in std::fs::read_dir(store.exports_dir()).into_iter().flatten().flatten() {
+        let n = e.file_name().to_string_lossy().to_lowercase();
+        for ext in [".report.json", ".post.json", ".cover.jpg", ".mp4", ".srt"] {
+            if let Some(stem) = n.strip_suffix(ext) {
+                out.insert(stem.to_string());
+                break;
+            }
+        }
+    }
+    out
+}
+
 /// Existing clip ranges on the ranked timeline: (start, end, clip id).
 fn existing_ranges(store: &ProjectStore, source: Option<&SourceId>, url: Option<&str>) -> Vec<(f64, f64, String)> {
     let mut out = Vec::new();
@@ -574,6 +666,263 @@ fn dead_zones(v: &Value) -> usize {
     v.get("dead_zones").and_then(Value::as_array).map_or(0, Vec::len)
 }
 
+/// What the latest retention measurement `v` still suggests, with a note on the actions
+/// `clips.auto` skipped or rolled back (so the agent knows why they are still listed).
+fn suggestions_left(v: &Value, applied: &[AppliedFix]) -> Vec<SuggestedFix> {
+    let mut out = retention_fixes(v);
+    for f in &mut out {
+        if let Some(a) = applied.iter().find(|a| a.action == f.action && matches!(a.status.as_str(), "skipped" | "rolled_back")) {
+            f.why = format!("{} (clips auto {} it: {})", f.why, a.status.replace('_', " "), a.note.clone().unwrap_or_default());
+        }
+    }
+    out
+}
+
+/// Seconds kept between the last (first) word and a trimmed tail (head).
+pub const WORD_PAD: f64 = 0.2;
+
+/// The trim deltas to use on `seg` so a trim never cuts into a word: the tail stops at least
+/// [`WORD_PAD`] after the last word that starts inside the segment, the head at least `WORD_PAD`
+/// before the first word. `words` are the source's words; `approximate` is the transcript's
+/// `word_timing == approximate` (captions-based: word times are spread over the cue, so a trim
+/// could cut a word, and it is skipped). `Ok((start_delta, end_delta, note))` with the deltas to
+/// run (a note when one was shortened); `Err(reason)` when the trim is skipped.
+pub fn guard_trim(
+    seg: &rustler_core::Segment,
+    words: &[rustler_core::Word],
+    approximate: bool,
+    start_delta: Option<f64>,
+    end_delta: Option<f64>,
+) -> std::result::Result<(Option<f64>, Option<f64>, Option<String>), String> {
+    if approximate {
+        return Err(format!(
+            "word timings are approximate (captions-based transcript), so the trim could cut a word; check the frames and trim yourself, or run `rustler analyze transcribe {}` for exact timings",
+            seg.source_id
+        ));
+    }
+    let inside: Vec<&rustler_core::Word> = words.iter().filter(|w| w.end > seg.start + 1e-6 && w.start < seg.end - 1e-6).collect();
+    let mut notes = Vec::new();
+    // Down to 2 decimals (room is positive): a rounded trim never reaches past the pad.
+    let toward_zero = |d: f64| (d * 100.0 + 1e-6).floor() / 100.0;
+    let mut sd = start_delta.filter(|d| d.abs() > 1e-9);
+    let mut ed = end_delta.filter(|d| d.abs() > 1e-9);
+    if let Some(d) = sd.filter(|d| *d > 0.0) {
+        if let Some(first) = inside.iter().min_by(|a, b| a.start.total_cmp(&b.start)) {
+            if first.start <= seg.start + 0.02 {
+                return Err(format!("the segment starts inside or right at the first word \"{}\" ({:.2} s); a head trim would cut it", first.text, first.start));
+            }
+            let room = toward_zero(first.start - WORD_PAD - seg.start);
+            if room < 0.05 {
+                return Err(format!("nothing to trim before the first word \"{}\" (starts {:.2} s, segment starts {:.2} s, {WORD_PAD} s kept)", first.text, first.start, seg.start));
+            }
+            if d > room {
+                notes.push(format!("head trim shortened from {d:.2} to {room:.2} s to keep \"{}\" whole", first.text));
+                sd = Some(room);
+            }
+        }
+    }
+    if let Some(d) = ed.filter(|d| *d < 0.0) {
+        if let Some(last) = inside.iter().max_by(|a, b| a.end.total_cmp(&b.end)) {
+            if last.end >= seg.end - 0.02 {
+                return Err(format!("the segment ends inside or right at the last word \"{}\" ({:.2} s); a tail trim would cut it", last.text, last.end));
+            }
+            let room = toward_zero(seg.end - (last.end + WORD_PAD));
+            if room < 0.05 {
+                return Err(format!("nothing to trim after the last word \"{}\" (ends {:.2} s, segment ends {:.2} s, {WORD_PAD} s kept)", last.text, last.end, seg.end));
+            }
+            if -d > room {
+                notes.push(format!("tail trim shortened from {:.2} to {room:.2} s to keep \"{}\" whole", -d, last.text));
+                ed = Some(-room);
+            }
+        }
+    }
+    Ok((sd, ed, (!notes.is_empty()).then(|| notes.join("; "))))
+}
+
+fn factor_points(v: &Value, name: &str) -> Option<f64> {
+    v.get("breakdown")?.as_array()?.iter().find(|f| f.get("name").and_then(Value::as_str) == Some(name))?.get("points")?.as_f64()
+}
+
+/// Why the retention measurement `after` a fix is worse than `before`: fewer hook or ending
+/// points (a trim that cut a word turns a full sentence into a hard stop), or a lower score.
+pub fn got_worse(before: &Value, after: &Value) -> Option<String> {
+    let mut why = Vec::new();
+    for name in ["hook", "ending"] {
+        if let (Some(b), Some(a)) = (factor_points(before, name), factor_points(after, name)) {
+            if a + 1e-6 < b {
+                let kinds = if name == "ending" {
+                    format!(" ({} -> {})", s(before.get("ending").unwrap_or(&Value::Null), "kind"), s(after.get("ending").unwrap_or(&Value::Null), "kind"))
+                } else {
+                    String::new()
+                };
+                why.push(format!("{name} {b} -> {a} points{kinds}"));
+            }
+        }
+    }
+    let score = |v: &Value| v.get("retention_score").and_then(Value::as_u64);
+    if let (Some(b), Some(a)) = (score(before), score(after)) {
+        if a < b {
+            why.push(format!("retention {b} -> {a}"));
+        }
+    }
+    (!why.is_empty()).then(|| why.join(", "))
+}
+
+/// Words of `source` and whether their timing is approximate (`None`: no transcript).
+fn source_words(store: &ProjectStore, source: &SourceId) -> Option<(Vec<rustler_core::Word>, bool)> {
+    let t = crate::clip_cmds::load_transcript(store, source).ok().flatten()?;
+    Some((t.words, t.word_timing == rustler_core::WordTiming::Approximate))
+}
+
+/// Runs the silence fixes (`trim_head`, `trim_tail`, `remove_pauses`) one by one: a trim never
+/// cuts into a word ([`guard_trim`]), trims and pause cuts are skipped on approximate word
+/// timings, a fix that changes nothing says so, and a fix after which the hook or ending scores
+/// worse ([`got_worse`]) is restored with `history.restore`. Returns what ran and the latest
+/// edit-timeline retention measurement.
+async fn apply_silence_fixes(x: &Ctx2<'_>, store: &ProjectStore, cid: &ClipId, fixes: &[SuggestedFix], before: Value, ret_in: &Value) -> (Vec<AppliedFix>, Value) {
+    let mut current = before;
+    let mut seen: Vec<String> = Vec::new();
+    let mut out = Vec::new();
+    for fx in fixes.iter().filter(|f| SILENCE_FIXES.contains(&f.action.as_str())) {
+        let Some(cmd) = &fx.command else { continue };
+        for part in cmd.split("&&").map(str::trim).filter(|p| !p.is_empty()) {
+            if seen.iter().any(|x| x == part) {
+                continue;
+            }
+            seen.push(part.to_string());
+            let Some((name, mut input)) = parse_cli(x.reg, part) else {
+                let mut a = AppliedFix::new(&fx.action, part, "failed");
+                a.error = Some("no such command in this build".into());
+                out.push(a);
+                continue;
+            };
+            let clip = match store.load_clip(cid) {
+                Ok(c) => c,
+                Err(e) => {
+                    let mut a = AppliedFix::new(&fx.action, part, "failed");
+                    a.error = Some(e.message);
+                    out.push(a);
+                    continue;
+                }
+            };
+            let rev_before = clip.revision;
+            let mut note = None;
+            let mut command = part.to_string();
+            // Guards that need the words of the clip's sources.
+            match name.as_str() {
+                "edit.trim" => {
+                    // A pause cut before this re-cuts the segments: the tail is the last one now, the head the first.
+                    let seg = match (fx.action.as_str(), input.get("segment_id").and_then(Value::as_str)) {
+                        ("trim_tail", _) => clip.segments.last(),
+                        ("trim_head", _) | (_, None) => clip.segments.first(),
+                        (_, Some(id)) => clip.segments.iter().find(|s| s.id.as_str() == id),
+                    };
+                    if let Some(sg) = seg {
+                        if input.get("segment_id").is_some_and(|v| v.as_str() != Some(sg.id.as_str())) {
+                            input["segment_id"] = json!(sg.id);
+                            command = format!("rustler edit trim {cid} --segment-id {} --end-delta {:.2}", sg.id, f(&input, "end_delta").unwrap_or(0.0));
+                        }
+                    }
+                    let Some(seg) = seg else {
+                        out.push(AppliedFix::new(&fx.action, part, "skipped").note("the segment it names is no longer in the clip"));
+                        continue;
+                    };
+                    let Some((words, approx)) = source_words(store, &seg.source_id) else {
+                        out.push(AppliedFix::new(&fx.action, part, "skipped").note(format!("source {} has no transcript, so the last/first word is unknown", seg.source_id)));
+                        continue;
+                    };
+                    match guard_trim(seg, &words, approx, f(&input, "start_delta"), f(&input, "end_delta")) {
+                        Err(why) => {
+                            out.push(AppliedFix::new(&fx.action, part, "skipped").note(why));
+                            continue;
+                        }
+                        Ok((sd, ed, n)) => {
+                            if let Some(n) = n {
+                                for (k, v) in [("start_delta", sd), ("end_delta", ed)] {
+                                    if let Some(v) = v {
+                                        input[k] = json!(v);
+                                    }
+                                }
+                                command = match (sd, ed) {
+                                    (Some(d), _) if d > 0.0 => format!("rustler edit trim {cid} --start-delta {d:.2}"),
+                                    (_, Some(d)) => format!("rustler edit trim {cid} --segment-id {} --end-delta {d:.2}", seg.id),
+                                    _ => command,
+                                };
+                                note = Some(n);
+                            }
+                        }
+                    }
+                }
+                "edit.remove_pauses" => {
+                    if let Some(seg) = clip.segments.iter().find(|s| source_words(store, &s.source_id).is_some_and(|(_, approx)| approx)) {
+                        out.push(AppliedFix::new(&fx.action, part, "skipped").note(format!(
+                            "word timings of {} are approximate (captions-based transcript): the gaps between words are not real pauses, so nothing reliable can be cut; run `rustler analyze transcribe {}` for exact timings",
+                            seg.source_id, seg.source_id
+                        )));
+                        continue;
+                    }
+                }
+                _ => {}
+            }
+            let r = x.call(&name, input).await;
+            let v = match r {
+                Ok(v) => v,
+                Err(e) => {
+                    let mut a = AppliedFix::new(&fx.action, &command, "failed");
+                    a.error = Some(e.message);
+                    a.note = note;
+                    out.push(a);
+                    continue;
+                }
+            };
+            let rev_after = store.load_clip(cid).map(|c| c.revision).unwrap_or(rev_before);
+            if rev_after == rev_before {
+                let warn: Vec<String> = v.get("warnings").and_then(Value::as_array).into_iter().flatten().filter_map(|w| w.as_str().map(String::from)).collect();
+                let why = if warn.is_empty() { "the command changed nothing".to_string() } else { warn.join("; ") };
+                out.push(AppliedFix::new(&fx.action, &command, "no_change").note(why));
+                continue;
+            }
+            // Measure again: roll the fix back when the hook or the ending got worse.
+            let after = match x.call("clip.retention", ret_in.clone()).await {
+                Ok(a) => a,
+                Err(e) => {
+                    let mut a = AppliedFix::new(&fx.action, &command, "applied");
+                    a.note = Some(format!("{}not re-measured: {}", note.map(|n| format!("{n}; ")).unwrap_or_default(), e.message));
+                    a.undo = Some(format!("rustler history restore {cid} {rev_before}   # the clip before this fix (also undoes later edits)"));
+                    out.push(a);
+                    continue;
+                }
+            };
+            if let Some(worse) = got_worse(&current, &after) {
+                match x.call("history.restore", json!({"clip_id": cid, "revision": rev_before})).await {
+                    Ok(_) => {
+                        let mut a = AppliedFix::new(&fx.action, &command, "rolled_back");
+                        a.note = Some(format!("{worse} after the fix; restored revision {rev_before}{}", note.map(|n| format!(" ({n})")).unwrap_or_default()));
+                        out.push(a);
+                        if let Ok(m) = x.call("clip.retention", ret_in.clone()).await {
+                            current = m;
+                        }
+                    }
+                    Err(e) => {
+                        let mut a = AppliedFix::new(&fx.action, &command, "applied");
+                        a.note = Some(format!("{worse} after the fix, and restoring revision {rev_before} failed: {}", e.message));
+                        a.undo = Some(format!("rustler history restore {cid} {rev_before}"));
+                        out.push(a);
+                        current = after;
+                    }
+                }
+                continue;
+            }
+            let mut a = AppliedFix::new(&fx.action, &command, "applied");
+            a.note = note;
+            a.undo = Some(format!("rustler history restore {cid} {rev_before}   # the clip before this fix (also undoes later edits)"));
+            out.push(a);
+            current = after;
+        }
+    }
+    (out, current)
+}
+
 /// Applies the fixes whose action is in `actions` (each distinct command once). Returns what ran.
 async fn apply_fixes(reg: &Registry, ctx: &Ctx, fixes: &[SuggestedFix], actions: &[&str]) -> Vec<AppliedFix> {
     let mut seen: Vec<String> = Vec::new();
@@ -586,21 +935,37 @@ async fn apply_fixes(reg: &Registry, ctx: &Ctx, fixes: &[SuggestedFix], actions:
             }
             seen.push(part.to_string());
             let Some((name, input)) = parse_cli(reg, part) else {
-                out.push(AppliedFix { action: fx.action.clone(), command: part.into(), ok: false, error: Some("no such command in this build".into()), undo: None });
+                let mut a = AppliedFix::new(&fx.action, part, "failed");
+                a.error = Some("no such command in this build".into());
+                out.push(a);
                 continue;
             };
             let clip = s(&input, "clip_id");
             let r = reg.dispatch(&name, input, quiet(ctx)).await;
-            // Effects live outside the clip revisions: undo by id. Edits are revisions: history undo.
-            let undo = match (&r, name.as_str()) {
+            let a = match (&r, name.as_str()) {
+                // Effects live outside the clip revisions: undo by id.
                 (Ok(v), "effect.add") => {
                     let ids: Vec<String> = v.get("effect_ids").and_then(Value::as_array).into_iter().flatten().filter_map(|x| x.as_str().map(|id| format!("rustler effect remove {clip} {id}"))).collect();
-                    (!ids.is_empty()).then(|| ids.join(" && "))
+                    if ids.is_empty() {
+                        AppliedFix::new(&fx.action, part, "no_change").note("no effect was added")
+                    } else {
+                        let mut a = AppliedFix::new(&fx.action, part, "applied");
+                        a.undo = Some(ids.join(" && "));
+                        a
+                    }
                 }
-                (Ok(_), _) => Some(format!("rustler history undo {clip}   # undoes the latest revision; undo later edits first")),
-                (Err(_), _) => None,
+                (Ok(_), _) => {
+                    let mut a = AppliedFix::new(&fx.action, part, "applied");
+                    a.undo = Some(format!("rustler history undo {clip}   # undoes the latest revision; undo later edits first"));
+                    a
+                }
+                (Err(e), _) => {
+                    let mut a = AppliedFix::new(&fx.action, part, "failed");
+                    a.error = Some(e.message.clone());
+                    a
+                }
             };
-            out.push(AppliedFix { action: fx.action.clone(), command: part.into(), ok: r.is_ok(), error: r.err().map(|e| e.message), undo });
+            out.push(a);
         }
     }
     out
@@ -836,7 +1201,33 @@ async fn clips_auto(ctx: Ctx, i: AutoIn) -> Result<AutoOut> {
         raw,
     };
 
-    // Per-clip skeletons.
+    // Per-clip skeletons. Names are unique in the project and in exports/ (an export of another
+    // clip is never overwritten): auto-<rank>-<time in the original video>-<source title slug>,
+    // with -2, -3 ... when that is taken.
+    let slug = title_slug(summary_src.title.as_deref().unwrap_or_default());
+    // A source imported as a section of a URL: name by the time in the original video.
+    let stamp_offset = local_source
+        .as_ref()
+        .and_then(|sid| store.load_source(sid).ok())
+        .map(|src| match src.origin {
+            SourceOrigin::Url { original_offset, .. } => original_offset,
+            _ => 0.0,
+        })
+        .unwrap_or(0.0);
+    let mut taken = taken_names(&store);
+    let names: Vec<String> = picks
+        .iter()
+        .enumerate()
+        .map(|(k, p)| {
+            let mut base = format!("auto-{}-{}", k + 1, stamp(p.start + stamp_offset));
+            if !slug.is_empty() {
+                base = format!("{base}-{slug}");
+            }
+            let n = unique_name(&base, &taken);
+            taken.insert(n.to_lowercase());
+            n
+        })
+        .collect();
     let mut clips: Vec<AutoClip> = picks
         .iter()
         .enumerate()
@@ -847,7 +1238,7 @@ async fn clips_auto(ctx: Ctx, i: AutoIn) -> Result<AutoOut> {
                 status: if dry { "planned".into() } else { "pending".into() },
                 failed_stage: None,
                 error: None,
-                name: format!("auto-{}-{}", k + 1, stamp(p.start)),
+                name: names[k].clone(),
                 clip_id: None,
                 source_id: local_source.as_ref().map(|s| s.to_string()),
                 start: round2(p.start),
@@ -893,7 +1284,7 @@ async fn clips_auto(ctx: Ctx, i: AutoIn) -> Result<AutoOut> {
             }
             c.plan.push("rustler clip retention <clip_id> --timeline-only --per-second false".into());
             if fixes_on {
-                c.plan.push("apply the retention fixes trim_head / trim_tail / remove_pauses / punch_in when suggested".into());
+                c.plan.push("apply the retention fixes trim_head / trim_tail / remove_pauses / punch_in when suggested (trims keep whole words; skipped on approximate word timings; rolled back when the hook or ending gets worse)".into());
             }
             c.plan.push(format!("rustler render batch --clip-ids <clip_ids> --quality {}", quality_str(quality)));
             c.plan.push("rustler clip retention <clip_id> --per-second false".into());
@@ -1019,32 +1410,29 @@ async fn clips_auto(ctx: Ctx, i: AutoIn) -> Result<AutoOut> {
                     measured_on: Some(s(&r0, "measured_on")),
                     dead_zones_left: dead_zones(&r0),
                 };
-                let mut suggested = retention_fixes(&r0);
+                let mut latest = r0.clone();
                 if fixes_on {
-                    let mut applied = apply_fixes(&reg, &ctx, &suggested, SILENCE_FIXES).await;
-                    if applied.iter().any(|a| a.ok) {
-                        // Times changed: measure again before placing punch-ins.
-                        if let Ok(r1) = x.call("clip.retention", ret_in.clone()).await {
-                            suggested = retention_fixes(&r1);
-                        }
-                    }
-                    applied.extend(apply_fixes(&reg, &ctx, &suggested, VISUAL_FIXES).await);
-                    if !applied.is_empty() {
+                    // Silence fixes one by one (word-safe trims, honest no-ops, roll back what hurts the hook or ending).
+                    let (mut applied, r1) = apply_silence_fixes(&x, &store, &cid, &retention_fixes(&r0), r0, &ret_in).await;
+                    // Times may have changed: punch-ins are placed from the latest measurement.
+                    let visual = apply_fixes(&reg, &ctx, &retention_fixes(&r1), VISUAL_FIXES).await;
+                    latest = r1;
+                    if visual.iter().any(|a| a.changed) {
                         if let Ok(r2) = x.call("clip.retention", ret_in.clone()).await {
-                            summary.score = r2.get("retention_score").and_then(Value::as_u64).map(|v| v as u32);
-                            summary.dead_zones_left = dead_zones(&r2);
-                            suggested = retention_fixes(&r2);
+                            latest = r2;
                         }
                     }
-                    for a in applied.iter().filter(|a| a.ok) {
+                    applied.extend(visual);
+                    summary.score = latest.get("retention_score").and_then(Value::as_u64).map(|v| v as u32);
+                    summary.dead_zones_left = dead_zones(&latest);
+                    for a in applied.iter().filter(|a| a.changed) {
                         if let Some(u) = &a.undo {
                             c.change.push(Change { decision: format!("fix {} ({})", a.action, a.command), command: u.clone() });
                         }
                     }
                     c.fixes_applied = applied;
-                    suggested.retain(|f| !SILENCE_FIXES.contains(&f.action.as_str()) && !VISUAL_FIXES.contains(&f.action.as_str()));
                 }
-                c.fixes_suggested = suggested;
+                c.fixes_suggested = suggestions_left(&latest, &c.fixes_applied);
                 c.retention = Some(summary);
             }
             Err(e) => c.warnings.push(format!("retention not measured: {}", e.message)),
@@ -1110,6 +1498,8 @@ async fn clips_auto(ctx: Ctx, i: AutoIn) -> Result<AutoOut> {
                 sum.score = r.get("retention_score").and_then(Value::as_u64).map(|v| v as u32);
                 sum.measured_on = Some(s(&r, "measured_on"));
                 sum.dead_zones_left = dead_zones(&r);
+                // The render shows what is still dead (frame changes, real loudness): list those fixes.
+                c.fixes_suggested = suggestions_left(&r, &c.fixes_applied);
             }
             Err(e) => c.warnings.push(format!("retention on the render not measured: {}", e.message)),
         }
@@ -1303,5 +1693,57 @@ mod tests {
     fn stamp_is_file_safe() {
         assert_eq!(stamp(75.4), "01m15s");
         assert_eq!(stamp(3725.0), "1h02m05s");
+    }
+
+    #[test]
+    fn slug_and_unique_names() {
+        assert_eq!(title_slug("Why Your Communication Makes People Ignore You | Vinh Giang [11:54-12:40]"), "why-your-communication");
+        assert_eq!(title_slug("talk.mp4"), "talk-mp4");
+        assert_eq!(title_slug("मेरा क्लिप"), "");
+        let taken: std::collections::HashSet<String> = ["auto-1-00m03s".to_string(), "auto-1-00m03s-2".to_string()].into_iter().collect();
+        assert_eq!(unique_name("auto-1-00m03s", &taken), "auto-1-00m03s-3");
+        assert_eq!(unique_name("Auto-1-00m03s", &taken), "Auto-1-00m03s-3", "case-insensitive");
+        assert_eq!(unique_name("auto-2-00m03s", &taken), "auto-2-00m03s");
+    }
+
+    fn seg(start: f64, end: f64) -> rustler_core::Segment {
+        serde_json::from_value(json!({"id": "seg_1", "source_id": "src_1", "start": start, "end": end, "layout": {"preset": "center-crop", "regions": [], "background": "black"}})).unwrap()
+    }
+
+    fn w(i: u32, text: &str, start: f64, end: f64) -> rustler_core::Word {
+        rustler_core::Word { i, text: text.into(), start, end, conf: None, speaker: None }
+    }
+
+    #[test]
+    fn trims_keep_whole_words_and_skip_approximate_timings() {
+        let words = vec![w(0, "You're", 2.5, 2.9), w(1, "actually", 25.0, 25.6), w(2, "have.", 25.7, 26.1)];
+        let s = seg(2.14, 26.96);
+        // The trial-2 case: -1.11 would end at 25.85, inside "have." -> shortened to end 0.2 s after it.
+        let (sd, ed, note) = guard_trim(&s, &words, false, None, Some(-1.11)).unwrap();
+        assert_eq!(sd, None);
+        assert!((ed.unwrap() - -0.66).abs() < 1e-9, "{ed:?}");
+        assert!(26.96 + ed.unwrap() >= 26.1 + WORD_PAD - 1e-9);
+        assert!(note.unwrap().contains("have."));
+        // A trim that fits is kept as it is.
+        assert_eq!(guard_trim(&s, &words, false, None, Some(-0.4)).unwrap(), (None, Some(-0.4), None));
+        // Approximate timings: skipped.
+        assert!(guard_trim(&s, &words, true, None, Some(-0.4)).unwrap_err().contains("approximate"));
+        // The segment already ends inside the last word.
+        assert!(guard_trim(&seg(2.14, 25.9), &words, false, None, Some(-0.3)).unwrap_err().contains("have."));
+        // Head: never past the first word minus the pad; nothing left -> skipped.
+        let (sd, _, _) = guard_trim(&s, &words, false, Some(1.0), None).unwrap();
+        assert!((sd.unwrap() - 0.16).abs() < 1e-9, "{sd:?}");
+        assert!(guard_trim(&seg(2.4, 26.96), &words, false, Some(0.3), None).is_err());
+    }
+
+    #[test]
+    fn worse_hook_or_ending_is_detected() {
+        let m = |hook: f64, ending: f64, kind: &str, score: u64| {
+            json!({"retention_score": score, "ending": {"kind": kind}, "breakdown": [{"name": "hook", "points": hook}, {"name": "ending", "points": ending}, {"name": "silence", "points": 2.0}]})
+        };
+        let why = got_worse(&m(10.0, 6.0, "sentence_final", 53), &m(10.0, 0.0, "hard_stop", 55)).unwrap();
+        assert!(why.contains("ending 6 -> 0") && why.contains("hard_stop"), "{why}");
+        assert!(got_worse(&m(10.0, 6.0, "sentence_final", 53), &m(10.0, 6.0, "sentence_final", 56)).is_none());
+        assert!(got_worse(&m(10.0, 6.0, "sentence_final", 53), &m(10.0, 6.0, "sentence_final", 50)).unwrap().contains("retention 53 -> 50"));
     }
 }

@@ -20,7 +20,7 @@ changes it, and you can do any step yourself at any time.
 | resolve (source) | `analyze quick` when the source has no transcript |
 | rank | `highlights candidates`, then a first-2-seconds hook score (question, emphasis word, number, "you", loud or fast opening; weak openers lose points). Picks never overlap each other or a clip you already made on that moment |
 | create | URL: `source import --sections` per pick (padded 3 s) + `analyze quick`; then `clip create` (smart defaults, `--template`), `clip meta-set --campaign-id` when `--campaign` is given |
-| fix | `clip retention --timeline-only`; applies only `trim_head`, `trim_tail`, `remove_pauses`, then `punch_in` (re-measured after a trim). Text pops and cutaways are listed in `fixes_suggested`, never applied |
+| fix | `clip retention --timeline-only`; applies only `trim_head`, `trim_tail`, `remove_pauses`, then `punch_in` (re-measured after each silence fix). Trims never cut into the first or last word (they stop 0.2 s from it); trims and pause cuts are **skipped** when the word timings are approximate (a captions-based transcript); a silence fix after which the hook or ending scores worse is restored (`rolled_back`). Text pops and cutaways are listed in `fixes_suggested`, never applied |
 | render | `render batch` (progress `clips.auto.render` with `eta_s`) |
 | check | `clip retention` on the render, `qc run`, `clip cover --auto` (best effort; `--cover false` skips it), `export clip` |
 
@@ -42,9 +42,12 @@ off), smart defaults on (`--raw true` turns them off).
 ## Read the report
 
 Per clip: `why` (candidate score, `hook_2s` with notes and the words said in the first 2 s, reasons),
-`retention` (`before_fixes` and the latest `score`, `measured_on: render`), `fixes_applied` (each with its `undo`
-command), `fixes_suggested`, `qc` (failed / warned checks), `export` (video, post, report) and `change[]`.
-A clip that failed has `failed_stage` (import, analyze, create, render, qc, export) and `error`; the other clips
+`retention` (`before_fixes` and the latest `score`, `measured_on: render`), `fixes_applied` (each with a `status`:
+`applied`, `no_change`, `skipped`, `rolled_back` or `failed`, `changed`, a `note` saying why, and an `undo` command),
+`fixes_suggested` (always present: what the render measurement still suggests; a skipped or rolled-back fix says so in its `why`), `qc` (failed / warned checks), `export` (video, post, report) and `change[]`.
+Names are `auto-<rank>-<time in the original video>-<source title slug>` with `-2`, `-3` ... when the name is
+taken, so a run never replaces another clip's export; `export clip` itself refuses a name another clip exported
+unless `--overwrite true`. A clip that failed has `failed_stage` (import, analyze, create, render, qc, export) and `error`; the other clips
 are not affected.
 
 Then, for every exported clip:
@@ -66,7 +69,7 @@ Then, for every exported clip:
 | smart defaults | the `undo_all` command in `change[]` (`rustler history restore <clip_id> --revision 1`) |
 | the look | `rustler template apply <name> --clip-ids <clip_id>` |
 | a punch-in it added | `rustler effect remove <clip_id> <fx_id>` (in `fixes_applied[].undo`) |
-| a trim / pause cut it made | `rustler history undo <clip_id>` |
+| a trim / pause cut it made | the `undo` in `fixes_applied` (`rustler history restore <clip_id> <revision before it>`) |
 | the cover frame | `rustler clip cover <clip_id> --out-t <seconds>`, then `rustler export clip <clip_id>` |
 | re-render and re-check | `rustler render run <clip_id>`, `rustler qc run <clip_id>`, `rustler export clip <clip_id>` |
 

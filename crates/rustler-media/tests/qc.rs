@@ -318,3 +318,60 @@ async fn v2_checks_use_the_extras_passed_in() {
     // contact sheet stays the last check
     assert_eq!(r.checks.last().unwrap().name, "contact_sheet");
 }
+
+fn view_with_sheet(sheet: &Path) -> QcView {
+    let report = QcReport {
+        schema: "rustler.qc@1".into(),
+        clip_id: "clp_00000000000000000000000001".parse().unwrap(),
+        render_id: "rnd_00000000000000000000000001".parse().unwrap(),
+        passed: true,
+        checks: vec![rustler_core::QcCheck {
+            name: "contact_sheet".into(),
+            status: QcStatus::Pass,
+            value: serde_json::json!(sheet.display().to_string()),
+            expected: "sheet".into(),
+            fix_hint: None,
+        }],
+        contact_sheet: sheet.to_path_buf(),
+    };
+    view(report)
+}
+
+#[test]
+fn qc_view_paths_are_stored_relative_and_resolved_on_read() {
+    let root = tempfile::tempdir().unwrap();
+    let sheet = root.path().join("clips").join("clp_1").join("qc").join("rnd_1.jpg");
+    let v = view_with_sheet(&sheet);
+    let rel = v.relative_to(root.path());
+    let want = Path::new("clips").join("clp_1").join("qc").join("rnd_1.jpg");
+    assert_eq!(rel.report.contact_sheet, want);
+    assert_eq!(rel.look_at, vec![want.clone()]);
+    assert_eq!(rel.report.checks[0].value, serde_json::json!(want.display().to_string()));
+    assert!(!rel.verdict.contains(&root.path().display().to_string()), "{}", rel.verdict);
+    // resolving gives the absolute view back
+    assert_eq!(rel.resolved_in(root.path()), v);
+    // a path outside the project stays as it is
+    let outside = view_with_sheet(Path::new(if cfg!(windows) { "C:\\elsewhere\\s.jpg" } else { "/elsewhere/s.jpg" }));
+    assert_eq!(outside.relative_to(root.path()).report.contact_sheet, outside.report.contact_sheet);
+}
+
+#[test]
+fn old_absolute_qc_records_are_re_rooted_in_a_copied_project() {
+    let original = tempfile::tempdir().unwrap();
+    let copy = tempfile::tempdir().unwrap();
+    let old_sheet = original.path().join("clips").join("clp_1").join("qc").join("rnd_1.jpg");
+    let new_sheet = copy.path().join("clips").join("clp_1").join("qc").join("rnd_1.jpg");
+    std::fs::create_dir_all(new_sheet.parent().unwrap()).unwrap();
+    std::fs::write(&new_sheet, b"x").unwrap();
+    // the old record points into the original folder, which is gone: the copy's file is used
+    let old = view_with_sheet(&old_sheet);
+    drop(original);
+    let r = old.resolved_in(copy.path());
+    assert_eq!(r.report.contact_sheet, new_sheet);
+    assert_eq!(r.look_at, vec![new_sheet.clone()]);
+    assert_eq!(r.report.checks[0].value, serde_json::json!(new_sheet.display().to_string()));
+    assert!(r.verdict.contains(&new_sheet.display().to_string()));
+    // an absolute path that still exists is used as it is
+    let still = view_with_sheet(&new_sheet);
+    assert_eq!(still.resolved_in(Path::new("/nowhere")).report.contact_sheet, new_sheet);
+}

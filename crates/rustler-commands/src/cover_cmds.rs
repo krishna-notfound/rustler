@@ -314,7 +314,7 @@ async fn clip_cover(ctx: Ctx, i: CoverIn) -> Result<CoverOut> {
     let edit_dur = tm.duration();
     let work = store.clip_dir(&clip.id).join("cover_work");
     std::fs::create_dir_all(&work).map_err(|e| RustlerError::new(ErrorCode::Internal, STAGE, format!("cannot create {}: {e}", work.display())))?;
-    let result = run(&ctx, &store, &paths, &clip, &i, &video, file_dur, edit_dur, &tm, &tmap, &work).await;
+    let result = run(&ctx, &store, &paths, &clip, &i, &render.id, &video, file_dur, edit_dur, &tm, &tmap, &work).await;
     let _ = std::fs::remove_dir_all(&work);
     result
 }
@@ -326,6 +326,7 @@ async fn run(
     paths: &ToolPaths,
     clip: &rustler_core::Clip,
     i: &CoverIn,
+    render_id: &rustler_core::RenderId,
     video: &Path,
     file_dur: f64,
     edit_dur: f64,
@@ -412,6 +413,8 @@ async fn run(
             "method": method,
             "score": (chosen.score * 1000.0).round() / 1000.0,
             "faces_measured": faces_measured,
+            // The render the frame was taken from: export.clip of another render leaves it out.
+            "render_id": render_id,
             "created_at": Utc::now(),
         });
         extras::update(store, &clip.id, KEY, |_| Ok(Some(record)))?;
@@ -454,6 +457,18 @@ async fn run(
 // ---------------------------------------------------------------------------------------------
 // Export hook
 // ---------------------------------------------------------------------------------------------
+
+/// The render the clip's cover frame was taken from: the recorded `render_id`, or for a cover
+/// recorded before that field existed, the latest render made before the cover (`clip.cover`
+/// always uses the latest render). `None` without a cover or when it cannot be told.
+pub(crate) fn cover_render(store: &ProjectStore, clip: &rustler_core::Clip) -> Option<rustler_core::RenderId> {
+    let rec = extras::get::<Value>(store, &clip.id, KEY).ok().flatten()?;
+    if let Some(id) = rec.get("render_id").and_then(|v| serde_json::from_value::<rustler_core::RenderId>(v.clone()).ok()) {
+        return Some(id);
+    }
+    let at = rec.get("created_at").and_then(Value::as_str).and_then(|s| s.parse::<chrono::DateTime<Utc>>().ok())?;
+    clip.renders.iter().filter(|r| r.created_at <= at).max_by_key(|r| r.created_at).map(|r| r.id.clone())
+}
 
 /// Copies the clip's cover next to the exported video as `<name>.cover.jpg` and points the
 /// post JSON's `cover` at it. A clip without a cover is left alone; a recorded cover whose file

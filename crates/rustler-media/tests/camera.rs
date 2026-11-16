@@ -268,3 +268,24 @@ fn a_reaction_shot_of_the_other_person_is_a_cut_even_when_the_face_barely_moves(
     let turn = series(12.0, |t| Some(turned(0.47, (-0.6 + 1.1 * (t - 5.0)).clamp(-0.6, 0.5))));
     assert_eq!(plan_detailed(&turn, CROP_W, &[], &CameraParams::default()).cuts, 0);
 }
+
+#[test]
+fn a_close_up_keeps_its_margin_inside_the_crop() {
+    // a close-up (face 0.2 of the frame = 63% of the crop) drifts 0.05 right: inside the safe box,
+    // but its edge would sit 2.5% of the crop from the crop edge; the 8% margin makes the camera
+    // follow with one eased move
+    let p = smooth_params_no_look();
+    let big = |cx: f64| CamFace { x: cx - 0.1, y: 0.2, w: 0.2, h: 0.3, score: 0.9, lm: None };
+    let s = series(12.0, |t| Some(big(0.5 + 0.05 * ((t - 4.0) / 0.5).clamp(0.0, 1.0))));
+    let pl = plan_detailed(&s, CROP_W, &[], &p);
+    assert_eq!(pl.cuts, 0, "{:?}", pl.keys);
+    assert!(pl.moves >= 1, "{:?}", pl.keys);
+    let x = at(&pl.keys, 11.0);
+    let margin = 0.08 * CROP_W;
+    assert!(x + CROP_W - 0.65 >= margin - 0.005 && 0.45 - x >= margin - 0.005, "crop {x} keys {:?}", pl.keys);
+    let st = motion_stats(&pl.keys);
+    assert_eq!(st.abrupt_starts, 0, "{st:?}");
+    // without the margin rule the camera would have held (face edge 2.5% from the crop edge)
+    let no_margin = plan_detailed(&s, CROP_W, &[], &CameraParams { margin_frac: 0.0, ..p });
+    assert_eq!(no_margin.moves, 0, "{:?}", no_margin.keys);
+}

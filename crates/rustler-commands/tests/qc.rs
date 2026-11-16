@@ -189,6 +189,22 @@ async fn qc_run_saves_report_and_links_render() {
     let saved: Value = serde_json::from_slice(&std::fs::read(&report_path).unwrap()).unwrap();
     assert_eq!(saved["passed"], true);
     assert!(saved["look_at"].is_array());
+    // the stored report is project-relative (a copied project must not point into the original folder)...
+    let rel_sheet = format!("clips/{}/qc/{}.jpg", fx.clip_id, fx.render_id);
+    let norm = |v: &Value| v.as_str().unwrap().replace('\\', "/");
+    assert_eq!(norm(&saved["contact_sheet"]), rel_sheet, "{saved}");
+    assert_eq!(norm(&saved["look_at"][0]), rel_sheet);
+    let cs = saved["checks"].as_array().unwrap().iter().find(|c| c["name"] == "contact_sheet").unwrap();
+    assert_eq!(norm(&cs["value"]), rel_sheet);
+    assert!(!saved["verdict"].as_str().unwrap().contains(&fx.root.display().to_string()), "{}", saved["verdict"]);
+    assert!(!std::fs::read_to_string(&report_path).unwrap().contains(&fx.root.display().to_string().replace('\\', "\\\\")));
+    // ...while the command output keeps absolute paths so the agent can open the image.
+    assert!(PathBuf::from(out["contact_sheet"].as_str().unwrap()).is_absolute());
+    // a report is read back with resolved paths, also when it was copied elsewhere
+    let back = rustler_media::qc::QcView::resolved_in(&serde_json::from_value(saved.clone()).unwrap(), &fx.root);
+    assert_eq!(back.report.contact_sheet, fx.root.join(&rel_sheet));
+    let slash = |s: String| s.replace('\\', "/");
+    assert!(slash(back.verdict.clone()).contains(&slash(fx.root.join(&rel_sheet).display().to_string())), "{}", back.verdict);
 
     let clip = fx.store().load_clip(&fx.clip_id).unwrap();
     assert_eq!(clip.revision, 2, "save_clip bumped the revision once");
@@ -298,8 +314,13 @@ async fn export_with_custom_name_and_captions_off_has_no_srt() {
     let mut clip = store.load_clip(&fx.clip_id).unwrap();
     let base = clip.revision;
     clip.captions.enabled = false;
+    // Rendered with captions off (export follows the clip as the render was made): a new render record.
+    let mut again = clip.renders[0].clone();
+    again.id = RenderId::new();
+    again.created_at = Utc::now();
+    clip.renders.push(again);
     store.save_clip(&mut clip, base).unwrap();
-    let out = fx.run("export.clip", json!({"clip_id": fx.clip_id, "name": "../evil:name"})).await.unwrap();
+    let out = fx.run("export.clip", json!({"clip_id": fx.clip_id, "name": "../evil:name", "allow_fail": true})).await.unwrap();
     let video = PathBuf::from(out["video"].as_str().unwrap());
     assert_eq!(video.parent().unwrap(), fx.root.join("exports"));
     assert_eq!(video.file_name().unwrap(), "_evil_name.mp4");

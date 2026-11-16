@@ -199,7 +199,7 @@ async fn suggest_inner(
 ) -> rustler_core::Result<(RenderRecord, QcView, bool, Vec<(Suggestion, Vec<Op>)>)> {
     let clip = store.load_clip(clip_id)?;
     let render = pick_render(&clip, render_id)?;
-    let saved = render.qc.as_ref().and_then(|p| store.read_json::<QcView>(p).ok());
+    let saved = render.qc.as_ref().and_then(|p| crate::qc_cmds::read_qc(store, p));
     let (v, ran) = match saved {
         Some(v) => (v, false),
         None => (execute_qc_with(ctx, store, clip, &render, !ctx.dry_run, faces).await?.0, true),

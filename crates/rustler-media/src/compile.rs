@@ -222,6 +222,10 @@ struct OverlayLook {
     default_anim: OverlayAnim,
 }
 
+/// Common minimum font size (fraction of the canvas width) of every hook preset; longer text wraps to
+/// two lines (and only then shrinks) so it stays inside the safe area.
+pub const HOOK_MIN_SIZE_FACTOR: f64 = 0.10;
+
 impl OverlayStyle {
     pub fn default_position_y(self) -> f64 {
         match self {
@@ -241,11 +245,11 @@ impl OverlayStyle {
             Self::HookTop => 0.085,
             Self::LowerThird => 0.05,
             Self::Plain => 0.065,
-            Self::HookBig => 0.10,
-            Self::HookBoxYellow => 0.085,
-            Self::HookOutline => 0.09,
-            Self::HookPov => 0.075,
-            Self::HookQuestion => 0.085,
+            Self::HookBig => HOOK_MIN_SIZE_FACTOR,
+            Self::HookBoxYellow => HOOK_MIN_SIZE_FACTOR,
+            Self::HookOutline => HOOK_MIN_SIZE_FACTOR,
+            Self::HookPov => HOOK_MIN_SIZE_FACTOR,
+            Self::HookQuestion => HOOK_MIN_SIZE_FACTOR,
         }
     }
     pub fn default_box(self) -> bool {

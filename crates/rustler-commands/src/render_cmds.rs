@@ -294,12 +294,20 @@ async fn render_run(ctx: Ctx, i: RenderRunIn) -> Result<RenderRunOut> {
         });
     }
     let two_pass = i.two_pass_loudness.unwrap_or(true);
+    // The picture/sound layers this render is made from (cover, copy and scores may change later
+    // without making it stale).
+    let snapshot_warning = crate::extras::snapshot_for_render(&store, &clip.id, &render_id)
+        .err()
+        .map(|e| format!("could not record the layers this render used ({e}); freshness checks fall back to file times"));
     let mut prepared =
         prepare(&paths, &store, &clip, quality, i.prefer_gpu.unwrap_or(true), &workdir, &out, two_pass).await?;
     let encoder = prepared.encoder.clone();
     let mut report =
         rustler_media::render_with_report(&paths, &prepared.compiled, duration, &ctx.cancel, &ctx.progress).await?;
     prepared.warnings.append(&mut report.warnings);
+    if let Some(w) = snapshot_warning {
+        prepared.warnings.push(w);
+    }
 
     // Re-load: the clip may have been edited while rendering; only the renders list changes here.
     let mut fresh = store.load_clip(&clip.id)?;

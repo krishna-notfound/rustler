@@ -43,7 +43,7 @@ Hook formulas (pick the one the moment really supports; never promise what the c
 | Controversy | a take people want to argue with | "Grammar doesn't matter. Here's what does." |
 | Cold open | the strongest line first, then cut back to the setup | open on the punchline, then "here's what happened" |
 
-**Hook styles.** `rustler overlay hook-styles` lists the viral presets; each animates in and can add a whoosh at its start:
+**Hook styles.** `rustler overlay hook-styles` lists the viral presets; each animates in and can add a whoosh at its start. All five start at the same size (0.10 of the width); long text wraps to two lines and only then shrinks to stay inside the safe area:
 
 | Style | Look and entry | Use for |
 |---|---|---|

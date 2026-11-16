@@ -40,7 +40,15 @@ YuNet), no diarization or recognition model.
 - No engine / missing media / vertical source → layout skipped with a `skipped` decision; cleanup still runs.
 - Approximate word timings (caption-based transcripts) → no filler/pause trim (decision says why).
 - `zoom-fit` is stored as a region layout with `preset: "zoom-fit"` (not a `layout::PRESETS` entry; override with
-  `clip set-layout --preset blur-fit|center-crop`).
+  `clip set-layout --preset blur-fit|center-crop`). Its source rect is the shot's content box (engine `g.box`,
+  10th/90th percentile over the shot, 3 % padding), used when it gains >= 1.25x over blur-fit (capped 2.5x).
+- Cuts: unconfirmed scan peaks need diff >= 0.3; where the faces change between two samples the strongest
+  peak between them counts from 0.15; `scenes.json` cuts snap to the strongest peak within 0.4 s.
+- After cleanup, pieces < 0.6 s join the segment that continues them in the source (decision `fragment`),
+  unless their layout carries on from the piece across the cut.
+- Camera: the face box keeps >= 8 % of the crop width inside both crop edges (`CameraParams.margin_frac`);
+  a move running at a shot cut stops there.
+- `override_with` lists have no repeated commands.
 - The report is stored in extras `smart_defaults` only when something was applied.
 
 ## Acceptance Criteria
@@ -56,3 +64,11 @@ YuNet), no diarization or recognition model.
   14/14, 8/8, 6/6 vs track-speaker 0/14, 8/8, 6/6; Vance excerpt 53/70 (76 %) vs 70/70; Boyle 28/43 (65 %) vs
   43/43. Light mouth motion is reliable on medium faces, weak on 4-6 % wide-shot faces (switches ~2 s late, no
   identity across cuts) — there `crop track-speaker` (diarization + SFace) stays better.
+- 2026-11-16: trial-2 tuning (copy of the trial-2 project, clips 02/04/05 re-created with `clip create`, before vs
+  after binary, same engine home). Graphics: 04 and 02 infographics zoom-fit to the content box x 0.22-0.78/0.80,
+  y 0.06-1.00 (1.7-1.8x larger than blur-fit, logo out) instead of blur-fit. Clip 04 split moved 20.80 -> 19.84 s
+  (first close-up frame; the cut's frame difference is 0.23, under the 0.3 floor; confirmed by the faces).
+  Duplicate `override_with` entries gone (04: 2 commands/1 unique -> 2/2; 02: 4/2 -> 2/2). Fragment merge: the
+  02 0.275 s piece is kept on purpose (merging it into the centre crop showed the wide shot cropped for 7 frames;
+  verified on a preview frame). Face margin: 05 samples with the framed face < 6.5 % from a crop edge 19 -> 15;
+  a margin move crossing a shot cut made 02 worse until moves stop at cuts (fixed, 0 cut-off faces).

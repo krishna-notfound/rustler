@@ -472,9 +472,12 @@ pub fn render_is_fresh(store: &ProjectStore, clip: &Clip, quality: Option<Render
         reference = reference.max(q);
     }
     let dir = store.clip_dir(&clip.id);
-    ["clip.json", "extras.json"]
-        .iter()
-        .all(|f| mtime(&dir.join(f)).is_none_or(|t| t <= reference + FRESH_SLACK))
+    let newer = |f: &str| mtime(&dir.join(f)).is_some_and(|t| t > reference + FRESH_SLACK);
+    if newer("clip.json") {
+        return false;
+    }
+    // A newer sidecar only matters when its picture/sound keys changed (cover, copy and scores do not).
+    !newer("extras.json") || extras::render_extras_unchanged(store, &clip.id, &r.id) == Some(true)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -754,7 +757,7 @@ async fn export_batch(ctx: Ctx, i: ExportBatchIn) -> Result<ExportBatchOut> {
                     clip = c;
                 }
             }
-            if let Some(q) = clip.renders.last().and_then(|r| r.qc.as_ref()).and_then(|p| store.read_json::<QcView>(p).ok()) {
+            if let Some(q) = clip.renders.last().and_then(|r| r.qc.as_ref()).and_then(|p| crate::qc_cmds::read_qc(&store, p)) {
                 qc_passed = q.report.passed;
                 if !q.report.passed {
                     let (r, f) = qc_failures(&q);

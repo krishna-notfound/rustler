@@ -13,7 +13,9 @@ Lite install only (OpenCV headless + the YuNet model, no diarization, no face re
   the frame-to-frame difference (histogram + grid of the normalised luma, so dark footage cuts are
   as visible as bright ones) gives frame-accurate cut candidates (``peaks``: local maxima with the
   median difference around them). Every ``stats_every``-th sample also gets graphics statistics
-  (``g``): share of flat 8x8 blocks, edge density and the horizontal extent of the edges.
+  (``g``): share of flat 8x8 blocks, edge density, the horizontal extent of the edges and the
+  content bounding box (``box``: textured/edged blocks as connected components, corner logos and
+  specks left out) that smart layouts crop graphics to.
 
 Frames are read sequentially (one seek to ``start``), so the burst frames and the scan are cheap.
 """
@@ -45,6 +47,16 @@ PEAK_FLOOR = 0.12
 PEAK_BASE_SECONDS = 1.0
 #: Contrast floor (grey levels) for the mouth-motion normalisation.
 CONTRAST_FLOOR = 8.0
+#: Content box: an 8x8 block (320 px wide frame) is content with this luma std ...
+BOX_BLOCK_STD = 4.0
+#: ... or this many Canny edge pixels.
+BOX_BLOCK_EDGES = 3
+#: Components smaller than this share of all content blocks are specks.
+BOX_MIN_SHARE = 0.02
+#: Components entirely inside this outer band of the frame (share of width/height) ...
+BOX_EDGE_BAND = 0.18
+#: ... and smaller than this share of the largest component are logos/watermarks.
+BOX_EDGE_SMALL = 0.25
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:
@@ -206,7 +218,53 @@ def graphics_stats(gray) -> Dict[str, float]:
         x_hi = float(np.searchsorted(cum, 0.95)) / sw
     else:
         x_lo, x_hi = 0.5, 0.5
-    return {"flat": round(flat, 4), "edges": round(density, 4), "x_lo": round(x_lo, 4), "x_hi": round(x_hi, 4)}
+    out = {"flat": round(flat, 4), "edges": round(density, 4), "x_lo": round(x_lo, 4), "x_hi": round(x_hi, 4)}
+    box = content_box(blocks.std(axis=(1, 3)), edges, bh, bw)
+    if box is not None:
+        out["box"] = box
+    return out
+
+
+def content_box(block_std, edges, bh: int, bw: int) -> Optional[List[float]]:
+    """Bounding box ``[x0, y0, x1, y1]`` (0..1) of the frame's content on a flat background: the
+    8x8 blocks with texture or edges, closed by one block, as connected components. Small
+    components near the frame edge (channel logos, watermarks) and specks are left out. ``None``
+    when nothing qualifies."""
+    import cv2
+    import numpy as np
+
+    if bh < 2 or bw < 2:
+        return None
+    ecount = (edges[: bh * 8, : bw * 8] > 0).reshape(bh, 8, bw, 8).sum(axis=(1, 3))
+    mask = ((block_std >= BOX_BLOCK_STD) | (ecount >= BOX_BLOCK_EDGES)).astype(np.uint8)
+    if not mask.any():
+        return None
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+    n, _labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    comps = []
+    for k in range(1, n):
+        x, y, w, h, area = (int(v) for v in stats[k])
+        comps.append((x / bw, y / bh, (x + w) / bw, (y + h) / bh, area))
+    if not comps:
+        return None
+    total = sum(c[4] for c in comps)
+    largest = max(c[4] for c in comps)
+    kept = []
+    for x0, y0, x1, y1, area in comps:
+        if area < BOX_MIN_SHARE * total:
+            continue
+        at_edge = x0 >= 1 - BOX_EDGE_BAND or x1 <= BOX_EDGE_BAND or y1 <= BOX_EDGE_BAND or y0 >= 1 - BOX_EDGE_BAND
+        if at_edge and area < BOX_EDGE_SMALL * largest:
+            continue
+        kept.append((x0, y0, x1, y1))
+    if not kept:
+        return None
+    return [
+        round(min(c[0] for c in kept), 4),
+        round(min(c[1] for c in kept), 4),
+        round(max(c[2] for c in kept), 4),
+        round(max(c[3] for c in kept), 4),
+    ]
 
 
 def active(params: Dict[str, Any], progress: Callable[..., None]) -> Dict[str, Any]:
