@@ -477,3 +477,17 @@ then wave C (timeline doc + insert/cold-open/merge/duplicate/speed/freeze, cards
   colour/size/emoji/hide); all in the single render graph, word-anchored items follow re-cuts. Workspace tests on the
   branch: 0 failures. Registry now 134 commands. Note: `history undo` still covers clip.json only (layers via their
   own remove) — timeline doc task will extend undo to all layers.
+
+## 2026-11-17 — PAUSED again (user closing laptop) — how to resume
+On `main` (pushed): wave A, settings + posting/campaigns, director/retention, smooth camera, layers. 134 commands.
+Not yet released: v0.1.2 (Muse still on v0.1.1).
+Paused mid-task (WIP commits pushed):
+| Branch | Task | State |
+|---|---|---|
+| `worktree-agent-a5f8e3d0367d3ae9b` | 1.4 agent graphics (`asset.render_card`, `text.create_style`) — Sonnet | code + tests committed; was rendering 2 real cards |
+| `worktree-agent-a03c0c8f29f4f51ee` | 1.6 style references (`reference.import/analyze`) — Sonnet | WIP; was running measures on trial clip proxies |
+Not started (stopped right at launch, nothing saved): **timeline doc + timeline edit commands (Opus)** and
+**smart defaults + light active speaker (Opus)** — relaunch with the same briefs (plan wave C/D).
+Resume order: finish cards + references → merge; launch timeline + smart defaults; then templates (Opus, needs the
+timeline doc), hooks/captions presets, cleanup/cover; then knowledge refresh, `clips.auto`, release v0.2.0 + trial.
+Before releasing: run `rustler setup run` with the new build so the engine has the landmark output (look-room).
