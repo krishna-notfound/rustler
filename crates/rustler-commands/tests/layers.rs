@@ -381,10 +381,8 @@ async fn render_with_logo_mask_cutaways_and_keyword_colour() {
         .unwrap();
     let id = c["id"].as_str().unwrap().to_string();
     call(&reg, &ctx, "clip.add_segment", json!({"clip_id": id, "source_id": src.id, "start": 5.05, "end": 7.0, "layout": "center-crop"})).await.unwrap();
-    // Center crop of 1920 wide: x 656..1264 of the source -> the logo (1500..1800) is outside it.
-    // So put the mask where the crop shows source x 1100..1264 (canvas right edge) after moving the
-    // logo test to a box over the canvas top-right instead: a white box drawn by an image layer
-    // would be ours, so mask a region of the source picture we know: the whole top-right corner.
+    // A magenta box mask over the canvas top-right corner for the first 2 s (the logo-hiding
+    // render with pixel checks is in rustler-media's tests/layers.rs).
     call(&reg, &ctx, "mask.add", json!({"clip_id": id, "kind": "box", "color": "#FF00FF", "rect": rect(0.7, 0.0, 0.3, 0.06), "start": 0.0, "end": 2.0}))
         .await
         .unwrap();
