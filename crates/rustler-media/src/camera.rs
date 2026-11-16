@@ -583,7 +583,15 @@ fn boundaries(times: &[f64], cx: &[f64], widths: &[f64], events: &[CamEvent], t0
         if used[k] {
             continue;
         }
-        let i = times.partition_point(|&t| t < e.t);
+        // The piece starts where the face path actually changes near the event (a caller may
+        // switch faces a little before the turn starts), else at the event.
+        let snap = (1..n)
+            .filter(|&j| (times[j] - e.t).abs() <= 0.5)
+            .map(|j| (j, (cx[j] - cx[j - 1]).abs()))
+            .max_by(|a, b| a.1.total_cmp(&b.1))
+            .filter(|&(_, d)| d > 0.01)
+            .map(|(j, _)| j);
+        let i = snap.unwrap_or_else(|| times.partition_point(|&t| t < e.t));
         if i > 0 && i < n {
             out.push((i, e.t, e.kind));
         }

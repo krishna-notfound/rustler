@@ -21,7 +21,8 @@ use crate::source_cmds::load_source_checked;
 use rustler_captions::{CaptionWord, Preset, write_ass_colored_with, write_ass_with};
 use rustler_core::{Clip, ClipId, ErrorCode, ProjectStore, RustlerError, SegmentId, Source, SourceId, TimeMap, Word};
 use rustler_media::compile::{CropKey, TransitionMap};
-use rustler_media::facepath::{FaceBox, FaceSample, SmoothParams, crop_keys};
+use rustler_media::camera::{self, CamEvent, CamSample, CameraParams, CameraStyle, EventKind, SwitchStyle};
+use rustler_media::facepath::{FaceBox, FaceSample, SmoothParams};
 use rustler_registry::{Annotations, Ctx, Example, Registry, typed};
 use rustler_tools::ToolPaths;
 use schemars::JsonSchema;
@@ -399,6 +400,11 @@ pub struct ActiveTrack {
 }
 
 #[derive(Deserialize)]
+struct LandmarkResult {
+    samples: Vec<CamSample>,
+}
+
+#[derive(Deserialize)]
 struct ActiveResult {
     samples: Vec<ActiveSample>,
     #[serde(default)]
@@ -767,8 +773,38 @@ pub fn speaker_face_samples(samples: &[ActiveSample], choices: &[TurnChoice]) ->
     out
 }
 
-/// Smoothing for speaker-following crops: quicker than `crop.track_face` so a change of speaker
-/// is a short pan, not a drift.
+/// Camera events for the planner: a speaker switch at the start of each turn whose face differs
+/// from the previous decided face (a sentence boundary), and a shot cut wherever two consecutive
+/// samples with faces stop looking like the same shot.
+pub fn speaker_events(samples: &[ActiveSample], choices: &[TurnChoice]) -> Vec<CamEvent> {
+    let mut out = Vec::new();
+    let mut prev_face: Option<u32> = None;
+    for c in choices {
+        if let Some(id) = c.face_id {
+            if prev_face.is_some_and(|p| p != id) {
+                out.push(CamEvent { t: c.start, kind: EventKind::SpeakerSwitch });
+            }
+            prev_face = Some(id);
+        }
+    }
+    let mut prev: Option<&ActiveSample> = None;
+    for s in samples.iter().filter(|s| !s.faces.is_empty()) {
+        if let Some(p) = prev.filter(|p| !same_shot(p, s)) {
+            out.push(CamEvent { t: (p.t + s.t) / 2.0, kind: EventKind::ShotCut });
+        }
+        prev = Some(s);
+    }
+    out.sort_by(|a, b| a.t.total_cmp(&b.t));
+    out
+}
+
+/// Planner parameters for speaker crops (the style and switch choice come from the command).
+pub fn speaker_camera(style: CameraStyle, look_room: bool, switch: SwitchStyle) -> CameraParams {
+    CameraParams { look_room, switch, ..CameraParams::for_style(style) }
+}
+
+/// Smoothing for speaker-following crops (the pre-planner filter chain, kept for comparison
+/// tests): quicker than `crop.track_face` so a change of speaker is a short pan, not a drift.
 pub fn speaker_smooth() -> SmoothParams {
     SmoothParams { median_window: 3, min_cutoff: 2.0, beta: 0.05, dead_zone: 0.02, max_speed: 1.6, hold_keys: true }
 }
@@ -1091,6 +1127,15 @@ pub struct TrackSpeakerIn {
     pub clip_id: ClipId,
     /// All center-crop segments when omitted.
     pub segment_id: Option<SegmentId>,
+    /// Camera behaviour within a turn: `smooth` (default; holds still, eased moves only when the
+    /// face would leave a safe box), `locked` (one framing per turn/shot), `follow` (tighter).
+    pub style: Option<CameraStyle>,
+    /// Frame toward the side the speaker faces (face landmarks; costs one extra face pass).
+    /// Default true.
+    pub look_room: Option<bool>,
+    /// Speaker switches: `auto` (default: hard cut on the turn start when the reframe is wider
+    /// than 40% of the frame, else an eased pan of at most 0.6 s), `cut` or `pan`.
+    pub switch: Option<SwitchStyle>,
 }
 
 #[derive(Serialize, JsonSchema, Debug)]
@@ -1121,6 +1166,13 @@ pub struct TrackedSpeakerSegment {
     pub samples: usize,
     /// Share of samples with at least one face (0..1).
     pub faces_found_ratio: f64,
+    pub style: CameraStyle,
+    /// Eased camera moves (reframes and speaker-switch pans).
+    pub moves: usize,
+    /// Hard crop cuts (speaker-switch cuts and source shot cuts).
+    pub cuts: usize,
+    /// Mean look-room shift, signed fraction of the crop width (> 0 = more room on the right).
+    pub look_room_shift: f64,
 }
 
 #[derive(Serialize, JsonSchema, Debug)]
@@ -1173,6 +1225,9 @@ pub async fn crop_track_speaker(ctx: Ctx, i: TrackSpeakerIn) -> Result<TrackSpea
     let paths = ToolPaths::from_home(&ctx.home);
     let engine = spawn_engine(&paths).await?;
     let tm = TimeMap::from_segments(&clip.segments);
+    let style = i.style.unwrap_or_default();
+    let look_room = i.look_room.unwrap_or(true);
+    let cam_params = speaker_camera(style, look_room, i.switch.unwrap_or_default());
     let mut out: Vec<TrackedSpeakerSegment> = Vec::new();
     let mut warnings = Vec::new();
     let mut failure = None;
@@ -1209,7 +1264,23 @@ pub async fn crop_track_speaker(ctx: Ctx, i: TrackSpeakerIn) -> Result<TrackSpea
             warnings.push(format!("segment {}: no face shows mouth movement (profile views, tiny faces or very low frame rate?); speaker choice is a guess", seg.id));
         }
         let face_samples = speaker_face_samples(&res.samples, &choices);
-        let keys = crop_keys(&face_samples, crop_w, &speaker_smooth());
+        let cam_samples: Vec<CamSample> = if look_room {
+            // speakers.active has no landmarks: one faces.track pass on the same sample grid.
+            let lp = json!({"video_path": video_of(&store, &source), "start": seg.start, "end": seg.end, "fps": ACTIVE_FPS});
+            let lres: Result<LandmarkResult> = engine.call("faces.track", lp, &ctx.progress, &ctx.cancel).await;
+            match lres {
+                Ok(r) => camera::attach_landmarks(&face_samples, &r.samples),
+                Err(e) => {
+                    warnings.push(format!("segment {}: no look-room (face landmarks unavailable: {})", seg.id, e.message));
+                    camera::from_face_samples(&face_samples)
+                }
+            }
+        } else {
+            camera::from_face_samples(&face_samples)
+        };
+        let events = speaker_events(&res.samples, &choices);
+        let plan = camera::plan_detailed(&cam_samples, crop_w, &events, &cam_params);
+        let keys = plan.keys.clone();
         let mapped = tm.segments().iter().find(|m| m.segment_id == seg.id);
         let to_out = |t: f64| mapped.map_or(t - seg.start, |m| m.out_start + (t - seg.start));
         let turns_out = choices
@@ -1228,7 +1299,18 @@ pub async fn crop_track_speaker(ctx: Ctx, i: TrackSpeakerIn) -> Result<TrackSpea
                 reason: c.reason.clone(),
             })
             .collect();
-        out.push(TrackedSpeakerSegment { segment_id: seg.id.clone(), keys, turns: turns_out, faces: res.tracks, samples: res.samples.len(), faces_found_ratio: round(ratio, 3) });
+        out.push(TrackedSpeakerSegment {
+            segment_id: seg.id.clone(),
+            keys,
+            turns: turns_out,
+            faces: res.tracks,
+            samples: res.samples.len(),
+            faces_found_ratio: round(ratio, 3),
+            style,
+            moves: plan.moves,
+            cuts: plan.cuts,
+            look_room_shift: plan.look_room_shift,
+        });
     }
     engine.shutdown().await;
     if let Some(e) = failure {
@@ -1284,10 +1366,13 @@ pub fn register(reg: &mut Registry) {
     ));
     reg.register(typed(
         "crop.track_speaker",
-        "Make the center-crop follow the ACTIVE speaker (diarized turns + mouth movement of each face); reports the face chosen per turn",
+        "Make the center-crop follow the ACTIVE speaker (diarized turns + mouth movement of each face) like a camera operator: holds still within a turn (style smooth|locked|follow), cuts or pans on speaker switches (switch auto|cut|pan), look-room toward the side the speaker faces; reports the face chosen per turn",
         &["clip_id"],
         long,
-        vec![Example { description: "Follow whoever is talking in a two-person interview", cli: "rustler crop track-speaker clip_01k..." }],
+        vec![
+            Example { description: "Follow whoever is talking in a two-person interview", cli: "rustler crop track-speaker clip_01k..." },
+            Example { description: "Always cut between speakers, one locked framing per turn", cli: "rustler crop track-speaker clip_01k... --switch cut --style locked" },
+        ],
         crop_track_speaker,
     ));
 }
@@ -1295,6 +1380,7 @@ pub fn register(reg: &mut Registry) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustler_media::facepath::crop_keys;
 
     fn turn(start: f64, end: f64, speaker: &str) -> SpeakerTurn {
         SpeakerTurn { start, end, speaker: speaker.to_string() }
@@ -1577,6 +1663,33 @@ mod tests {
         assert!(bad < rate, "{bad} vs {rate}");
     }
 
+    /// The camera planner on the same real footage: still on the talking person, and it moves
+    /// like an operator (no wobble, no move starting at full speed, few moves).
+    #[test]
+    fn real_footage_planned_camera_is_calm_and_on_the_speaker() {
+        let (samples, turns) = real_fixture();
+        let choices = choose_faces(&samples, &turns);
+        let owner = owner_map(&samples, &turns);
+        let (guest, host) = (owner["S1"].0, owner["S2"].0);
+        let truth = [(8.3, 16.5, guest), (17.2, 39.8, host), (41.0, 95.0, guest)];
+        let cam = camera::from_face_samples(&speaker_face_samples(&samples, &choices));
+        let events = speaker_events(&samples, &choices);
+        assert!(events.iter().any(|e| e.kind == EventKind::SpeakerSwitch), "{events:?}");
+        for style in [CameraStyle::Smooth, CameraStyle::Locked, CameraStyle::Follow] {
+            let plan = camera::plan_detailed(&cam, 0.3164, &events, &speaker_camera(style, false, SwitchStyle::Auto));
+            let rate = crop_hit_rate(&samples, &plan.keys, 0.3164, &truth);
+            assert!(rate >= 0.9, "{style:?}: crop contained the speaker in only {:.0}% of samples", rate * 100.0);
+            let st = camera::motion_stats(&plan.keys);
+            let minutes = (samples.last().unwrap().t - samples[0].t) / 60.0;
+            assert_eq!(st.abrupt_starts, 0, "{style:?} {st:?}");
+            assert!(st.jitter < 0.004, "{style:?} {st:?}");
+            assert!((st.moves as f64) / minutes <= 12.0, "{style:?} {st:?}");
+        }
+        // the old filter chain on the same data: robotic starts (linear ramps between hold keys)
+        let old = camera::motion_stats(&crop_keys(&speaker_face_samples(&samples, &choices), 0.3164, &speaker_smooth()));
+        assert!(old.abrupt_starts > 0, "{old:?}");
+    }
+
     /// Second real excerpt (public-domain White House fireside chat, medium and very wide shots where
     /// the camera slowly zooms, faces 2-4 % of the width, close-ups of the guest at the end):
     /// guest speaks 0-6 s and 46-105 s, host 6-45 s.
@@ -1594,6 +1707,13 @@ mod tests {
         let keys = crop_keys(&speaker_face_samples(&samples, &choices), 0.3164, &speaker_smooth());
         let rate = crop_hit_rate(&samples, &keys, 0.3164, &[(0.5, 5.7, guest), (6.3, 44.8, host), (45.8, 104.9, guest)]);
         assert!(rate >= 0.95, "crop contained the speaker in only {:.0}% of samples: {keys:?}", rate * 100.0);
+        // the camera planner keeps the speaker in frame as well, and moves calmly
+        let cam = camera::from_face_samples(&speaker_face_samples(&samples, &choices));
+        let plan = camera::plan_detailed(&cam, 0.3164, &speaker_events(&samples, &choices), &speaker_camera(CameraStyle::Smooth, false, SwitchStyle::Auto));
+        let rate = crop_hit_rate(&samples, &plan.keys, 0.3164, &[(0.5, 5.7, guest), (6.3, 44.8, host), (45.8, 104.9, guest)]);
+        assert!(rate >= 0.95, "planned crop contained the speaker in only {:.0}% of samples", rate * 100.0);
+        let st = camera::motion_stats(&plan.keys);
+        assert!(st.abrupt_starts == 0 && st.jitter < 0.004, "{st:?}");
         // The old behaviour (largest face, no identity) put the crop on the host in the first turn.
         let first = &choices[0];
         assert_eq!(first.face_id, Some(guest));
