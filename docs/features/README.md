@@ -3,14 +3,10 @@
 One file per feature: `fNN_<about_it>.md`, numbered in build order (`f01_`, `f02_`, ...).
 Copy `_feature-template.md` to start a new one. **A feature file must exist and be filled in
 before any code for that feature is written.**
-
 Design source: `docs/superpowers/specs/2026-11-15-rustler-design.md` (§ refs below point there).
 Research source for each feature: `docs/research/00-comparison-matrix.md` §2 (best source per capability).
-
 ## Index
-
 Status reflects `docs/progress-log.md` (2026-11-15) and the docs pass that ran the commands against a demo project. "Not written" means no feature file exists yet; f13 is dropped (no AI APIs) and f28 is not started.
-
 | ID | File | Area (as built) | Slice | Depends on | Status |
 | -- | ---- | ---- | ----- | ---------- | ------ |
 | f01 | `f01_workspace_and_bootstrap.md` | Cargo workspace, uv engine project, `setup`, `doctor` | 1 | — | Verified |
@@ -45,10 +41,9 @@ Status reflects `docs/progress-log.md` (2026-11-15) and the docs pass that ran t
 | f29 | `f29_speakers.md` | analyze.speakers (diarization), speaker.rename, caption.speaker_colors, crop.track_speaker | later | f06, f14 | Built |
 | f30 | `f30_lite_by_default.md` | Lite install by default (base engine, whisper base), heavy analyzers opt-in (`setup run --with ...`), QC face checks opt-in, `analyze quick --transcribe`, open music/assets (`asset add --url`, `source:<id>` audio) | later | f01, f21, f23 | Built |
 | f31 | `f31_director_retention.md` | Director layer: `clip.retention` (retention map, dead zones + fix commands, 0-100 retention score), `clip.score_set` (agent hook/flow/value/trend), `campaign.analyze` (rules, payout strategy, clip count, checklist); guide `director-retention`, prompts `direct_campaign`, `hook_lab` | v2 | f18, f20, f21, f22 | Built |
-
 The 5-hour build (2026-11-15) delivered f01–f10, f11, f12, f14, f16, f17 and f24; the "complete everything" phase then added f07b, f15, f17 (rest), f18–f23, f25–f27 and f29 (118 registered commands). The original 5-hour scope is in
 `docs/superpowers/plans/2026-11-15-slice1-first-real-clip.md` (section "5-HOUR SCOPE").
-
 Status values: `Planned` → `Specced` → `In progress` → `Built` → `Verified` (or `Deferred`).
 `Verified` means the progress log records an end-to-end run or real tests passing; `Built` means merged
 without a recorded test or live run.
+| f14 | `f14_face_tracking_and_reframe.md` | YuNet tracks + landmarks, offline camera planner (styles locked/smooth/follow, look-room, eased moves, crop cuts), crop.track_face / crop.clear, QC camera_motion (`crop.track_speaker` is in f29) | 3 | f04, f08 | Built |
