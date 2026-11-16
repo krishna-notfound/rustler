@@ -341,9 +341,10 @@ async fn starter_templates_validate() {
         assert_eq!(t["captions"]["preset"], "hormozi-pop");
         assert!(t["hook"]["max_words"].as_u64().unwrap() <= 7);
         assert_eq!(t["progress_bar"]["enabled"], true);
-        assert_eq!(t["effects"][0]["kind"], "punch-in");
+        // Starters never zoom by themselves (user rule: zooms are the agent's decision).
+        assert!(t["effects"].as_array().is_none_or(|e| e.is_empty()), "{t}");
     }
-    // A longer clip (8.5 s) gets the every-N-seconds punch-ins.
+    // A longer clip (8.5 s): hook restyled, framing left alone, no zooms added.
     let c = f.call("clip.create", json!({"name": "long", "source_id": f.src.id, "start": 1.0, "end": 9.5})).await;
     let id = c["id"].as_str().unwrap().to_string();
     f.call("overlay.add_text", json!({"clip_id": id, "text": "He quit his job"})).await;
@@ -353,19 +354,7 @@ async fn starter_templates_validate() {
     assert_eq!(tr["video"][0]["layout"]["preset"], "center-crop", "podcast-viral leaves framing alone");
     assert_eq!(tr["text"][0]["font_size_factor"], 0.1);
     assert_eq!(tr["text"][0]["end"], 3.0);
-    // Planned punch-ins (punch-in planner): inside the clip, away from its ends and the hook's
-    // end, varied amount 1.08..1.20, tagged by the template, no overlaps.
-    let fx = tr["effects"].as_array().unwrap();
-    assert!(!fx.is_empty() && fx.len() <= 3, "{fx:?}");
-    let mut prev_end = 0.0;
-    for e in fx {
-        let (s, en, a) = (e["start"].as_f64().unwrap(), e["end"].as_f64().unwrap(), e["amount"].as_f64().unwrap());
-        assert!(s >= 0.5 && en <= 8.0 && en > s && s >= prev_end, "{e}");
-        assert!((s - 3.0).abs() >= 0.8 && (en - 3.0).abs() >= 0.8, "{e} too close to the hook's end");
-        assert!((1.08..=1.2).contains(&a), "{e}");
-        assert_eq!(e["by_template"], "podcast-viral@1");
-        prev_end = en;
-    }
+    assert!(tr["effects"].as_array().is_none_or(|e| e.is_empty()), "podcast-viral added zooms: {}", tr["effects"]);
 
     // streamer-split re-lays a center-crop clip as a split with the hook on the seam.
     let r = f.call("template.apply", json!({"name": "streamer-split", "clip_ids": [id]})).await;
@@ -377,10 +366,7 @@ async fn starter_templates_validate() {
     assert_eq!(doc["tracks"]["text"][0]["position_y"], 0.5);
     assert_eq!(doc["tracks"]["audio"]["denoise"], "light");
     assert_eq!(doc["template_ref"]["id"], "streamer-split");
-    let fx = doc["tracks"]["effects"].as_array().unwrap();
-    assert!(!fx.is_empty() && fx.len() <= 2, "previous template's punch-ins replaced: {fx:?}");
-    assert!(fx.iter().all(|e| e["by_template"] == "streamer-split@1"), "{fx:?}");
-    assert!(fx.iter().all(|e| (1.08..=1.15).contains(&e["amount"].as_f64().unwrap())), "{fx:?}");
+    assert!(doc["tracks"]["effects"].as_array().is_none_or(|e| e.is_empty()), "streamer-split added zooms");
 
     // clip.create --template, and config template.default.
     let c = f.call("clip.create", json!({"name": "t", "source_id": f.src.id, "start": 1.0, "end": 7.0, "template": "podcast-viral"})).await;

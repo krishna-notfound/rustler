@@ -21,7 +21,7 @@ Rustler calls no AI APIs: you choose, you look at the images. Never upload or po
 ## 1. Choose or capture the template
 - `rustler template list` shows project, global and built-in templates; `rustler template show <name>` prints the
   JSON, what it needs (`missing`) and its `notes` (what the template does not do for you).
-- Starters: `podcast-viral` (hormozi-pop captions, big boxed hook, punch-ins, progress bar, -14 LUFS; leaves
+- Starters: `podcast-viral` (hormozi-pop captions, big boxed hook, progress bar, -14 LUFS; no automatic zooms, you add punch-ins yourself; leaves
   framing alone) and `streamer-split` (webcam-over-gameplay split, hook on the seam).
 - No template yet: style **one** clip by hand until it looks right (LOOK at `rustler render preview-frame`),
   then `rustler template create <name> --from-clip {{from_clip}}`. Read `refs` and `notes` in the output: they

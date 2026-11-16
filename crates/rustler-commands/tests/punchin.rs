@@ -33,6 +33,15 @@ fn fx() -> Fx {
     Fx { _tmp: tmp, store, ctx, reg: registry(), src, sfx: sfx.to_string_lossy().into_owned() }
 }
 
+/// An agent-written template that asks for emphasis punch-ins (starters never zoom by themselves).
+async fn zooms_template(f: &Fx) {
+    f.call(
+        "template.create",
+        json!({"name": "zooms", "template": {"effects": [{"kind": "punch-in", "at": "emphasis", "duration": 5.0, "amount": 1.06, "amount_max": 1.12, "per_10s": 1.5}]}}),
+    )
+    .await;
+}
+
 impl Fx {
     async fn call(&self, name: &str, v: Value) -> Value {
         call(&self.reg, &self.ctx, name, v).await.unwrap_or_else(|e| panic!("{name}: {} ({:?})", e.message, e.hint))
@@ -74,35 +83,48 @@ fn max_in_10s(ch: &[f64]) -> usize {
 async fn template_punch_ins_are_paced_snapped_and_varied() {
     let f = fx();
     let id = f.clip(1.0, 52.0).await; // 51 s, like trial-2 clip 02
+    // Starters never zoom by themselves (user rule: zooms are the agent's decision).
     f.call("template.apply", json!({"name": "podcast-viral", "clip_ids": [id]})).await;
+    assert!(effects(&f.doc(&id).await).is_empty(), "a starter added zooms");
+    // An agent's own template that asks for emphasis punch-ins gets rare, held, subtle ones.
+    f.call(
+        "template.create",
+        json!({"name": "my-zooms", "template": {"effects": [{"kind": "punch-in", "at": "emphasis", "duration": 5.0, "amount": 1.06, "amount_max": 1.12, "per_10s": 1.5}]}}),
+    )
+    .await;
+    f.call("template.apply", json!({"name": "my-zooms", "clip_ids": [id]})).await;
     let doc = f.doc(&id).await;
     let fx = effects(&doc);
+    assert!(!fx.is_empty());
     let ch = changes(&fx, &[]);
     let per10 = ch.len() as f64 * 10.0 / 51.0;
-    assert!((3.5..=5.0).contains(&per10), "{per10:.2} changes / 10 s: {fx:?}");
-    assert!(max_in_10s(&ch) <= 5, "a 10 s window has {} changes", max_in_10s(&ch));
+    assert!((0.8..=2.0).contains(&per10), "{per10:.2} changes / 10 s: {fx:?}");
+    assert!(max_in_10s(&ch) <= 2, "a 10 s window has {} changes", max_in_10s(&ch));
+    assert!(fx.iter().all(|e| span(e).1 - span(e).0 >= 2.5), "held, not pumped: {fx:?}");
     let amounts: Vec<f64> = fx.iter().map(|e| e["amount"].as_f64().unwrap()).collect();
-    assert!(amounts.iter().all(|a| (1.08..=1.2).contains(a)), "{amounts:?}");
-    assert!(amounts.windows(2).all(|w| (w[0] - w[1]).abs() >= 0.025), "{amounts:?}");
+    assert!(amounts.iter().all(|a| (1.06..=1.12).contains(a)), "{amounts:?}");
+    assert!(amounts.windows(2).all(|w| (w[0] - w[1]).abs() >= 0.01), "{amounts:?}");
     // Each zoom starts 0.04 s before a word start (source word start - 1.0 clip offset).
     for e in &fx {
         let s = span(e).0 + 0.04 + 1.0 - 0.5;
         let k = (s / 0.3).round();
         assert!((s - k * 0.3).abs() < 0.011, "{e} does not start on a word");
-        assert_eq!(e["by_template"], "podcast-viral@1");
+        assert_eq!(e["by_template"], "my-zooms@1");
     }
 }
 
 #[tokio::test]
 async fn no_punch_ins_on_graphics_or_near_cuts() {
     let f = fx();
-    let id = f.clip(1.0, 31.0).await;
-    // Split at 10 and 20; the middle part shows a graphic in blur-fit.
+    zooms_template(&f).await;
+    let id = f.clip(1.0, 51.0).await;
+    // Split at 10 and 20; the middle part shows a graphic in blur-fit (the 10 s pieces around it are
+    // too short for a held punch-in; the 30 s tail has room).
     f.call("edit.split", json!({"clip_id": id, "out_t": 10.0})).await;
     f.call("edit.split", json!({"clip_id": id, "out_t": 20.0})).await;
     let segs: Vec<String> = f.doc(&id).await["tracks"]["video"].as_array().unwrap().iter().map(|s| s["id"].as_str().unwrap().into()).collect();
     f.call("clip.set_layout", json!({"clip_id": id, "segment_id": segs[1], "preset": "blur-fit"})).await;
-    f.call("template.apply", json!({"name": "podcast-viral", "clip_ids": [id]})).await;
+    f.call("template.apply", json!({"name": "zooms", "clip_ids": [id]})).await;
     let fx = effects(&f.doc(&id).await);
     assert!(!fx.is_empty());
     for e in &fx {
@@ -117,17 +139,18 @@ async fn no_punch_ins_on_graphics_or_near_cuts() {
 #[tokio::test]
 async fn template_tags_survive_effect_add_and_reapply_replaces() {
     let f = fx();
-    let c = f.call("clip.create", json!({"name": "t", "source_id": f.src.id, "start": 1.0, "end": 41.0, "template": "podcast-viral"})).await;
+    zooms_template(&f).await;
+    let c = f.call("clip.create", json!({"name": "t", "source_id": f.src.id, "start": 1.0, "end": 41.0, "template": "zooms"})).await;
     let id = c["id"].as_str().unwrap().to_string();
     let first = effects(&f.doc(&id).await);
-    assert!(!first.is_empty() && first.iter().all(|e| e["by_template"] == "podcast-viral@1"), "{first:?}");
+    assert!(!first.is_empty() && first.iter().all(|e| e["by_template"] == "zooms@1"), "{first:?}");
     // A hand-added effect (what clips auto's retention fix does) must not strip the tags.
     f.call("effect.add", json!({"clip_id": id, "kind": "flash", "start": 0.2, "end": 0.4})).await;
     let list = f.call("effect.list", json!({"clip_id": id})).await;
-    let tagged = list["effects"].as_array().unwrap().iter().filter(|e| e["by_template"] == "podcast-viral@1").count();
+    let tagged = list["effects"].as_array().unwrap().iter().filter(|e| e["by_template"] == "zooms@1").count();
     assert_eq!(tagged, first.len(), "{list}");
     // Re-applying replaces the template's punch-ins instead of stacking a second set.
-    f.call("template.apply", json!({"name": "podcast-viral", "clip_ids": [id]})).await;
+    f.call("template.apply", json!({"name": "zooms", "clip_ids": [id]})).await;
     let again = effects(&f.doc(&id).await);
     let punch = again.iter().filter(|e| e["kind"] == "punch-in").count();
     assert_eq!(punch, first.len(), "{again:?}");
@@ -137,8 +160,9 @@ async fn template_tags_survive_effect_add_and_reapply_replaces() {
 #[tokio::test]
 async fn shortening_drops_and_clamps_layers_then_template_applies() {
     let f = fx();
+    zooms_template(&f).await;
     let id = f.clip(1.0, 41.0).await;
-    f.call("template.apply", json!({"name": "podcast-viral", "clip_ids": [id]})).await;
+    f.call("template.apply", json!({"name": "zooms", "clip_ids": [id]})).await;
     f.call("effect.add", json!({"clip_id": id, "kind": "shake", "start": 18.0, "end": 22.0})).await;
     f.call("overlay.add_text", json!({"clip_id": id, "text": "LATE", "style": "plain", "start": 30.0, "end": 32.0})).await;
     f.call("audio.add_sfx", json!({"clip_id": id, "file": f.sfx, "at": 35.0})).await;
@@ -161,8 +185,8 @@ async fn shortening_drops_and_clamps_layers_then_template_applies() {
     assert!(doc["tracks"]["text"].as_array().is_none_or(|t| t.iter().all(|x| x["text"] != "LATE")));
     assert!(doc["tracks"]["audio"]["sfx"].as_array().is_none_or(|s| s.is_empty()));
     // The template applies again (trial 2: "/tracks/effects/9 ... is outside the clip").
-    f.call("template.apply", json!({"name": "podcast-viral", "clip_ids": [id], "dry_run": true})).await;
-    f.call("template.apply", json!({"name": "podcast-viral", "clip_ids": [id]})).await;
+    f.call("template.apply", json!({"name": "zooms", "clip_ids": [id], "dry_run": true})).await;
+    f.call("template.apply", json!({"name": "zooms", "clip_ids": [id]})).await;
 }
 
 #[tokio::test]
@@ -183,9 +207,10 @@ async fn shortening_works_on_clips_with_v2_hook_styles() {
     // The hook (a style the document model does not read) is kept as stored.
     let extras: Value = serde_json::from_slice(&std::fs::read(f.store.root.join("clips").join(&id).join("extras.json")).unwrap()).unwrap();
     assert_eq!(extras["overlays"][0]["style"], "hook-big");
-    // Retention still plans punch-ins on such a clip.
+    // Retention still works on such a clip (a punch-in suggestion, or a skip when none fits).
     let r = f.call("clip.retention", json!({"clip_id": id, "timeline_only": true, "per_second": false})).await;
-    assert!(r["dead_zones"].as_array().unwrap().iter().any(|z| z["fixes"].as_array().unwrap().iter().any(|x| x["action"] == "punch_in")), "{r}");
+    let any_punch = |z: &Value| z["fixes"].as_array().unwrap().iter().any(|x| x["action"].as_str().unwrap().starts_with("punch_in"));
+    assert!(r["dead_zones"].as_array().unwrap().iter().any(any_punch), "{r}");
 }
 
 #[tokio::test]
@@ -222,7 +247,7 @@ async fn retention_punch_fix_uses_the_planner_and_does_not_stack() {
     assert!(!planned.is_empty(), "{r}");
     for (s, e, a) in &planned {
         assert!(!(s < &7.0 && e > &4.5), "stacks on the existing punch-in: {s}..{e}");
-        assert!((1.08..=1.2).contains(a));
+        assert!((1.06..=1.12).contains(a));
     }
     let mut ch: Vec<f64> = vec![5.0, 6.5];
     for (s, e, _) in &planned {
@@ -236,6 +261,7 @@ async fn retention_punch_fix_uses_the_planner_and_does_not_stack() {
 #[tokio::test]
 async fn punch_ins_centre_on_the_face_when_faces_are_known() {
     let f = fx();
+    zooms_template(&f).await;
     let id = f.clip(1.0, 21.0).await;
     // center-crop shows source x 0.342..0.658; the face sits at source x 0.36 (left of the crop).
     let faces = json!({
@@ -245,7 +271,7 @@ async fn punch_ins_centre_on_the_face_when_faces_are_known() {
     let dir = f.store.root.join("analysis").join(f.src.id.as_str());
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("faces.json"), serde_json::to_vec(&faces).unwrap()).unwrap();
-    f.call("template.apply", json!({"name": "podcast-viral", "clip_ids": [id]})).await;
+    f.call("template.apply", json!({"name": "zooms", "clip_ids": [id]})).await;
     let fx = effects(&f.doc(&id).await);
     assert!(!fx.is_empty());
     for e in &fx {
