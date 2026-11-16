@@ -11,6 +11,9 @@ pub struct ProgressEvent {
     /// 0.0..=1.0 when known.
     pub pct: Option<f32>,
     pub message: Option<String>,
+    /// Estimated seconds remaining, when the producer can tell (render).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eta_s: Option<f32>,
 }
 
 #[derive(Clone)]
@@ -26,12 +29,15 @@ impl ProgressSink {
     /// Writes `{"event":"progress","stage":…,"pct":…,"message":…}` lines to stderr.
     pub fn stderr_ndjson() -> Self {
         Self::new(|e: ProgressEvent| {
-            let line = serde_json::json!({
+            let mut line = serde_json::json!({
                 "event": "progress",
                 "stage": e.stage,
                 "pct": e.pct,
                 "message": e.message,
             });
+            if let Some(eta) = e.eta_s {
+                line["eta_s"] = serde_json::json!(eta);
+            }
             let mut err = std::io::stderr().lock();
             let _ = writeln!(err, "{line}");
         })

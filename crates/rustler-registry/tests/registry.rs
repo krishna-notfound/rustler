@@ -125,11 +125,31 @@ fn progress_sink_delivers_events() {
         stage: "probe".into(),
         pct: Some(0.5),
         message: None,
+        eta_s: None,
     });
     ProgressSink::noop().emit(ProgressEvent {
         stage: "x".into(),
         pct: None,
         message: None,
+        eta_s: None,
     });
     assert_eq!(*seen.lock().unwrap(), vec!["probe".to_string()]);
+}
+
+#[test]
+fn progress_event_serializes_eta_when_present() {
+    let with = ProgressEvent {
+        stage: "render".into(),
+        pct: Some(0.25),
+        message: None,
+        eta_s: Some(12.5),
+    };
+    let v = serde_json::to_value(&with).unwrap();
+    assert_eq!(v["eta_s"], 12.5);
+    let without = ProgressEvent { eta_s: None, ..with.clone() };
+    let v = serde_json::to_value(&without).unwrap();
+    assert!(v.get("eta_s").is_none(), "eta_s must be omitted when None: {v}");
+    // Old payloads without eta_s still deserialize.
+    let old: ProgressEvent = serde_json::from_str(r#"{"stage":"x","pct":null,"message":null}"#).unwrap();
+    assert_eq!(old.eta_s, None);
 }

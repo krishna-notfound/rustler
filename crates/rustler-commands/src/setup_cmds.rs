@@ -46,6 +46,7 @@ fn emit(ctx: &Ctx, message: &str) {
         stage: "setup".into(),
         pct: None,
         message: Some(message.to_string()),
+        eta_s: None,
     });
 }
 

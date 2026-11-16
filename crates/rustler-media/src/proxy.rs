@@ -78,6 +78,7 @@ pub async fn make_proxy(
                 stage: "proxy".into(),
                 pct: Some(pct),
                 message: None,
+                eta_s: None,
             });
         }
     })
@@ -88,7 +89,7 @@ pub async fn make_proxy(
         return Err(e);
     }
     finish(&part, out)?;
-    progress.emit(ProgressEvent { stage: "proxy".into(), pct: Some(1.0), message: None });
+    progress.emit(ProgressEvent { stage: "proxy".into(), pct: Some(1.0), message: None, eta_s: None });
     Ok(())
 }
 
