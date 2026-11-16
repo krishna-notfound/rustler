@@ -422,7 +422,7 @@ async fn render_with_logo_mask_cutaways_and_keyword_colour() {
     assert!(red_caption > 800, "keyword drawn in red: {red_caption}");
     let magenta = count(&f, 760, 0, 1080, 110, |r, g, b| r > 200 && g < 60 && b > 200);
     assert!(magenta > 20000, "mask box over the top-right corner: {magenta}");
-    let logo_px = count(&f, 60, 70, 300, 130, |r, g, b| r > 180 && g < 60 && b < 60);
+    let logo_px = count(&f, 60, 70, 300, 130, |r, g, b| r > 120 && g < 70 && b < 70); // mid fade-in (0.2 of 0.3 s)
     assert!(logo_px > 8000, "logo top-left: {logo_px}");
     // 1.0 s (frame 30): green PiP.
     let f = frame_rgb(&ffmpeg, &out, 30, "cmd_layers_pip");
