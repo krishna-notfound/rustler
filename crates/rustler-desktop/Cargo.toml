@@ -24,7 +24,7 @@ tokio.workspace = true
 
 # The window stack (wry = WebView2 / WebKitGTK, tao = window, muda = menu, rfd = dialogs).
 [target.'cfg(not(target_os = "linux"))'.dependencies]
-rustler-gui = { version = "0.1.1", path = "../rustler-gui" }
+rustler-gui = { version = "0.2.0", path = "../rustler-gui" }
 muda = "0.21.2"
 open = "5.4.5"
 rfd = "0.18.0"
@@ -33,7 +33,7 @@ wry = { version = "0.57.2", features = ["devtools"] }
 
 # Linux: needs libwebkit2gtk-4.1-dev, libgtk-3-dev, libxdo-dev, so it is opt-in (docs/desktop.md).
 [target.'cfg(target_os = "linux")'.dependencies]
-rustler-gui = { version = "0.1.1", path = "../rustler-gui", optional = true }
+rustler-gui = { version = "0.2.0", path = "../rustler-gui", optional = true }
 muda = { version = "0.21.2", optional = true }
 open = { version = "5.4.5", optional = true }
 rfd = { version = "0.18.0", optional = true }
