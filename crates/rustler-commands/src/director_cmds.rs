@@ -138,7 +138,8 @@ pub struct RetentionIn {
 /// One suggested fix for a dead zone.
 #[derive(Serialize, JsonSchema, Clone, Debug)]
 pub struct Fix {
-    /// punch_in | punch_in_skipped (no command: nothing fits) | text_pop | cutaway | remove_pauses | trim_head | trim_tail
+    /// punch_in | punch_in_skipped (no command: nothing fits) | text_pop | cutaway | remove_pauses | trim_head | trim_tail |
+    /// bad_take (in `take_fixes`) | hook_title / cold_open (clips.auto suggestions)
     pub action: String,
     /// Exact command to run (edit-timeline times), when one exists.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -182,6 +183,10 @@ pub struct RetentionOut {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub speech_start_delay: Option<f64>,
     pub dead_zones: Vec<DeadZoneOut>,
+    /// Whole-clip fixes not tied to a dead zone: restarts and repeats (`bad_take`, from
+    /// `edit.find_bad_takes`; exact word timings only). Suggestions: never applied by clips.auto.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub take_fixes: Vec<Fix>,
     pub ending: Ending,
     pub pacing: Pacing,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -639,6 +644,10 @@ async fn clip_retention(ctx: Ctx, i: RetentionIn) -> Result<RetentionOut> {
         next.push(f);
         next.push(format!("rustler clip retention {id}"));
     }
+    let take_fixes = crate::takes_cmds::retention_fixes(&store, &clip);
+    if !take_fixes.is_empty() {
+        next.push(format!("{} restart(s)/repeat(s) found: read them with `rustler edit find-bad-takes {id}` and cut the ones you agree with", take_fixes.len()));
+    }
     if agent_score.is_none() {
         next.push(format!("rustler clip score-set {id} --hook 0 --flow 0 --value 0 --trend 0 --notes \"why\""));
     }
@@ -655,6 +664,7 @@ async fn clip_retention(ctx: Ctx, i: RetentionIn) -> Result<RetentionOut> {
         first_frame_hook: a.first_frame_hook,
         speech_start_delay: a.speech_start_delay,
         dead_zones,
+        take_fixes,
         ending: a.ending,
         pacing: a.pacing,
         caption_density: a.caption_density,

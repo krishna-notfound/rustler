@@ -25,12 +25,16 @@
 //!    `clip.cover --auto` (best effort), `export.clip` (writes `<name>.post.json`: title/description/hashtags stay empty for the
 //!    agent to write with `clip.meta_set`; Rustler never writes copy and never publishes).
 //! 5. report — per clip: range, why, retention, QC, export paths, commands to change each decision.
+//!    `fixes_suggested` also lists (f39, never applied) bad takes (`bad_take`, from
+//!    `clip.retention` take_fixes), 2-3 hook lines (`hook_title`, `overlay add-text ... --style
+//!    hook-big`) and a cold open (`cold_open`) when the clip opens on a question.
 //!
 //! A failure in one clip is recorded on that clip (`failed_stage`, `error`) and the others go on.
 
 use crate::campaign_cmds::load_campaign;
 use crate::clip_cmds::log_event;
 use crate::highlights_cmds::{Data, features, load_data, tokens_of, weak_opener_len};
+use crate::hook_suggest::SWord;
 use crate::project_cmds::mmss;
 use crate::source_cmds::{load_source_checked, pending_id};
 use crate::transcript_cmds::analysis_rel;
@@ -65,7 +69,8 @@ pub const RANK_FORMULA: &str = "rank_score = highlights.candidates score (0-100)
 hook_2s over the first 2 s of the window: +0.15 speech starts within 0.3 s, +0.30 emphasis word, +0.25 question, \
 +0.15 number, +0.15 direct address (you/your/aap/tum), +0.10 loudness peak >= 3 LU over the source median, \
 +0.10 speech rate >= 1.15 x the source median, -0.20 weak opener (so/and/um/...); clamped to 0..1. \
-Picks: highest rank_score first, no overlap with each other or with clips that already cover the same moment.";
+Picks: highest rank_score first, no overlap with each other or with clips that already cover the same moment. \
+Moments inside the source's intro trailer (an opening montage of lines said again later) are not ranked; their originals are (include_intro: true ranks the trailer too).";
 
 fn validation(msg: impl Into<String>, hint: impl Into<String>) -> RustlerError {
     RustlerError::new(ErrorCode::Validation, STAGE, msg).hint(hint)
@@ -119,6 +124,9 @@ pub struct AutoIn {
     pub fixes: Option<bool>,
     /// Pick a cover frame with `clip.cover --auto` before export, best effort (default true).
     pub cover: Option<bool>,
+    /// Also rank moments inside the source's intro trailer (default false: a montage of lines said
+    /// again later is skipped, and the originals are ranked instead; see `ranking.intro_trailer`).
+    pub include_intro: Option<bool>,
     /// Plan only: rank and return the picks with the commands that would run; nothing is imported,
     /// created or rendered (a URL's captions are still fetched to rank).
     #[serde(default)]
@@ -332,6 +340,10 @@ pub struct Ranking {
     pub formula: String,
     pub candidates_considered: usize,
     pub excluded: Vec<Excluded>,
+    /// The source's intro trailer as `highlights.candidates` found it (range, the repeated lines
+    /// with where their originals play, windows skipped), when there is one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub intro_trailer: Option<Value>,
 }
 
 #[derive(Serialize, JsonSchema, Debug, Default)]
@@ -669,16 +681,56 @@ fn existing_ranges(store: &ProjectStore, source: Option<&SourceId>, url: Option<
 
 fn retention_fixes(v: &Value) -> Vec<SuggestedFix> {
     let mut out = Vec::new();
-    for z in v.get("dead_zones").and_then(Value::as_array).into_iter().flatten() {
-        for fx in z.get("fixes").and_then(Value::as_array).into_iter().flatten() {
-            out.push(SuggestedFix {
-                action: s(fx, "action"),
-                command: fx.get("command").and_then(Value::as_str).map(String::from),
-                why: s(fx, "why"),
-            });
-        }
+    let zone_fixes = v.get("dead_zones").and_then(Value::as_array).into_iter().flatten().flat_map(|z| z.get("fixes").and_then(Value::as_array).into_iter().flatten());
+    // Whole-clip fixes (bad takes) come after the dead-zone fixes; never applied here.
+    let take_fixes = v.get("take_fixes").and_then(Value::as_array).into_iter().flatten();
+    for fx in zone_fixes.chain(take_fixes) {
+        out.push(SuggestedFix {
+            action: s(fx, "action"),
+            command: fx.get("command").and_then(Value::as_str).map(String::from),
+            why: s(fx, "why"),
+        });
     }
     out
+}
+
+fn to_fix(x: crate::hook_suggest::Suggestion) -> SuggestedFix {
+    SuggestedFix { action: x.action, command: Some(x.command), why: x.why }
+}
+
+/// Hook-title and cold-open suggestions for a created clip (f39), from the words it plays.
+/// Never applied: the agent writes the hook and decides the order.
+pub fn content_suggestions(store: &ProjectStore, cid: &ClipId) -> Vec<SuggestedFix> {
+    let Ok(clip) = store.load_clip(cid) else { return Vec::new() };
+    let Some(src) = clip.segments.first().map(|s| s.source_id.clone()) else { return Vec::new() };
+    let Ok(Some(t)) = crate::clip_cmds::load_transcript(store, &src) else { return Vec::new() };
+    let approx = t.word_timing == rustler_core::WordTiming::Approximate;
+    let by = std::collections::HashMap::from([(src, t.words)]);
+    let ws: Vec<SWord> = crate::takes_cmds::clip_words(&clip, &by).into_iter().map(|w| SWord { text: w.text, start: w.start, end: w.end }).collect();
+    crate::hook_suggest::suggest(&ws, cid.as_str(), 0.0, "")
+        .into_iter()
+        .map(|mut x| {
+            if approx && x.action == "cold_open" {
+                x.why.push_str(" (word timings are approximate: check the range with `rustler transcript read-window` first)");
+            }
+            to_fix(x)
+        })
+        .collect()
+}
+
+/// The same suggestions for a planned pick (dry run), from the ranking transcript; cold-open
+/// seconds are made relative to the section a URL run would download (`offset`).
+fn planned_suggestions(d: &Data, start: f64, end: f64, offset: f64) -> Vec<SuggestedFix> {
+    let ws: Vec<SWord> = d
+        .words
+        .iter()
+        .filter(|w| {
+            let m = (w.start + w.end) / 2.0;
+            m >= start && m < end && !w.text.trim().is_empty()
+        })
+        .map(|w| SWord { text: w.text.trim().to_string(), start: w.start, end: w.end })
+        .collect();
+    crate::hook_suggest::suggest(&ws, "<clip_id>", offset, "").into_iter().map(to_fix).collect()
 }
 
 fn dead_zones(v: &Value) -> usize {
@@ -692,6 +744,9 @@ fn suggestions_left(v: &Value, applied: &[AppliedFix]) -> Vec<SuggestedFix> {
     for f in &mut out {
         if f.action == "punch_in" {
             f.why = format!("{} (clips auto never adds zooms: run the command yourself if you want them)", f.why);
+        }
+        if f.action == "bad_take" {
+            f.why = format!("{} (clips auto never cuts takes: read it, then run the command if you agree)", f.why);
         }
         if let Some(a) = applied.iter().find(|a| a.action == f.action && matches!(a.status.as_str(), "skipped" | "rolled_back")) {
             f.why = format!("{} (clips auto {} it: {})", f.why, a.status.replace('_', " "), a.note.clone().unwrap_or_default());
@@ -1304,15 +1359,34 @@ async fn clips_auto(ctx: Ctx, i: AutoIn) -> Result<AutoOut> {
             });
         }
         ranking.candidates_considered = pool.len();
+        // Your moments are made as given; say when one sits in the source's intro trailer.
+        if let Some(tr) = data.as_ref().and_then(|d| crate::intro_trailer::detect(&d.words, d.duration, d.scene_starts.as_deref())) {
+            for r in sorted.iter().filter(|r| overlaps((r.start, r.end), (tr.start, tr.end))) {
+                let orig = tr.repeats.iter().find(|x| overlaps((r.start, r.end), (x.early_start, x.early_end)));
+                warnings.push(format!(
+                    "range {}-{} is inside the source's intro trailer ({}-{}){}",
+                    mmss(r.start),
+                    mmss(r.end),
+                    mmss(tr.start),
+                    mmss(tr.end),
+                    orig.map(|x| format!("; the original of \"{}\" plays at {}", x.text, mmss(x.later_start))).unwrap_or_default()
+                ));
+            }
+            ranking.intro_trailer = serde_json::to_value(&tr).ok();
+        }
         if ranges.len() > count {
             warnings.push(format!("{} ranges given; count {count} ignored (every range is made)", ranges.len()));
         }
     } else if data.is_some() {
         let want = (count * 3).max(count + 5).min(100);
         let cands = x
-            .call("highlights.candidates", json!({"source_id": rank_id, "count": want, "min_len": min_len, "max_len": max_len, "platform": platform}))
+            .call(
+                "highlights.candidates",
+                json!({"source_id": rank_id, "count": want, "min_len": min_len, "max_len": max_len, "platform": platform, "include_intro": i.include_intro.unwrap_or(false)}),
+            )
             .await?;
         warnings.extend(cands.get("warnings").and_then(Value::as_array).into_iter().flatten().filter_map(|w| w.as_str().map(|w| format!("candidates: {w}"))));
+        ranking.intro_trailer = cands.get("intro_trailer").filter(|v| !v.is_null()).cloned();
         for c in cands.get("candidates").and_then(Value::as_array).into_iter().flatten() {
             let (Some(st), Some(en)) = (f(c, "start"), f(c, "end")) else { continue };
             let score = f(c, "score").unwrap_or(0.0);
@@ -1456,6 +1530,10 @@ async fn clips_auto(ctx: Ctx, i: AutoIn) -> Result<AutoOut> {
                 c.plan.push("rustler clip cover <clip_id> --auto true   # best effort".into());
             }
             c.plan.push("rustler export clip <clip_id>   # writes <name>.post.json with empty copy for you to write".into());
+            // Hook lines and a cold open from the planned words (the real run re-reads the clip).
+            if let Some(d) = &data {
+                c.fixes_suggested = planned_suggestions(d, p.start, p.end, c.section.map_or(0.0, |s| s.0));
+            }
             c.change = vec![
                 Change { decision: "this moment".into(), command: format!("rustler clips auto {} --dry-run --ranges <json array of {{start,end}}>   # your own moments", src_arg(&url, &rank_id)) },
                 Change { decision: "more candidates".into(), command: format!("rustler highlights candidates {rank_id} --count 20 --min-len {min_len} --max-len {max_len}") },
@@ -1665,9 +1743,13 @@ async fn clips_auto(ctx: Ctx, i: AutoIn) -> Result<AutoOut> {
                     c.fixes_applied = applied;
                 }
                 c.fixes_suggested = suggestions_left(&latest, &c.fixes_applied);
+                c.fixes_suggested.extend(content_suggestions(&store, &cid));
                 c.retention = Some(summary);
             }
-            Err(e) => c.warnings.push(format!("retention not measured: {}", e.message)),
+            Err(e) => {
+                c.warnings.push(format!("retention not measured: {}", e.message));
+                c.fixes_suggested.extend(content_suggestions(&store, &cid));
+            }
         }
         c.status = "created".into();
     }
@@ -1733,6 +1815,7 @@ async fn clips_auto(ctx: Ctx, i: AutoIn) -> Result<AutoOut> {
                 sum.dead_zones_left = dead_zones(&r);
                 // The render shows what is still dead (frame changes, real loudness): list those fixes.
                 c.fixes_suggested = suggestions_left(&r, &c.fixes_applied);
+                c.fixes_suggested.extend(content_suggestions(&store, &cid));
             }
             Err(e) => c.warnings.push(format!("retention on the render not measured: {}", e.message)),
         }
