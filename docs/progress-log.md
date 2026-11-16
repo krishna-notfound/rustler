@@ -472,3 +472,8 @@ then wave C (timeline doc + insert/cold-open/merge/duplicate/speed/freeze, cards
   locked|smooth|follow`, `--no-look-room`, `--switch auto|cut|pan`; QC `camera_motion` (jitter, moves/min, abrupt
   starts). Real trial clips: 2 moves + 2 cuts in 45 s, jitter 0. Needs `rustler setup run` with this build for the
   engine's landmark output (look-room). 380 tests passed on the branch.
+- Merged **layers** (1.3): `image.add/list/edit/remove`, `mask.add/list/edit/remove` (blur/box/pixelate — hide source
+  pop-ups/logos), `cutaway.add/list/edit/remove` (full or PiP B-roll), `caption.word/words_list/words_clear` (per-word
+  colour/size/emoji/hide); all in the single render graph, word-anchored items follow re-cuts. Workspace tests on the
+  branch: 0 failures. Registry now 134 commands. Note: `history undo` still covers clip.json only (layers via their
+  own remove) — timeline doc task will extend undo to all layers.
