@@ -5,12 +5,12 @@ Prebuilt binaries are published as GitHub release assets of the **private** repo
 latest release, verify its SHA256, install it without admin/root, add it to the user PATH, give Claude Code the
 skill and run `rustler setup run`.
 
-## Release assets (v0.1.0)
+## Release assets (v0.1.1)
 
 | Asset | Contents |
 |---|---|
-| `rustler-v0.1.0-windows-x64.zip` | `rustler.exe` (CLI, MCP server, web GUI), `rustler-desktop.exe` (native window), `skills/`, `docs/`, `README.md`, `THIRD_PARTY_NOTICES.md`, `LICENSE-NOTES.md`, `VERSION` |
-| `rustler-v0.1.0-linux-x64.tar.gz` | `rustler` (CLI, MCP server, web GUI; no desktop window), `skills/`, `docs/`, `README.md`, `THIRD_PARTY_NOTICES.md`, `LICENSE-NOTES.md`, `VERSION` |
+| `rustler-v0.1.1-windows-x64.zip` | `rustler.exe` (CLI, MCP server, web GUI), `rustler-desktop.exe` (native window), `skills/`, `docs/`, `README.md`, `THIRD_PARTY_NOTICES.md`, `LICENSE-NOTES.md`, `VERSION` |
+| `rustler-v0.1.1-linux-x64.tar.gz` | `rustler` (CLI, MCP server, web GUI; no desktop window), `skills/`, `docs/`, `README.md`, `THIRD_PARTY_NOTICES.md`, `LICENSE-NOTES.md`, `VERSION` |
 | `SHA256SUMS.txt` | sha256 of the two archives (`sha256sum -c` format) |
 
 The Linux binary is built against glibc 2.31 (zig cc), so it runs on Ubuntu 20.04+ / Debian 11+ and newer.
@@ -36,7 +36,7 @@ powershell -ExecutionPolicy Bypass -File $env:TEMP\rustler-install.ps1
 # or, from a checkout of the repo:  powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 ```
 
-Flags: `--version v0.1.0` (default: latest), `--no-setup` (skip `rustler setup run`), `--dir <path>`,
+Flags: `--version v0.1.1` (default: latest), `--no-setup` (skip `rustler setup run`), `--dir <path>`,
 `--repo owner/name` (`-NoSetup`, `-Version`, `-Dir`, `-Repo` also work).
 Installs into `%USERPROFILE%\.rustler\app` (override `RUSTLER_INSTALL_DIR`), adds that folder to the **user** PATH
 (`[Environment]::SetEnvironmentVariable(..., 'User')`; open a new terminal), copies the skill to
@@ -50,7 +50,7 @@ gh api repos/krishna-notfound/rustler/contents/scripts/install.sh -H "Accept: ap
 # with a token instead of gh
 curl -fsSL -H "Authorization: Bearer $RUSTLER_TOKEN" -H "Accept: application/vnd.github.raw" \
   https://api.github.com/repos/krishna-notfound/rustler/contents/scripts/install.sh | bash
-# pass flags:  ... | bash -s -- --no-setup --version v0.1.0
+# pass flags:  ... | bash -s -- --no-setup --version v0.1.1
 ```
 
 Installs into `~/.rustler/app` (override `RUSTLER_INSTALL_DIR` / `--dir`), symlinks `~/.local/bin/rustler`
@@ -58,8 +58,7 @@ Installs into `~/.rustler/app` (override `RUSTLER_INSTALL_DIR` / `--dir`), symli
 `~/.claude/skills/rustler` if `~/.claude` exists (override `RUSTLER_CLAUDE_DIR`). Needs `curl` (or `gh`), `tar`,
 `sha256sum`; no compiler.
 
-Until the `release/v0.1.0` branch is merged to the default branch (`master`), the installers are read from that
-branch (`` above); after the merge drop the `?ref=...` part.
+The installers are read from the default branch (`master`); no `?ref=` is needed.
 
 ## What the installers print
 
@@ -71,8 +70,8 @@ replaced, nothing else in the install folder is touched, PATH is not duplicated.
 ## Verified
 
 Windows: `install.ps1 --no-setup` into a temp folder with `RUSTLER_INSTALL_DIR`, once through `gh` and once with
-`RUSTLER_TOKEN`: download, sha256, install, skill copy, `rustler.exe --version`, `commands list` = 118, second run
-idempotent. Linux (WSL Ubuntu): `install.sh --no-setup` with `RUSTLER_TOKEN` into `/tmp`: same checks, 118 commands,
+`RUSTLER_TOKEN`: download, sha256, install, skill copy, `rustler.exe --version`, `commands list` = 118 (v0.1.0), second run
+idempotent. Linux (WSL Ubuntu): `install.sh --no-setup` with `RUSTLER_TOKEN` into `/tmp`: same checks, 118 commands (v0.1.0); v0.1.1 re-verified on Linux: sha256 ok, `--version` 0.1.1, 119 commands,
 second run idempotent, no-auth run exits 1 with the auth hint. `RUSTLER_PATH_SCOPE=Process` was used for the PATH step
 in the Windows test (so the real user PATH was not touched); the default `User` scope uses
 `[Environment]::SetEnvironmentVariable` and was not exercised. `rustler setup run` through the installer was not run (`--no-setup`).
@@ -83,7 +82,7 @@ in the Windows test (so the real user PATH was not touched); the default `User` 
 rustler --version
 rustler setup run              # unless the installer already ran it: FFmpeg, yt-dlp, uv, Python engine, models, fonts, assets
 rustler doctor run             # "ready": true means you can render
-rustler commands list          # 118 commands
+rustler commands list          # 119 commands
 ```
 
 `rustler setup run --music-pack` additionally downloads the optional CC0 music starter pack (11 FreePD tracks,
@@ -95,12 +94,12 @@ MCP for Claude Code: `claude mcp add rustler -- rustler mcp serve`. Windows desk
 ## Manual download (no installer)
 
 ```sh
-gh release download v0.1.0 -R krishna-notfound/rustler -p "rustler-v0.1.0-linux-x64.tar.gz" -p SHA256SUMS.txt
+gh release download v0.1.1 -R krishna-notfound/rustler -p "rustler-v0.1.1-linux-x64.tar.gz" -p SHA256SUMS.txt
 sha256sum -c --ignore-missing SHA256SUMS.txt
-tar -xzf rustler-v0.1.0-linux-x64.tar.gz     # run ./rustler-v0.1.0-linux-x64/rustler ; copy skills/rustler to ~/.claude/skills/
+tar -xzf rustler-v0.1.1-linux-x64.tar.gz     # run ./rustler-v0.1.1-linux-x64/rustler ; copy skills/rustler to ~/.claude/skills/
 ```
 
-Windows: `gh release download v0.1.0 -R krishna-notfound/rustler -p "*windows-x64.zip" -p SHA256SUMS.txt`,
+Windows: `gh release download v0.1.1 -R krishna-notfound/rustler -p "*windows-x64.zip" -p SHA256SUMS.txt`,
 check with `(Get-FileHash <zip>).Hash` against `SHA256SUMS.txt`, then `Expand-Archive`.
 Or open the release page in the browser (signed in to GitHub) and download the assets by hand.
 
