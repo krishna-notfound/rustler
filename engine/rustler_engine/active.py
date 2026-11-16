@@ -286,7 +286,7 @@ def active(params: Dict[str, Any], progress: Callable[..., None]) -> Dict[str, A
             t = pos if pos > 0 else (first_t + frame_i / src_fps)
             if t >= end - 1e-6 and pending is None and sample_i >= n:
                 break
-            want_sample = sample_i < n and t + 0.5 / src_fps >= start + sample_i / fps and pending is None
+            want_sample = sample_i < n and t + 0.5 / src_fps >= start + sample_i / fps
             want_burst = pending is not None and frame_i >= next_burst_frame
             if not (scan or want_sample or want_burst):
                 frame_i += 1
@@ -309,6 +309,9 @@ def active(params: Dict[str, Any], progress: Callable[..., None]) -> Dict[str, A
                     _finish_sample(pending, burst, frame.shape[1], frame.shape[0], motion)
                     pending, burst = None, []
             if want_sample:
+                if pending is not None:  # the next sample is due: close the burst with what it has
+                    _finish_sample(pending, burst, frame.shape[1], frame.shape[0], motion)
+                    pending, burst = None, []
                 tq = start + sample_i / fps
                 sample = {"t": round(tq, 4), "faces": _detect(detector, frame, faces_mod)}
                 if scan and sample_i % stats_every == 0:

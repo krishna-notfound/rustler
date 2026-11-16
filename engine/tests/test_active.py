@@ -211,3 +211,26 @@ def test_scan_finds_the_cut_and_flags_the_graphics_shot(tmp_path, model_path, po
     assert all(0.2 < s["g"]["x_lo"] and s["g"]["x_hi"] < 0.8 for s in card_g), card_g  # centred text
     assert face_g and all(g["flat"] < card_g[0]["g"]["flat"] for g in face_g)
     assert all("mouth" not in f for s in out["samples"] for f in s["faces"])
+
+
+def test_low_frame_rate_video_keeps_one_sample_per_period(tmp_path, model_path, portrait):
+    """At 10 fps the burst frames are also the next sample's frame; samples must not drift."""
+    base, mouths = two_face_base(portrait, model_path)
+    path = tmp_path / "low.avi"
+    vw = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"MJPG"), 10, (W, H))
+    if not vw.isOpened():
+        pytest.skip("OpenCV cannot write MJPG video here")
+    for i in range(40):
+        f = base.copy()
+        if i % 2 == 0:
+            talking(f, mouths[0], 7)  # the left mouth opens and closes every frame
+        vw.write(f)
+    vw.release()
+    out = active.active({"video_path": str(path), "start": 0.0, "end": 4.0, "fps": 5.0}, noop)
+    assert len(out["samples"]) == 20
+    assert out["samples"][-1]["t"] == pytest.approx(3.8)
+    two = [s for s in out["samples"] if len(s["faces"]) == 2]
+    left = [min(s["faces"], key=lambda f: f["x"])["mouth"] for s in two]
+    right = [max(s["faces"], key=lambda f: f["x"])["mouth"] for s in two]
+    assert len(two) >= 15
+    assert sum(left) > 3 * sum(right) + 0.05
