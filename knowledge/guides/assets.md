@@ -1,9 +1,9 @@
 ---
 id: assets
-title: "Assets: fonts, sound effects, music, caption styles, licenses"
-summary: "Find and add library assets (asset list/search/show/add/remove), add anything yourself (file, --url, source:<id>), use them as asset:<id> in audio commands, optional license metadata, the opt-in Kenney CC0 SFX pack, and creating custom caption styles."
+title: "Assets: fonts, sound effects, music, caption styles, own graphics, licenses"
+summary: "Find and add library assets (asset list/search/show/add/remove), add anything yourself (file, --url, source:<id>), use them as asset:<id> in audio commands, optional license metadata, the opt-in Kenney CC0 SFX pack, creating custom caption styles, and designing your own cards and text styles (asset.render_card, text.create_style)."
 order: 17
-tags: [assets, library, license, sfx, music, fonts, caption-style, custom-style]
+tags: [assets, library, license, sfx, music, fonts, caption-style, custom-style, card, text-style, graphics]
 ---
 
 # Assets
@@ -118,7 +118,65 @@ Readability rules still apply (`captions-and-style`): high contrast, bottom edge
 face. A style with a font that lacks the glyphs (Devanagari!) shows □: use a Noto Sans Devanagari
 based family for that script.
 
-## 6. Licenses at a glance
+## 6. Design your own graphics: cards and text styles
+
+You are not limited to files you can fetch: draw title cards, lower thirds, badges, CTA cards and logo
+plates yourself. `asset.render_card` takes a JSON spec and saves a PNG **image asset** (license
+`agent-generated`, tags `card` + `created_by:agent`); the result has `asset_id`, `path` and `image` (the
+PNG, so you can look at it). Place it on a clip with `image.add` (`asset:<asset_id>`). Rendering the same
+`name` again replaces the card (same id), so iterate until it looks right. Always look at the image.
+
+```
+rustler asset render-card pov-hook --input-json @card.json     # PowerShell: always @file
+```
+```json
+{"name": "pov-hook", "scope": "project", "tags": ["hook"],
+ "spec": {"width": 900, "height": 300,
+  "background": {"type": "transparent"},
+  "shapes": [{"rect": {"x": 20, "y": 30, "w": 860, "h": 240}, "radius": 40,
+              "fill": "#FFD400", "stroke": {"color": "#000000", "width": 4},
+              "shadow": {"dx": 0, "dy": 8, "blur": 14}}],
+  "texts": [{"text": "POV: you finally learn this", "font": "Anton", "size": 96, "color": "#000000",
+             "rect": {"x": 40, "y": 30, "w": 820, "h": 240}, "align": "center", "valign": "middle"}]}}
+```
+
+- All numbers are **canvas pixels**; rects are `{x, y, w, h}` (top-left origin). Draw order: background,
+  shapes, images, texts. Unknown fields are rejected (typos are errors). Canvas up to 4096 x 4096.
+- Colours: `#RRGGBB`, `#RRGGBBAA`, `#RGB`, `transparent`, `white`, `black`.
+- `background`: `{"type":"transparent"}` (default) | `{"type":"solid","color"}` |
+  `{"type":"linear_gradient","from","to","angle_deg"}` (0 = left to right, 90 = top to bottom, default 90).
+  A shape `fill` is a colour or a gradient `{"from","to","angle_deg"}`.
+- `shapes[]`: rounded rectangles (`radius` px; a square with a big radius is a circle) with `fill`,
+  `stroke {color,width}` and `shadow {color,dx,dy,blur}`.
+- `images[]`: `{asset, rect, fit: contain|cover, radius, opacity}`; `asset` is an image asset id (a logo)
+  or a file path.
+- `texts[]`: `text`, `font` (a font asset id, a .ttf path, or an installed family such as "Anton",
+  "Poppins", "Arial"; default is the Rustler default font), `size` px, `weight` (`bold`, 700, ...; picks
+  the closest installed file of the family), `color`, `outline {color,width}`, `shadow`, `uppercase`,
+  `align` left|center|right, `valign` top|middle|bottom, `rect`, `wrap` (default true: wraps by the real
+  glyph widths), `line_height` (x size, default 1.2), `fit` (shrink to fit the rect height), and
+  `box {color, radius, padding}`: a rounded box that **hugs the text** (so you need not guess its size).
+  A text that does not fit its rect gives a warning (shorten it, enlarge the rect, or use `fit`).
+- A missing font is a `not_found` error that lists the installed families; fix the name and render again.
+- Emoji are drawn when a **bitmap** emoji font (Noto Color Emoji) is installed in `~/.rustler/fonts`;
+  otherwise they are skipped with a warning (Windows' Segoe UI Emoji is not usable).
+
+Reusable text looks: `text.create_style` saves a **text_style** asset (`text-<name>`, JSON); `text.styles`
+lists them. A card text uses one with `"style": "<name>"`; fields set on the text override the style.
+
+```
+rustler text create-style hook-yellow --input-json @style.json
+```
+```json
+{"name": "hook-yellow", "font": "Anton", "size": 96, "color": "#000000", "uppercase": true,
+ "box": {"color": "#FFD400", "radius": 36, "padding": 28},
+ "shadow": {"dx": 0, "dy": 6, "blur": 10}, "outline": {"color": "#FFFFFF", "width": 2},
+ "anim": {"kind": "pop", "duration_s": 0.25}}
+```
+`size` is px of the canvas the text is drawn on. `anim.kind` is `pop | bounce | fade | typewriter | slide_up`
+(a hint for text layers over video; cards are static). The font must resolve when the style is created.
+
+## 7. Licenses at a glance
 
 - **CC0 / public domain**: free to use, no credit needed (the bundled Kenney sounds).
 - **OFL-1.1** (fonts): free to use in videos; do not resell the font file.

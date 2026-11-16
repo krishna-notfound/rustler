@@ -130,15 +130,30 @@ async fn prepare(
         let (words, w) = caption_words_for_clip(store, clip)?;
         warnings.extend(w);
         let colors = crate::speaker_cmds::word_colors_for_clip(store, clip, &words, &mut warnings)?;
+        // Word overrides (keyword colour/size, emoji, hidden words) on the edit timeline.
+        let (words, colors, paints) = crate::layer_cmds::apply_word_overrides(store, clip, words, colors, &mut warnings)?;
         // Captions follow the picture through transitions (edit -> rendered timeline).
-        let (words, colors) = crate::speaker_cmds::map_words_with_colors(words, colors, &fx_cmds::transition_map(store, clip)?);
+        let tmap = fx_cmds::transition_map(store, clip)?;
+        let (words, colors, paints) = match paints {
+            Some(p) => {
+                let (w, p) = crate::layer_cmds::map_words_with_paints(words, p, &tmap);
+                (w, None, Some(p))
+            }
+            None => {
+                let (w, c) = crate::speaker_cmds::map_words_with_colors(words, colors, &tmap);
+                (w, c, None)
+            }
+        };
         if words.is_empty() {
             warnings.push("captions are enabled but no transcript words fall inside the clip; rendering without captions".into());
         } else {
             let fonts = stage_fonts(paths, store, &fonts_dir)?;
             let family = caption_font_family(clip.captions.script, &fonts);
             let custom = crate::asset_cmds::custom_presets(&paths.home, Some(&store.root));
-            let text = crate::speaker_cmds::write_captions_ass(&words, colors.as_deref(), clip, family, &custom)?;
+            let text = match &paints {
+                Some(p) => rustler_captions::write_ass_painted_with(&words, p, &clip.captions, &clip.canvas, family, &custom)?,
+                None => crate::speaker_cmds::write_captions_ass(&words, colors.as_deref(), clip, family, &custom)?,
+            };
             let p = workdir.join("captions.ass");
             std::fs::write(&p, text).map_err(|e| io_err("write", &p, e))?;
             ass = Some(p);
@@ -155,6 +170,8 @@ async fn prepare(
     // Audio post (denoise, gains, sfx) and transitions / effects / progress bar.
     warnings.extend(audio_cmds::apply_to_compile(store, clip, &map, &mut cx)?);
     warnings.extend(fx_cmds::apply_to_compile(&map, clip, &mut cx)?);
+    // Images, masks, cutaways (word anchors resolved, files checked).
+    warnings.extend(crate::layer_cmds::apply_to_compile(store, paths, clip, &map, &mut cx).await?);
     if !cx.overlays.is_empty() && ass.is_none() {
         // Overlays need the fonts even when there are no captions.
         stage_fonts(paths, store, &fonts_dir)?;

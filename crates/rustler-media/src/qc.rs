@@ -4,6 +4,8 @@
 //! ebur128 with true peak) plus one frame grab and a 12-tile contact sheet. Every non-passing
 //! check carries a `fix_hint` naming a concrete `rustler` command.
 
+use crate::camera::{MotionStats, motion_stats};
+use crate::compile::CropKey;
 use crate::facepath::{FaceBox, FaceSample};
 use crate::frames::frame;
 use crate::proc::{self, argv};
@@ -562,6 +564,7 @@ pub async fn run_qc_with(
         checks.extend(face_checks(clip, extras));
         checks.push(hook_text_check(clip, extras));
         checks.push(duration_check(&cid, actual_dur, extras));
+        checks.push(camera_motion_check(&cid, &extras.crop_paths));
     }
 
     // contact sheet (always Pass)
@@ -645,6 +648,10 @@ pub struct QcExtras {
     /// Rendered duration when transitions shorten the clip (overlaps removed); `None` = the
     /// plain TimeMap duration.
     pub expected_duration: Option<f64>,
+    /// The clip's stored crop paths (`extras.json` `crop_paths`), `(segment id, segment duration
+    /// in seconds, keys)`, for the
+    /// engine-free `camera_motion` check. Empty = no tracked crop (the check passes).
+    pub crop_paths: Vec<(String, f64, Vec<CropKey>)>,
 }
 
 /// Where in the frame a face matters for a clip's layout.
@@ -966,6 +973,85 @@ pub fn duration_check(cid: &str, duration: f64, extras: &QcExtras) -> QcCheck {
     )
 }
 
+/// Warn limits of `camera_motion` (frame widths, per minute or per second).
+const MOTION_MAX_MOVES_PER_MIN: f64 = 12.0;
+const MOTION_MAX_REVERSALS_PER_MIN: f64 = 6.0;
+const MOTION_MAX_JITTER: f64 = 0.004;
+const MOTION_MAX_VELOCITY: f64 = 1.5;
+
+/// `camera_motion`: how the tracked crop moves (from the stored crop paths; no engine, no
+/// frames). Warns when the camera is jittery (back-and-forth wobble), restless (too many
+/// moves), robotic (moves that start at full speed) or whips faster than a pan.
+pub fn camera_motion_check(cid: &str, paths: &[(String, f64, Vec<CropKey>)]) -> QcCheck {
+    let expected = format!(
+        "a camera operator's motion: jitter <= {MOTION_MAX_JITTER} frame widths/s, <= {MOTION_MAX_REVERSALS_PER_MIN} direction changes and <= {MOTION_MAX_MOVES_PER_MIN} moves per minute, no move starting at full speed, speed <= {MOTION_MAX_VELOCITY} frame widths/s (cuts excluded)"
+    );
+    let stats: Vec<(&str, MotionStats)> = paths
+        .iter()
+        .map(|(id, d, k)| {
+            let mut st = motion_stats(k);
+            let wasted = st.jitter * st.duration_s;
+            st.duration_s = st.duration_s.max(*d); // the path holds its last key to the segment end
+            st.jitter = if st.duration_s > 0.0 { wasted / st.duration_s } else { 0.0 };
+            (id.as_str(), st)
+        })
+        .collect();
+    let dur: f64 = stats.iter().map(|(_, s)| s.duration_s).sum();
+    if stats.is_empty() || dur <= 0.0 {
+        return check("camera_motion", QcStatus::Pass, json!({ "crop_paths": paths.len(), "moving": false }), &expected, None);
+    }
+    let per_min = |n: usize| r2(n as f64 * 60.0 / dur.max(1.0));
+    let sum = |f: fn(&MotionStats) -> usize| stats.iter().map(|(_, s)| f(s)).sum::<usize>();
+    let max = |f: fn(&MotionStats) -> f64| stats.iter().map(|(_, s)| f(s)).fold(0.0, f64::max);
+    let moves = sum(|s| s.moves);
+    let reversals = sum(|s| s.reversals);
+    let abrupt = sum(|s| s.abrupt_starts);
+    let jitter = stats.iter().map(|(_, s)| s.jitter * s.duration_s).sum::<f64>() / dur;
+    let vmax = max(|s| s.max_velocity);
+    let worst = stats
+        .iter()
+        .max_by(|a, b| (a.1.jitter + a.1.reversals as f64 * 1e-3).total_cmp(&(b.1.jitter + b.1.reversals as f64 * 1e-3)))
+        .map(|(id, _)| id.to_string());
+    let mut problems = Vec::new();
+    if jitter > MOTION_MAX_JITTER || per_min(reversals) > MOTION_MAX_REVERSALS_PER_MIN {
+        problems.push(format!("jittery ({:.1} direction changes/min, jitter {:.4})", per_min(reversals), jitter));
+    }
+    if per_min(moves) > MOTION_MAX_MOVES_PER_MIN {
+        problems.push(format!("restless ({:.1} moves/min)", per_min(moves)));
+    }
+    if abrupt > 0 {
+        problems.push(format!("robotic ({abrupt} move(s) start at full speed)"));
+    }
+    if vmax > MOTION_MAX_VELOCITY {
+        problems.push(format!("whips at {vmax:.2} frame widths/s"));
+    }
+    let warn = !problems.is_empty();
+    check(
+        "camera_motion",
+        if warn { QcStatus::Warn } else { QcStatus::Pass },
+        json!({
+            "crop_paths": paths.len(),
+            "duration_s": r2(dur),
+            "moves_per_min": per_min(moves),
+            "cuts": sum(|s| s.cuts),
+            "reversals_per_min": per_min(reversals),
+            "abrupt_starts": abrupt,
+            "jitter": (jitter * 1e5).round() / 1e5,
+            "max_velocity": vmax,
+            "max_accel": max(|s| s.max_accel),
+            "max_jerk": max(|s| s.max_jerk),
+            "worst_segment": worst,
+        }),
+        &expected,
+        warn.then(|| {
+            format!(
+                "the crop camera is {}; re-plan it as a smooth operator move: rustler crop track-face {cid} --style smooth (a still talking head: --style locked; speaker crops: rustler crop track-speaker {cid} --style smooth)",
+                problems.join(", ")
+            )
+        }),
+    )
+}
+
 /// Truncates `text` with an ellipsis to fit `max_w` pixels at `scale`.
 fn clip_text(font: &FontArc, scale: PxScale, text: &str, max_w: f32) -> String {
     use ab_glyph::{Font, ScaleFont};
@@ -1105,6 +1191,37 @@ mod tests {
 
     fn samples(n: usize, f: impl Fn(usize) -> Vec<FaceBox>) -> Vec<FaceSample> {
         (0..n).map(|i| FaceSample { t: i as f64 * 0.5, faces: f(i) }).collect()
+    }
+
+    #[test]
+    fn camera_motion_warns_on_jitter_and_passes_planned_paths() {
+        use crate::camera::{CamFace, CamSample, CameraParams, plan};
+        // the old pipeline's wobble: +-0.012 every 0.25 s
+        let wobble: Vec<CropKey> = (0..120).map(|i| CropKey { t: i as f64 * 0.25, x: 0.3 + if i % 2 == 0 { 0.0 } else { 0.012 } }).collect();
+        let c = camera_motion_check("clp_x", &[("seg_a".into(), 30.0, wobble)]);
+        assert_eq!(c.status, QcStatus::Warn, "{:?}", c.value);
+        let hint = c.fix_hint.unwrap();
+        assert!(hint.contains("jittery") && hint.contains("rustler crop track-face clp_x --style smooth"), "{hint}");
+        assert_eq!(c.value["worst_segment"], "seg_a");
+        // planner output on a lean: passes
+        let s: Vec<CamSample> = (0..120)
+            .map(|i| {
+                let t = i as f64 / 4.0;
+                let cx = 0.4 + 0.15 * (t - 10.0).clamp(0.0, 1.0);
+                CamSample { t, faces: vec![CamFace { x: cx - 0.05, y: 0.2, w: 0.1, h: 0.15, score: 0.9, lm: None }] }
+            })
+            .collect();
+        let keys = plan(&s, 0.3164, &[], &CameraParams::default());
+        let c = camera_motion_check("clp_x", &[("seg_a".into(), 30.0, keys)]);
+        assert_eq!(c.status, QcStatus::Pass, "{:?}", c.value);
+        assert_eq!(c.value["moves_per_min"], 2.0);
+        // linear ramps between hold keys start at full speed
+        let ramp = vec![CropKey { t: 0.0, x: 0.2 }, CropKey { t: 2.0, x: 0.2 }, CropKey { t: 2.25, x: 0.25 }, CropKey { t: 6.0, x: 0.25 }];
+        let c = camera_motion_check("clp_x", &[("seg_a".into(), 6.0, ramp)]);
+        assert_eq!(c.status, QcStatus::Warn);
+        assert!(c.fix_hint.unwrap().contains("robotic"));
+        // no crop path: pass
+        assert_eq!(camera_motion_check("clp_x", &[]).status, QcStatus::Pass);
     }
 
     fn by_name<'a>(checks: &'a [QcCheck], name: &str) -> &'a QcCheck {

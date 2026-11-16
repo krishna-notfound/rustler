@@ -53,7 +53,10 @@ Line-delimited JSON-RPC 2.0 over the worker's stdin/stdout. Start with
   (default `~/.rustler`) and returns `{"fetched": [.., "yunet"], "yunet_path": "..."}`; `whisper`
   may be omitted when only `yunet` is requested.
 - `faces.track {"video_path", "start": 0.0, "end": null|float, "fps": 4.0, "model_path": null|string}`
-  -> `{"width": int, "height": int, "samples": [{"t": float, "faces": [{"x","y","w","h","score"}]}]}`
+  -> `{"width": int, "height": int, "samples": [{"t": float, "faces": [{"x","y","w","h","score","lm"}]}]}`
+  - `lm` (added 2026-11-16, additive): YuNet's five landmarks `[[x,y] x5]`, normalized 0..1 of the frame and
+    clamped, in YuNet order: right eye, left eye, nose tip, right mouth corner, left mouth corner (the
+    subject's right/left). Rust uses the nose-to-eye-midpoint offset for camera look-room.
   - Samples are taken at `start + i/fps` for `i` in `0 .. floor((end-start)*fps)-1`; `t` is **source
     time in seconds** (not clip-relative). `end` defaults to the video duration. `fps` in (0, 60].
     A sample whose frame cannot be read (past the end of the stream) ends the list early.

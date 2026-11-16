@@ -436,3 +436,63 @@ then wave C (timeline doc + insert/cold-open/merge/duplicate/speed/freeze, cards
   `director-retention` + prompts `direct_campaign`, `hook_lab`. Workspace tests on the branch: 581 passed, 0 failed.
   Real run on the 5 trial clips: retention scores 43–63 (all have hooks; low pacing/dead zones). Applying the 5
   suggested punch-ins on clip 04 raised it 43 → 80. Registry: 122 commands.
+### 2026-11-16 — Smooth camera planner + motion QC (v2 §5.10, branch `worktree-agent-ac9af68683ae375d1`)
+- New `crates/rustler-media/src/camera.rs`: offline trajectory over the whole segment. Primary face (median-filtered,
+  so 1–2-sample detection jumps never move the camera) → look-room target (nose vs eye midpoint from the YuNet
+  landmarks, ±10 % of the crop width, smoothed per shot, capped so a big close-up keeps the back of the head inside)
+  → shots split at source cuts (face jump, size change, a head-direction flip in one sample = reaction shot, and
+  `analysis/<src>/scenes.json` when present) and at speaker switches → **hold-or-move**: locked while the subject stays
+  inside ±18 % of the crop width; a move only when it stays out 0.5 s (or would leave the frame), to where the subject
+  settles, as a minimum-jerk ease (≤ 0.35 frame widths/s, ≤ 0.8 /s²), starting with the lean's onset (+0.1 s, at most
+  0.5 s before the box crossing; at least 0.15 s). Keys at 30/s during moves only; nothing while holding.
+- `crop.track_face` / `crop.track_speaker`: `style: locked|smooth|follow` (default smooth), `look_room` (default true;
+  `--no-look-room`); track-speaker `switch: auto|cut|pan` (auto: cut on the turn start when the reframe is > 40 % of
+  the frame, else an eased pan ≤ 0.6 s centred on it). Results report `moves`, `cuts`, `look_room_shift`. Track-speaker's
+  look-room costs one extra `faces.track` pass. `facepath::crop_keys` is kept (old tests; comparison).
+- Engine `faces.track` now returns `lm` (5 landmarks) per face (PROTOCOL.md updated, additive). **The installed engine
+  in `~/.rustler/engine` must be updated (`rustler setup`) for look-room**; without landmarks the camera centres the face.
+- QC `camera_motion` (engine-free, from `extras.crop_paths`): moves/min, direction changes/min, jitter (wasted
+  back-and-forth per second), moves starting at full speed, max velocity/accel/jerk; warns with a `crop track-face
+  --style …` fix hint. `QcExtras.crop_paths` added (one-line fill in `qc_cmds::gather_extras`).
+- **Real check** (temp copy of `rustler-real1`, engine with the new `faces.py`, frames looked at): old paths QC:
+  play-the-instrument pass (drifting), free-vs-three warn (9.6 direction changes/min). First planner run found three
+  problems, all fixed and re-checked: (1) a 1.5 s reaction shot of Raj was *panned* across (face moved only 0.03, head
+  direction flipped) → now 2 crop cuts, Raj locked with room on his right; (2) a quick lean touched the right edge
+  (move began at the box crossing) → move now starts at the lean onset, face stays in frame; (3) full look-room on a
+  profile close-up (face 44 % of the crop) cut the back of the head → capped. Final: play-the-instrument 2 moves + 2 cuts
+  in 45 s, free-vs-three 2 moves in 37 s, both `camera_motion` pass (jitter 0, 0 abrupt starts, max 0.19 frame widths/s);
+  look-room puts the space on the side each person faces (Vinh left, Raj right).
+- Tests: `cargo test -p rustler-media --test camera` (12), qc unit `camera_motion_warns_on_jitter_and_passes_planned_paths`,
+  speaker real-fixture planner tests (2 recorded excerpts: speaker in crop ≥ 90 % / ≥ 95 %, no wobble, no abrupt
+  starts), engine `test_faces.py` (6, landmarks).
+- Not done: §5.10 "contact strip of the crop path" image; push-in/punch-in moves (separate tasks).
+- Merged **smooth camera** (`crates/rustler-media/src/camera.rs`): hold-or-move with a ±18% safe box, minimum-jerk
+  eased moves (≤ 0.35 widths/s, ≤ 0.8/s²), anticipation from lean onset, outlier rejection, look-room from YuNet
+  landmarks (capped for big faces), cut-with-shot on source cuts; `crop track-face|track-speaker --style
+  locked|smooth|follow`, `--no-look-room`, `--switch auto|cut|pan`; QC `camera_motion` (jitter, moves/min, abrupt
+  starts). Real trial clips: 2 moves + 2 cuts in 45 s, jitter 0. Needs `rustler setup run` with this build for the
+  engine's landmark output (look-room). 380 tests passed on the branch.
+- Merged **layers** (1.3): `image.add/list/edit/remove`, `mask.add/list/edit/remove` (blur/box/pixelate — hide source
+  pop-ups/logos), `cutaway.add/list/edit/remove` (full or PiP B-roll), `caption.word/words_list/words_clear` (per-word
+  colour/size/emoji/hide); all in the single render graph, word-anchored items follow re-cuts. Workspace tests on the
+  branch: 0 failures. Registry now 134 commands. Note: `history undo` still covers clip.json only (layers via their
+  own remove) — timeline doc task will extend undo to all layers.
+
+## 2026-11-17 — PAUSED again (user closing laptop) — how to resume
+On `main` (pushed): wave A, settings + posting/campaigns, director/retention, smooth camera, layers. 134 commands.
+Not yet released: v0.1.2 (Muse still on v0.1.1).
+Paused mid-task (WIP commits pushed):
+| Branch | Task | State |
+|---|---|---|
+| `worktree-agent-a5f8e3d0367d3ae9b` | 1.4 agent graphics (`asset.render_card`, `text.create_style`) — Sonnet | code + tests committed; was rendering 2 real cards |
+| `worktree-agent-a03c0c8f29f4f51ee` | 1.6 style references (`reference.import/analyze`) — Sonnet | WIP; was running measures on trial clip proxies |
+Not started (stopped right at launch, nothing saved): **timeline doc + timeline edit commands (Opus)** and
+**smart defaults + light active speaker (Opus)** — relaunch with the same briefs (plan wave C/D).
+Resume order: finish cards + references → merge; launch timeline + smart defaults; then templates (Opus, needs the
+timeline doc), hooks/captions presets, cleanup/cover; then knowledge refresh, `clips.auto`, release v0.2.0 + trial.
+Before releasing: run `rustler setup run` with the new build so the engine has the landmark output (look-room).
+- 2026-11-17: Merged **agent graphics** (f1.4): `asset.render_card` (PNG cards from a JSON spec: gradients, rounded
+  boxes, shadows, measured text wrap/fit, images) and `text.create_style` / `text.styles`. Real POV hook card + lower
+  third rendered and checked. Running: style references (1.6), timeline doc + edit commands (Opus), smart defaults +
+  light active speaker (Opus). Next after them: templates (Opus), hook/caption presets, cleanup/cover, knowledge,
+  clips.auto, release v0.2.0.

@@ -15,6 +15,7 @@ use rustler_core::{
     Actor, AudioSettings, CaptionScript, CaptionTrack, Clip, ClipId, ErrorCode, Event, Layout, ProjectStore,
     RustlerError, Segment, SegmentId, Source, SourceId, TimeMap, Transcript, Unit, Word,
 };
+use rustler_media::camera::{self, CamEvent, CamSample, CameraParams, CameraStyle, EventKind};
 use rustler_media::compile::{CropKey, MusicBed};
 use rustler_registry::{Annotations, Ctx, Example, Registry, typed};
 use schemars::JsonSchema;
@@ -934,6 +935,11 @@ pub struct TrackFaceIn {
     /// Crop width as a fraction of the source width; default: the width of the segment's first
     /// layout region.
     pub crop_w: Option<f64>,
+    /// Camera behaviour: `smooth` (default; holds still, eased moves only when the face would
+    /// leave a safe box), `locked` (one framing per shot), `follow` (tighter, quicker eased moves).
+    pub style: Option<CameraStyle>,
+    /// Frame toward the side the face points (look-room from face landmarks). Default true.
+    pub look_room: Option<bool>,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -943,6 +949,13 @@ pub struct TrackedSegment {
     /// Share of the sampled frames in which a face was found (0..1).
     pub faces_found_ratio: f64,
     pub samples: usize,
+    pub style: CameraStyle,
+    /// Eased camera moves in the path.
+    pub moves: usize,
+    /// Hard crop cuts (the source cut to another shot).
+    pub cuts: usize,
+    /// Mean look-room shift, signed fraction of the crop width (> 0 = more room on the right).
+    pub look_room_shift: f64,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -958,7 +971,31 @@ pub struct TrackFaceOut {
 
 #[derive(Deserialize)]
 struct FacesTrackResult {
-    samples: Vec<rustler_media::facepath::FaceSample>,
+    samples: Vec<CamSample>,
+}
+
+/// Scene cuts of `source` (from `analyze scenes` / `analyze quick`, if run) strictly inside
+/// `start..end`, as camera shot-cut events (source time). Missing or unreadable file: none.
+pub fn scene_cut_events(store: &ProjectStore, source: &SourceId, start: f64, end: f64) -> Vec<CamEvent> {
+    #[derive(Deserialize)]
+    struct Scene {
+        start: f64,
+    }
+    #[derive(Deserialize)]
+    struct Scenes {
+        scenes: Vec<Scene>,
+    }
+    let rel = Path::new("analysis").join(source.as_str()).join("scenes.json");
+    store
+        .read_json::<Scenes>(&rel)
+        .map(|s| {
+            s.scenes
+                .iter()
+                .filter(|c| c.start > start + 0.05 && c.start < end - 0.05)
+                .map(|c| CamEvent { t: c.start, kind: EventKind::ShotCut })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Which segments a crop command touches; NotFound when `segment_id` names none.
@@ -1049,9 +1086,21 @@ async fn crop_track_face(ctx: Ctx, i: TrackFaceIn) -> Result<TrackFaceOut> {
                 ratio * 100.0
             ));
         }
-        let keys = rustler_media::facepath::crop_keys(&res.samples, crop_w, &Default::default());
-        extras.crop_paths.insert(seg.id.as_str().to_string(), keys.clone());
-        out.push(TrackedSegment { segment_id: seg.id.clone(), keys, faces_found_ratio: ratio, samples: res.samples.len() });
+        let style = i.style.unwrap_or_default();
+        let params = CameraParams { look_room: i.look_room.unwrap_or(true), ..CameraParams::for_style(style) };
+        let cuts = scene_cut_events(&store, &seg.source_id, seg.start, seg.end);
+        let plan = camera::plan_detailed(&res.samples, crop_w, &cuts, &params);
+        extras.crop_paths.insert(seg.id.as_str().to_string(), plan.keys.clone());
+        out.push(TrackedSegment {
+            segment_id: seg.id.clone(),
+            keys: plan.keys,
+            faces_found_ratio: ratio,
+            samples: res.samples.len(),
+            style,
+            moves: plan.moves,
+            cuts: plan.cuts,
+            look_room_shift: plan.look_room_shift,
+        });
     }
     engine.shutdown().await;
     if let Some(e) = failure {
@@ -1201,10 +1250,14 @@ pub fn register(reg: &mut Registry) {
     reg.register(typed("audio.remove_music", "Remove the music bed from a clip", &["clip_id"], WRITE, vec![], audio_remove_music));
     reg.register(typed(
         "crop.track_face",
-        "Follow the speaker's face with the crop of center-crop segments (face detection at 4 fps, smoothed)",
+        "Follow the speaker's face with the crop of center-crop segments like a camera operator (face detection at 4 fps; style smooth = hold still, eased moves only when the face would leave the safe box; locked = one framing per shot; follow = tighter; look-room toward the side the face points)",
         &["clip_id"],
         Annotations { read_only: false, destructive: false, network: false, costs_money: false, long_running: true },
-        vec![Example { description: "track all segments", cli: "rustler crop track-face clp_x" }],
+        vec![
+            Example { description: "track all segments (smooth camera, look-room on)", cli: "rustler crop track-face clp_x" },
+            Example { description: "a still talking head: one framing per shot", cli: "rustler crop track-face clp_x --style locked" },
+            Example { description: "a restless subject, centred framing", cli: "rustler crop track-face clp_x --style follow --no-look-room" },
+        ],
         crop_track_face,
     ));
     reg.register(typed(

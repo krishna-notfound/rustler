@@ -79,9 +79,20 @@ def test_tracks_face_moving_right(tmp_path, portrait, model_path):
         f = s["faces"][0]
         assert 0 <= f["x"] <= 1 and 0 <= f["y"] <= 1 and f["x"] + f["w"] <= 1.0001
         assert f["score"] >= 0.6
+        lm = f["lm"]
+        assert len(lm) == 5 and all(len(p) == 2 and 0 <= p[0] <= 1 and 0 <= p[1] <= 1 for p in lm)
+        # eyes above the nose, nose above the mouth corners, all near the box
+        assert max(lm[0][1], lm[1][1]) < lm[2][1] < min(lm[3][1], lm[4][1])
+        assert all(f["x"] - 0.05 <= p[0] <= f["x"] + f["w"] + 0.05 for p in lm)
         centres.append(f["x"] + f["w"] / 2)
     assert centres[-1] > centres[0] + 0.3
     assert all(b >= a - 0.01 for a, b in zip(centres, centres[1:])), centres
+
+
+def test_landmarks_are_normalized_and_clamped():
+    row = [10, 20, 40, 50, 20, 30, 40, 30, 30, 40, 22, 55, -5, 55, 0.9]
+    lm = faces.landmarks(row, 100, 100)
+    assert lm == [[0.2, 0.3], [0.4, 0.3], [0.3, 0.4], [0.22, 0.55], [0.0, 0.55]]
 
 
 def test_blank_video_has_no_faces(tmp_path, model_path):
