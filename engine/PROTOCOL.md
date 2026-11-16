@@ -181,7 +181,7 @@ Line-delimited JSON-RPC 2.0 over the worker's stdin/stdout. Start with
   - Errors: `validation` (missing/invalid `near`, `times`, paths), `media` (cannot decode/open, no readable
     frame). Progress: `stage: "overlay.find_box"`.
 - `faces.active {"video_path", "start": 0.0, "end": null|float, "fps": 5.0, "motion": true, "scan": false, "stats_every": 2, "model_path"?}`
-  -> `{"width", "height", "fps", "samples": [{"t", "faces": [{"x","y","w","h","score","lm","mouth"?,"track"}], "g"?: {"flat","edges","x_lo","x_hi"}}], "tracks": [{"id","samples","mean_x","mean_w","mouth_p20"?,"mouth_p80"?}], "peaks"?: [{"t","diff","base"}], "frames"?}`
+  -> `{"width", "height", "fps", "samples": [{"t", "faces": [{"x","y","w","h","score","lm","mouth"?,"track"}], "g"?: {"flat","edges","x_lo","x_hi","box"?}}], "tracks": [{"id","samples","mean_x","mean_w","mouth_p20"?,"mouth_p80"?}], "peaks"?: [{"t","diff","base"}], "frames"?}`
   - Lite install only (OpenCV + YuNet; no SFace, no diarization). One sequential pass over `start..end` (one seek),
     frames analysed at up to 960 px wide; `fps` in (0, 15]; `t` = start + i / fps (source time). Used by
     `crop.track_active`, `layout.plan` and the smart defaults of `clip.create`.
@@ -197,8 +197,13 @@ Line-delimited JSON-RPC 2.0 over the worker's stdin/stdout. Start with
     at 6 grey levels, so a cut between two dark shots is as visible as a bright one); the frame-to-frame
     difference (half histogram distance, half 8x4 grid distance, 0..1) gives `peaks`: local maxima (±3 frames)
     >= 0.12 with `base` = median difference within ±1 s. The caller decides what is a cut (Rustler: diff >= 0.3
-    and >= 2.5 x base + 0.08). Every `stats_every`-th sample also gets `g`: share of flat 8x8 blocks (std < 3),
-    Canny edge density and the 5 %/95 % horizontal extent of the edges (`x_lo`, `x_hi`), on a 320 px-wide frame.
+    and >= 2.5 x base + 0.08; or, where the faces change between two samples, the strongest peak between them
+    with diff >= 0.15 and >= 3 x base + 0.05). Every `stats_every`-th sample also gets `g`: share of flat 8x8
+    blocks (std < 3), Canny edge density and the 5 %/95 % horizontal extent of the edges (`x_lo`, `x_hi`), on a
+    320 px-wide frame, plus `box` (optional) `[x0, y0, x1, y1]` (0..1): the content bounding box — 8x8 blocks
+    with std >= 4 or >= 3 edge pixels, closed by one block, as connected components; components under 2 % of
+    the content and small ones (< 25 % of the largest) inside the outer 18 % band (channel logos) are left out.
+    Absent when the frame has no content.
   - Errors: `validation` (missing params, video not found, bad range or flags), `media` (cannot open video,
     cannot load the YuNet model). Progress: `stage: "faces.active"`.
 - `reference.measure {"video_path", "audio_path": null|string, "max_seconds": 180, "faces": true}`

@@ -12,8 +12,8 @@
 //!   smooth camera planner (`rustler_media::camera`) as speaker switches.
 //! * **Shot plan** (`layout.plan`, smart defaults): shots from `scenes.json` plus a luma-normalised
 //!   frame-difference scan (dark footage cuts too); per shot faces=1 -> center-crop + smooth track,
-//!   faces>=2 -> center-crop + active speaker, no face / graphics -> blur-fit (zoom-fit when the
-//!   content is centred). Segments are split only where the layout changes.
+//!   faces>=2 -> center-crop + active speaker, no face / graphics -> zoom-fit to the content box
+//!   (blur-fit when there is no clear box). Segments are split only where the layout changes.
 //! * **Cleanup**: filler words from `data/fillers_{en,hi}.txt` (conservative rules) and pauses
 //!   longer than [`PAUSE_MIN_GAP`] trimmed to [`PAUSE_KEEP`].
 //!
@@ -69,6 +69,21 @@ pub const MIN_SHOT: f64 = 1.2;
 /// Graphics: share of flat 8x8 blocks and edge density (medians over the shot).
 pub const GRAPHICS_FLAT: f64 = 0.55;
 pub const GRAPHICS_EDGES: f64 = 0.008;
+/// Graphics / no-face shots are cropped to their content box only when it makes the content at
+/// least this much larger on the canvas than blur-fit of the whole frame ...
+pub const ZOOM_MIN_GAIN: f64 = 1.25;
+/// ... and never more than this (a small box is widened instead of upscaled into mush).
+pub const ZOOM_MAX_GAIN: f64 = 2.5;
+/// Padding around the content box (share of the frame width / height on each side).
+pub const ZOOM_PAD: f64 = 0.03;
+/// A shot cut confirmed by the faces (the face layout changes between two samples) needs only a
+/// frame-difference peak this strong, and this many times its local median (plus 0.05).
+pub const FACE_CUT_MIN_DIFF: f64 = 0.15;
+pub const FACE_CUT_RATIO: f64 = 3.0;
+/// Coarse cuts (scenes.json) snap to the strongest frame-difference peak within this many seconds.
+pub const CUT_SNAP: f64 = 0.4;
+/// After the cleanup cuts, a segment shorter than this (seconds) is merged into a neighbour.
+pub const FRAGMENT_MIN: f64 = 0.6;
 /// Pause trim: word gaps longer than this (seconds) ...
 pub const PAUSE_MIN_GAP: f64 = 1.0;
 /// ... are cut down to this much silence.
@@ -124,6 +139,9 @@ pub struct GraphicsStats {
     pub edges: f64,
     pub x_lo: f64,
     pub x_hi: f64,
+    /// Content bounding box `[x0, y0, x1, y1]` (0..1) on a flat background, without corner logos.
+    #[serde(default, rename = "box", skip_serializing_if = "Option::is_none")]
+    pub bbox: Option<[f64; 4]>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
@@ -576,6 +594,55 @@ pub fn scan_cuts(peaks: &[ScanPeak]) -> Vec<f64> {
     peaks.iter().filter(|p| p.diff >= CUT_MIN_DIFF && p.diff >= CUT_RATIO * p.base + 0.08).map(|p| p.t).collect()
 }
 
+/// Face layout of a sample: (number of counted faces, width and centre of the largest).
+fn face_sig(s: &ScanSample) -> (usize, f64, f64) {
+    let c = candidates(s);
+    let big = c.iter().max_by(|a, b| a.w.total_cmp(&b.w));
+    (c.len(), big.map_or(0.0, |f| f.w), big.map_or(0.5, |f| f.cx()))
+}
+
+/// The face layout changes between two samples (count, size of the largest face by 1.5x, or its
+/// position by 0.15 of the frame): a possible shot cut between them.
+fn faces_changed(a: &ScanSample, b: &ScanSample) -> bool {
+    let ((na, wa, xa), (nb, wb, xb)) = (face_sig(a), face_sig(b));
+    if na != nb {
+        return true;
+    }
+    na > 0 && (wa.max(wb) / wa.min(wb).max(1e-6) >= 1.5 || (xa - xb).abs() >= 0.15)
+}
+
+/// Cuts the faces confirm: where the face layout changes between two samples (5 fps), the
+/// strongest frame-difference peak between them is taken as the cut, frame-accurate, with a lower
+/// bar than an unconfirmed peak (a cut between two dark shots of the same set differs little in
+/// luma; trial 2 clip 04: 0.23 at the real cut, under [`CUT_MIN_DIFF`]).
+pub fn face_cuts(samples: &[ScanSample], peaks: &[ScanPeak]) -> Vec<f64> {
+    let mut out = Vec::new();
+    for w in samples.windows(2) {
+        if !faces_changed(&w[0], &w[1]) {
+            continue;
+        }
+        let best = peaks
+            .iter()
+            .filter(|p| p.t > w[0].t + 0.03 && p.t <= w[1].t + 0.03)
+            .filter(|p| p.diff >= FACE_CUT_MIN_DIFF && p.diff >= FACE_CUT_RATIO * p.base + 0.05)
+            .max_by(|a, b| a.diff.total_cmp(&b.diff));
+        if let Some(p) = best {
+            out.push(p.t);
+        }
+    }
+    out
+}
+
+/// A coarse cut (scenes.json, sampled) moved onto the strongest frame-difference peak within
+/// [`CUT_SNAP`] seconds; unchanged when there is none.
+pub fn snap_cut(t: f64, peaks: &[ScanPeak]) -> f64 {
+    peaks
+        .iter()
+        .filter(|p| (p.t - t).abs() <= CUT_SNAP && p.diff >= FACE_CUT_MIN_DIFF)
+        .max_by(|a, b| a.diff.total_cmp(&b.diff))
+        .map_or(t, |p| p.t)
+}
+
 /// Union of cut lists, sorted, duplicates within 0.3 s dropped.
 pub fn merge_cuts(mut cuts: Vec<f64>) -> Vec<f64> {
     cuts.sort_by(|a, b| a.total_cmp(b));
@@ -650,8 +717,8 @@ pub enum ShotClass {
 pub enum LayoutChoice {
     CenterCrop,
     BlurFit,
-    /// The centred part of the frame (`cx`, width `w` of the source) scaled up on a blurred fill.
-    ZoomFit { cx: f64, w: f64 },
+    /// The content box of the frame (source `x, y, w, h`, 0..1) scaled up on a blurred fill.
+    ZoomFit { x: f64, y: f64, w: f64, h: f64 },
 }
 
 impl LayoutChoice {
@@ -693,7 +760,47 @@ pub struct ShotPlan {
     pub reason: String,
 }
 
-fn classify(samples: &[&ScanSample], start: f64, end: f64) -> ShotPlan {
+/// Source aspect over canvas aspect (16:9 on 9:16 = 3.16): how much taller the canvas is.
+pub fn frame_aspect(source: &Source, canvas: &Canvas) -> f64 {
+    let sa = source.probe.width as f64 / source.probe.height.max(1) as f64;
+    let ca = canvas.width as f64 / canvas.height.max(1) as f64;
+    sa / ca.max(1e-6)
+}
+
+/// How much larger a source box (`w`, `h` of the frame) shows on the canvas (contain) than the
+/// whole frame does. `aspect` = [`frame_aspect`].
+pub fn zoom_gain(w: f64, h: f64, aspect: f64) -> f64 {
+    let full = 1.0f64.min(aspect);
+    (1.0 / w.max(1e-6)).min(aspect / h.max(1e-6)) / full
+}
+
+/// The crop for a content box `x0..x1, y0..y1` (0..1): padded by [`ZOOM_PAD`], widened when it
+/// would zoom more than [`ZOOM_MAX_GAIN`]; `None` when it gains less than [`ZOOM_MIN_GAIN`] over
+/// blur-fit (no clear box). Returns the box and its gain.
+pub fn content_crop(x0: f64, y0: f64, x1: f64, y1: f64, aspect: f64) -> Option<(Rect, f64)> {
+    if !(x1 > x0 && y1 > y0) {
+        return None;
+    }
+    let (mut x0, mut y0, mut x1, mut y1) = ((x0 - ZOOM_PAD).max(0.0), (y0 - ZOOM_PAD).max(0.0), (x1 + ZOOM_PAD).min(1.0), (y1 + ZOOM_PAD).min(1.0));
+    let gain = zoom_gain(x1 - x0, y1 - y0, aspect);
+    if gain > ZOOM_MAX_GAIN {
+        let k = gain / ZOOM_MAX_GAIN;
+        let grow = |a: f64, b: f64| {
+            let (c, half) = ((a + b) / 2.0, ((b - a) * k / 2.0).min(0.5));
+            let lo = (c - half).clamp(0.0, 1.0 - 2.0 * half);
+            (lo, lo + 2.0 * half)
+        };
+        (x0, x1) = grow(x0, x1);
+        (y0, y1) = grow(y0, y1);
+    }
+    let gain = zoom_gain(x1 - x0, y1 - y0, aspect);
+    if gain < ZOOM_MIN_GAIN {
+        return None;
+    }
+    Some((Rect { x: round3(x0), y: round3(y0), w: round3(x1 - x0), h: round3(y1 - y0) }, gain))
+}
+
+fn classify(samples: &[&ScanSample], start: f64, end: f64, aspect: f64) -> ShotPlan {
     let n = samples.len().max(1);
     let face_rows: Vec<Vec<&ScanFace>> = samples.iter().map(|s| candidates(s)).collect();
     let with_face: Vec<&Vec<&ScanFace>> = face_rows.iter().filter(|r| !r.is_empty()).collect();
@@ -708,14 +815,28 @@ fn classify(samples: &[&ScanSample], start: f64, end: f64) -> ShotPlan {
     let x_hi = median(gs.iter().map(|g| g.x_hi).collect()).unwrap_or(1.0);
     let graphics = flat >= GRAPHICS_FLAT && edges >= GRAPHICS_EDGES;
     let faces_count = if with_face.is_empty() { 0 } else { median(with_face.iter().map(|r| r.len() as f64).collect()).unwrap_or(0.0).round() as u32 };
+    let boxes: Vec<[f64; 4]> = gs.iter().filter_map(|g| g.bbox).collect();
     let blurred = |class: ShotClass, why: String| {
-        let centred = edges >= 0.004 && x_lo >= 0.15 && x_hi <= 0.85 && x_hi > x_lo;
-        let layout = if centred {
-            LayoutChoice::ZoomFit { cx: round3((x_lo + x_hi) / 2.0), w: round3((x_hi - x_lo + 0.12).clamp(0.5, 0.9)) }
+        // The content box over the shot (robust union: 10th / 90th percentiles of the edges).
+        let content = if !gs.is_empty() && boxes.len() * 2 >= gs.len() {
+            let pick = |k: usize, q: f64| {
+                let mut v: Vec<f64> = boxes.iter().map(|b| b[k]).collect();
+                percentile(&mut v, q)
+            };
+            Some((pick(0, 0.1), pick(1, 0.1), pick(2, 0.9), pick(3, 0.9)))
+        } else if gs.is_empty() || !(edges >= 0.004 && x_lo >= 0.15 && x_hi <= 0.85 && x_hi > x_lo) {
+            None
         } else {
-            LayoutChoice::BlurFit
+            // Older engine without boxes: the horizontal extent of the edges, full height.
+            Some((x_lo, 0.0, x_hi, 1.0))
         };
-        let what = if centred { format!("{why}; content centred (x {x_lo:.2}-{x_hi:.2}) -> zoom-fit") } else { format!("{why} -> blur-fit") };
+        let (layout, what) = match content.and_then(|(x0, y0, x1, y1)| content_crop(x0, y0, x1, y1, aspect)) {
+            Some((b, gain)) => (
+                LayoutChoice::ZoomFit { x: b.x, y: b.y, w: b.w, h: b.h },
+                format!("{why}; content box x {:.2}-{:.2}, y {:.2}-{:.2} -> zoom-fit ({gain:.1}x larger than blur-fit)", b.x, b.x + b.w, b.y, b.y + b.h),
+            ),
+            None => (LayoutChoice::BlurFit, format!("{why}; no clear content box -> blur-fit")),
+        };
         ShotPlan { start, end, class, faces: faces_count, layout, tracking: Tracking::None, face_x: None, reason: what }
     };
     if samples.is_empty() {
@@ -738,7 +859,7 @@ fn classify(samples: &[&ScanSample], start: f64, end: f64) -> ShotPlan {
 
 /// Per-shot layout plan for `start..end` (source time): split at `cuts`, classify each shot,
 /// merge neighbours with the same layout kind and absorb shots shorter than [`MIN_SHOT`].
-pub fn plan_shots(samples: &[ScanSample], cuts: &[f64], start: f64, end: f64) -> Vec<ShotPlan> {
+pub fn plan_shots(samples: &[ScanSample], cuts: &[f64], start: f64, end: f64, aspect: f64) -> Vec<ShotPlan> {
     let mut bounds = vec![start];
     bounds.extend(cuts.iter().copied().filter(|&c| c > start + 0.3 && c < end - 0.3));
     bounds.push(end);
@@ -746,7 +867,7 @@ pub fn plan_shots(samples: &[ScanSample], cuts: &[f64], start: f64, end: f64) ->
         .windows(2)
         .map(|w| {
             let inside: Vec<&ScanSample> = samples.iter().filter(|s| s.t >= w[0] && s.t < w[1]).collect();
-            classify(&inside, w[0], w[1])
+            classify(&inside, w[0], w[1], aspect)
         })
         .collect();
     loop {
@@ -784,10 +905,11 @@ fn merge_same(shots: Vec<ShotPlan>) -> Vec<ShotPlan> {
     for s in shots {
         match out.last_mut() {
             Some(m) if m.layout.same_kind(&s.layout) => {
-                if let (LayoutChoice::ZoomFit { cx: c1, w: w1 }, LayoutChoice::ZoomFit { cx: c2, w: w2 }) = (m.layout, s.layout) {
-                    let lo = (c1 - w1 / 2.0).min(c2 - w2 / 2.0);
-                    let hi = (c1 + w1 / 2.0).max(c2 + w2 / 2.0);
-                    m.layout = LayoutChoice::ZoomFit { cx: round3((lo + hi) / 2.0), w: round3((hi - lo).clamp(0.5, 0.9)) };
+                if let (LayoutChoice::ZoomFit { x: x1, y: y1, w: w1, h: h1 }, LayoutChoice::ZoomFit { x: x2, y: y2, w: w2, h: h2 }) = (m.layout, s.layout) {
+                    // One crop for both: the union of the two boxes.
+                    let (lx, ly) = (x1.min(x2), y1.min(y2));
+                    let (hx, hy) = ((x1 + w1).max(x2 + w2), (y1 + h1).max(y2 + h2));
+                    m.layout = LayoutChoice::ZoomFit { x: round3(lx), y: round3(ly), w: round3(hx - lx), h: round3(hy - ly) };
                 }
                 if m.tracking != s.tracking && m.layout == LayoutChoice::CenterCrop {
                     m.tracking = Tracking::Active;
@@ -803,12 +925,14 @@ fn merge_same(shots: Vec<ShotPlan>) -> Vec<ShotPlan> {
     out
 }
 
-/// The zoom-fit layout: the source window `cx ± w/2` (full height) scaled to the canvas width on a
-/// blurred fill.
-pub fn zoom_fit_layout(src_w: u32, src_h: u32, canvas: &Canvas, cx: f64, w: f64) -> Layout {
-    let w = w.clamp(0.2, 1.0);
-    let x = (cx - w / 2.0).clamp(0.0, 1.0 - w);
-    let aspect = w * src_w as f64 / src_h.max(1) as f64; // width / height of the window
+/// The zoom-fit layout: the source box `src` (0..1) contained in the canvas (centred) on a blurred
+/// fill of the whole frame. A custom region layout (`preset: "zoom-fit"`).
+pub fn zoom_fit_layout(src_w: u32, src_h: u32, canvas: &Canvas, src: Rect) -> Layout {
+    let w = src.w.clamp(0.1, 1.0);
+    let h = src.h.clamp(0.1, 1.0);
+    let x = src.x.clamp(0.0, 1.0 - w);
+    let y = src.y.clamp(0.0, 1.0 - h);
+    let aspect = w * src_w as f64 / (h * src_h.max(1) as f64); // width / height of the window
     let ca = canvas.width as f64 / canvas.height.max(1) as f64;
     let dst = if aspect >= ca {
         let h = ca / aspect;
@@ -819,7 +943,7 @@ pub fn zoom_fit_layout(src_w: u32, src_h: u32, canvas: &Canvas, cx: f64, w: f64)
     };
     Layout {
         preset: Some("zoom-fit".into()),
-        regions: vec![Region { id: "main".into(), src: Rect { x, y: 0.0, w, h: 1.0 }, dst, z: 0, fit: Fit::Contain }],
+        regions: vec![Region { id: "main".into(), src: Rect { x, y, w, h }, dst, z: 0, fit: Fit::Contain }],
         background: Background::BlurFill,
     }
 }
@@ -829,7 +953,7 @@ fn build_layout(source: &Source, canvas: &Canvas, choice: LayoutChoice, focus_x:
     match choice {
         LayoutChoice::CenterCrop => layout::preset("center-crop", w, h, canvas, &LayoutParams { focus_x: focus_x.map(|f| f.clamp(0.0, 1.0)), ..Default::default() }),
         LayoutChoice::BlurFit => layout::preset("blur-fit", w, h, canvas, &LayoutParams::default()),
-        LayoutChoice::ZoomFit { cx, w: zw } => Ok(zoom_fit_layout(w, h, canvas, cx, zw)),
+        LayoutChoice::ZoomFit { x, y, w: bw, h: bh } => Ok(zoom_fit_layout(w, h, canvas, Rect { x, y, w: bw, h: bh })),
     }
 }
 
@@ -1005,6 +1129,66 @@ pub fn cut_segments(segments: &[Segment], cuts: &[(f64, f64)]) -> Vec<Segment> {
         }
     }
     out
+}
+
+/// One fragment merged by [`merge_fragments`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct MergedFragment {
+    /// Source span of the fragment.
+    pub start: f64,
+    pub end: f64,
+    /// The segment that took it in (keeps its id and layout).
+    pub into: SegmentId,
+    /// The fragment's layout differed from the one it now has.
+    pub relayout: bool,
+}
+
+/// Segments shorter than [`FRAGMENT_MIN`] (left by filler/pause cuts next to a layout change) are
+/// joined to a neighbour that continues them in the source (same source, touching): one segment,
+/// the neighbour's id and layout. A neighbour with the same layout is preferred, else the longer
+/// one. Kept: a fragment with no such neighbour (cut on both sides), and one whose layout carries
+/// on from the output piece across the cut while its source neighbour has another layout.
+pub fn merge_fragments(segments: &[Segment]) -> (Vec<Segment>, Vec<MergedFragment>) {
+    let mut segs = segments.to_vec();
+    let mut merged = Vec::new();
+    let touches = |a: &Segment, b: &Segment| a.source_id == b.source_id && (a.end - b.start).abs() < 2e-3;
+    loop {
+        let mut done = true;
+        for k in 0..segs.len() {
+            if segs.len() < 2 || segs[k].end - segs[k].start >= FRAGMENT_MIN {
+                continue;
+            }
+            let prev = (k > 0 && touches(&segs[k - 1], &segs[k])).then(|| k - 1);
+            let next = (k + 1 < segs.len() && touches(&segs[k], &segs[k + 1])).then_some(k + 1);
+            let options: Vec<usize> = prev.into_iter().chain(next).collect();
+            // The fragment continues the layout of the piece before/after it in the output (across
+            // a cut): no layout flicker, and another layout would frame its frames wrongly (trial
+            // 2 clip 02: the graphic's last 0.27 s would show as a centre crop of the wide shot).
+            let same_contiguous = options.iter().any(|&j| segs[j].layout == segs[k].layout);
+            let continues = [k.checked_sub(1), Some(k + 1)].into_iter().flatten().filter(|&j| j < segs.len()).any(|j| segs[j].layout == segs[k].layout);
+            if !same_contiguous && continues {
+                continue;
+            }
+            let Some(&into) = options
+                .iter()
+                .find(|&&j| segs[j].layout == segs[k].layout)
+                .or_else(|| options.iter().max_by(|&&a, &&b| (segs[a].end - segs[a].start).total_cmp(&(segs[b].end - segs[b].start))))
+            else {
+                continue;
+            };
+            let frag = segs.remove(k);
+            let target = if into > k { into - 1 } else { into };
+            let t = &mut segs[target];
+            merged.push(MergedFragment { start: frag.start, end: frag.end, into: t.id.clone(), relayout: t.layout != frag.layout });
+            t.start = t.start.min(frag.start);
+            t.end = t.end.max(frag.end);
+            done = false;
+            break;
+        }
+        if done {
+            return (segs, merged);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1297,9 +1481,11 @@ async fn analyse_segments(
         match scan(&engine, ctx, &video_of(store, &source), seg.start, seg.end, true).await {
             Ok(r) => {
                 let mut cuts = scan_cuts(&r.peaks);
-                cuts.extend(scene_cut_events(store, &seg.source_id, seg.start, seg.end).iter().map(|e| e.t));
+                cuts.extend(face_cuts(&r.samples, &r.peaks));
+                cuts.extend(scene_cut_events(store, &seg.source_id, seg.start, seg.end).iter().map(|e| snap_cut(e.t, &r.peaks)));
                 let cuts = merge_cuts(cuts);
-                let shots = plan_shots(&r.samples, &cuts, seg.start, seg.end);
+                let aspect = frame_aspect(&source, &clip.canvas);
+                let shots = plan_shots(&r.samples, &cuts, seg.start, seg.end, aspect);
                 out.push(SegmentAnalysis { seg, samples: r.samples, cuts, shots });
             }
             Err(e) => {
@@ -1318,7 +1504,7 @@ async fn analyse_segments(
 /// A decision made automatically, with the commands that undo or override it.
 #[derive(Serialize, Deserialize, JsonSchema, Clone, Debug, PartialEq)]
 pub struct Decision {
-    /// layout | framing | filler | pause | skipped
+    /// layout | framing | filler | pause | fragment | skipped
     pub kind: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub segment_ids: Vec<SegmentId>,
@@ -1377,11 +1563,18 @@ fn layout_overrides(clip: &ClipId, seg: &SegmentId, shot: &ShotPlan) -> Vec<Stri
             }
             v
         }
-        LayoutChoice::BlurFit | LayoutChoice::ZoomFit { .. } => vec![
-            format!("rustler clip set-layout {clip} --segment-id {s} --preset {}", if shot.layout == LayoutChoice::BlurFit { "center-crop" } else { "blur-fit" }),
+        LayoutChoice::BlurFit => vec![format!("rustler clip set-layout {clip} --segment-id {s} --preset center-crop")],
+        LayoutChoice::ZoomFit { .. } => vec![
+            format!("rustler clip set-layout {clip} --segment-id {s} --preset blur-fit"),
             format!("rustler clip set-layout {clip} --segment-id {s} --preset center-crop"),
         ],
     }
+}
+
+/// Drops repeated commands, keeping the first occurrence's order.
+fn dedupe(cmds: &mut Vec<String>) {
+    let mut seen = HashSet::new();
+    cmds.retain(|c| seen.insert(c.clone()));
 }
 
 /// Applies the shot plans: splits segments where the layout changes, sets layouts and writes the
@@ -1463,7 +1656,17 @@ fn remap_ids(decisions: &mut [Decision], clip: &Clip) {
     }
     for d in decisions.iter_mut().filter(|d| d.kind == "layout" || d.kind == "framing") {
         let (Some(a), Some(b)) = (d.source_start, d.source_end) else { continue };
-        let ids: Vec<SegmentId> = clip.segments.iter().filter(|s| s.start < b - 1e-6 && s.end > a + 1e-6).map(|s| s.id.clone()).collect();
+        // A segment belongs to the decision when most of it (or a second of it) lies in the span;
+        // a long segment that only took in a merged fragment of the span does not.
+        let ids: Vec<SegmentId> = clip
+            .segments
+            .iter()
+            .filter(|s| {
+                let overlap = s.end.min(b) - s.start.max(a);
+                overlap > 1e-6 && (overlap >= 0.5 * (s.end - s.start) || overlap >= 1.0)
+            })
+            .map(|s| s.id.clone())
+            .collect();
         if ids.is_empty() || ids == d.segment_ids {
             continue;
         }
@@ -1481,6 +1684,9 @@ fn remap_ids(decisions: &mut [Decision], clip: &Clip) {
             d.override_with = cmds;
         }
         d.segment_ids = ids;
+    }
+    for d in decisions.iter_mut() {
+        dedupe(&mut d.override_with);
     }
 }
 
@@ -1646,6 +1852,39 @@ pub async fn apply_smart_defaults(ctx: &Ctx, store: &ProjectStore, clip: Clip, o
         }
     }
 
+    // 4. Fragments the cuts left next to a layout change: merge them into a neighbour.
+    if !report.steps.is_empty() {
+        let (segments, merged) = merge_fragments(&clip.segments);
+        if !merged.is_empty() {
+            let before = clip.revision;
+            let mut new = clip.clone();
+            new.segments = segments;
+            let summary = format!("merged {} piece(s) shorter than {FRAGMENT_MIN} s into a neighbour", merged.len());
+            let detail = json!({"merged": merged.iter().map(|m| json!({"start": round3(m.start), "end": round3(m.end), "into": m.into})).collect::<Vec<_>>()});
+            let (saved, step, w) = save_step(ctx, store, &clip, new, "fragments", summary, detail)?;
+            report.warnings.extend(w);
+            report.steps.push(step);
+            clip = saved;
+            for m in merged {
+                let layout = clip.segments.iter().find(|s| s.id == m.into).and_then(|s| s.layout.preset.clone()).unwrap_or_else(|| "custom".into());
+                report.decisions.push(Decision {
+                    kind: "fragment".into(),
+                    segment_ids: vec![m.into.clone()],
+                    source_start: Some(round3(m.start)),
+                    source_end: Some(round3(m.end)),
+                    what: format!(
+                        "merged a {:.2} s piece into segment {} ({layout}{})",
+                        m.end - m.start,
+                        m.into,
+                        if m.relayout { ", its layout now" } else { "" }
+                    ),
+                    why: format!("shorter than {FRAGMENT_MIN} s after the cuts; a piece this short reads as a flicker"),
+                    override_with: vec![format!("rustler history restore {} --revision {before}", clip.id)],
+                });
+            }
+        }
+    }
+
     remap_ids(&mut report.decisions, &clip);
     report.applied = !report.steps.is_empty() || report.decisions.iter().any(|d| d.kind == "layout");
     if report.applied {
@@ -1780,7 +2019,7 @@ pub fn register(reg: &mut Registry) {
     ));
     reg.register(typed(
         "layout.plan",
-        "Per-shot layout plan for a clip (shots from scenes.json + a dark-safe frame-difference scan; faces at 5 fps): one face -> center-crop + smooth track, two or more -> center-crop + active speaker, no face/graphics -> blur-fit (zoom-fit when centred). Proposes only; --apply splits segments where the layout changes and writes the crop paths",
+        "Per-shot layout plan for a clip (shots from scenes.json + a dark-safe frame-difference scan; faces at 5 fps): one face -> center-crop + smooth track, two or more -> center-crop + active speaker, no face/graphics -> zoom-fit to the content box (blur-fit when there is no clear box). Proposes only; --apply splits segments where the layout changes and writes the crop paths",
         &["clip_id"],
         long,
         vec![
@@ -1881,8 +2120,10 @@ mod tests {
     }
 
     fn g(flat: f64, edges: f64, x_lo: f64, x_hi: f64) -> Option<GraphicsStats> {
-        Some(GraphicsStats { flat, edges, x_lo, x_hi })
+        Some(GraphicsStats { flat, edges, x_lo, x_hi, bbox: None })
     }
+
+    const WIDE_ON_TALL: f64 = (16.0 / 9.0) / (9.0 / 16.0);
 
     #[test]
     fn shot_plan_classifies_and_splits_only_on_layout_change() {
@@ -1898,7 +2139,7 @@ mod tests {
             };
             s.push(ScanSample { t, faces, g: gs });
         }
-        let shots = plan_shots(&s, &[4.0, 8.0], 0.0, 12.0);
+        let shots = plan_shots(&s, &[4.0, 8.0], 0.0, 12.0, WIDE_ON_TALL);
         assert_eq!(shots.len(), 2, "{shots:?}");
         assert_eq!(shots[0].layout, LayoutChoice::CenterCrop);
         assert_eq!(shots[0].tracking, Tracking::Active);
@@ -1915,10 +2156,93 @@ mod tests {
             let (faces, gs) = if (5.0..5.8).contains(&t) { (vec![], g(0.7, 0.04, 0.02, 0.98)) } else { (vec![face(0, 0.4, 0.12, 0.0)], g(0.2, 0.05, 0.05, 0.95)) };
             s.push(ScanSample { t, faces, g: gs });
         }
-        let shots = plan_shots(&s, &[5.0, 5.8], 0.0, 10.0);
+        let shots = plan_shots(&s, &[5.0, 5.8], 0.0, 10.0, WIDE_ON_TALL);
         assert_eq!(shots.len(), 1, "{shots:?}");
         let wide: Vec<ScanSample> = (0..20).map(|i| ScanSample { t: i as f64 / 5.0, faces: vec![], g: g(0.7, 0.04, 0.02, 0.98) }).collect();
-        assert_eq!(plan_shots(&wide, &[], 0.0, 4.0)[0].layout, LayoutChoice::BlurFit);
+        assert_eq!(plan_shots(&wide, &[], 0.0, 4.0, WIDE_ON_TALL)[0].layout, LayoutChoice::BlurFit);
+    }
+
+    #[test]
+    fn graphics_shot_is_cropped_to_its_content_box() {
+        // trial 2 clip 04: infographic + small people in the middle half, logo excluded by the engine
+        let gb = |b: [f64; 4]| Some(GraphicsStats { flat: 0.7, edges: 0.04, x_lo: 0.3, x_hi: 0.92, bbox: Some(b) });
+        let s: Vec<ScanSample> = (0..30)
+            .map(|i| ScanSample { t: i as f64 / 5.0, faces: vec![face(0, 0.36, 0.027, 0.0), face(1, 0.6, 0.032, 0.0)], g: gb([0.25, 0.09, 0.75, 1.0]) })
+            .collect();
+        let shots = plan_shots(&s, &[], 0.0, 6.0, WIDE_ON_TALL);
+        assert_eq!(shots.len(), 1);
+        assert_eq!(shots[0].class, ShotClass::Graphics);
+        let LayoutChoice::ZoomFit { x, y, w, h } = shots[0].layout else { panic!("{shots:?}") };
+        assert!((x - 0.22).abs() < 1e-9 && (w - 0.56).abs() < 1e-9, "{shots:?}");
+        assert!((y - 0.06).abs() < 1e-9 && (y + h - 1.0).abs() < 1e-9, "{shots:?}");
+        // 1/0.56 = 1.8x larger than blur-fit
+        assert!((zoom_gain(w, h, WIDE_ON_TALL) - 1.0 / 0.56).abs() < 1e-6);
+        // a full-frame box is no clear box: blur-fit
+        let full: Vec<ScanSample> = (0..30).map(|i| ScanSample { t: i as f64 / 5.0, faces: vec![], g: gb([0.02, 0.0, 0.97, 1.0]) }).collect();
+        assert_eq!(plan_shots(&full, &[], 0.0, 6.0, WIDE_ON_TALL)[0].layout, LayoutChoice::BlurFit);
+        // a tiny box is widened to at most 2.5x
+        let (b, gain) = content_crop(0.45, 0.45, 0.55, 0.55, WIDE_ON_TALL).unwrap();
+        assert!((gain - ZOOM_MAX_GAIN).abs() < 1e-3 && (b.w - 0.4).abs() < 1e-3, "{b:?} {gain}");
+    }
+
+    #[test]
+    fn a_weak_cut_confirmed_by_the_faces_is_frame_accurate() {
+        // trial 2 clip 04: wide two-shot (faces 0.03) -> close-up (0.10) at 19.84; the frame
+        // difference there is only 0.23 (dark set), the next strong peak is a second later
+        let mut s = Vec::new();
+        for i in 0..25 {
+            let t = 18.0 + i as f64 / 5.0;
+            let faces = if t < 19.84 { vec![face(0, 0.6, 0.033, 0.0), face(1, 0.36, 0.027, 0.0)] } else { vec![face(2, 0.43, 0.10, 0.0)] };
+            s.push(ScanSample { t, faces, g: None });
+        }
+        let peaks = [ScanPeak { t: 19.84, diff: 0.2338, base: 0.0033 }, ScanPeak { t: 20.8, diff: 0.3355, base: 0.0059 }, ScanPeak { t: 18.5, diff: 0.2, base: 0.003 }];
+        assert_eq!(scan_cuts(&peaks), vec![20.8]);
+        assert_eq!(face_cuts(&s, &peaks), vec![19.84]);
+        assert_eq!(merge_cuts([scan_cuts(&peaks), face_cuts(&s, &peaks)].concat()), vec![19.84, 20.8]);
+        // a sampled scenes.json cut snaps onto the peak
+        assert_eq!(snap_cut(20.0, &peaks), 19.84);
+        assert_eq!(snap_cut(23.0, &peaks), 23.0);
+    }
+
+    #[test]
+    fn short_fragments_join_their_source_neighbour() {
+        let src = SourceId::new();
+        let lay = |p: &str| Layout { preset: Some(p.into()), regions: vec![], background: Background::Black };
+        let seg = |s: f64, e: f64, p: &str| Segment { id: SegmentId::new(), source_id: src.clone(), start: s, end: e, layout: lay(p) };
+        // a flicker: center-crop | 0.3 s blur-fit (touching the next) | center-crop
+        let segs = vec![seg(3.0, 8.0, "center-crop"), seg(9.0, 9.3, "blur-fit"), seg(9.3, 20.0, "center-crop")];
+        let (out, merged) = merge_fragments(&segs);
+        assert_eq!(out.len(), 2, "{out:?}");
+        assert_eq!(out[1].id, segs[2].id);
+        assert_eq!((out[1].start, out[1].end), (9.0, 20.0));
+        assert_eq!(merged.len(), 1);
+        assert!(merged[0].relayout);
+        // same layout as the source neighbour: a plain join
+        let segs = vec![seg(0.0, 4.0, "center-crop"), seg(5.0, 5.4, "center-crop"), seg(5.4, 9.0, "center-crop")];
+        let (out, merged) = merge_fragments(&segs);
+        assert_eq!((out.len(), merged[0].relayout), (2, false));
+        // trial 2 clip 02: zoom-fit 8.32-11.435 | pause cut | zoom-fit 12.405-12.68 | center-crop
+        // 12.68-48.095: the graphic's tail carries on the zoom-fit across the pause cut; kept
+        let segs = vec![seg(3.07, 8.32, "center-crop"), seg(8.32, 11.435, "zoom-fit"), seg(12.405, 12.68, "zoom-fit"), seg(12.68, 48.095, "center-crop")];
+        assert_eq!(merge_fragments(&segs).0, segs);
+        // a sliver cut on both sides stays
+        let lone = vec![seg(0.0, 3.0, "center-crop"), seg(4.0, 4.3, "blur-fit"), seg(5.0, 9.0, "center-crop")];
+        assert_eq!(merge_fragments(&lone).0.len(), 3);
+    }
+
+    #[test]
+    fn override_commands_are_not_repeated() {
+        let clip = ClipId::new();
+        let seg = SegmentId::new();
+        let shot = |layout| ShotPlan { start: 0.0, end: 5.0, class: ShotClass::Graphics, faces: 0, layout, tracking: Tracking::None, face_x: None, reason: String::new() };
+        for l in [LayoutChoice::BlurFit, LayoutChoice::ZoomFit { x: 0.2, y: 0.1, w: 0.6, h: 0.9 }] {
+            let v = layout_overrides(&clip, &seg, &shot(l));
+            let set: HashSet<&String> = v.iter().collect();
+            assert_eq!(set.len(), v.len(), "{v:?}");
+        }
+        let mut v: Vec<String> = ["a", "b", "a", "c", "b"].iter().map(|s| s.to_string()).collect();
+        dedupe(&mut v);
+        assert_eq!(v, vec!["a", "b", "c"]);
     }
 
     #[test]
@@ -2001,14 +2325,21 @@ mod tests {
     }
 
     #[test]
-    fn zoom_fit_scales_the_centred_window_on_a_blurred_fill() {
-        let l = zoom_fit_layout(1920, 1080, &Canvas { width: 1080, height: 1920, fps: 30.0 }, 0.5, 0.6);
+    fn zoom_fit_scales_the_content_box_on_a_blurred_fill() {
+        let canvas = Canvas { width: 1080, height: 1920, fps: 30.0 };
+        let l = zoom_fit_layout(1920, 1080, &canvas, Rect { x: 0.2, y: 0.0, w: 0.6, h: 1.0 });
         let r = &l.regions[0];
         assert!((r.src.x - 0.2).abs() < 1e-9 && (r.src.w - 0.6).abs() < 1e-9);
         assert_eq!(r.dst.w, 1.0);
         // 0.6 * 1920 = 1152 px wide window, 1080 tall -> 1080 x 1012.5 on the canvas
         assert!((r.dst.h * 1920.0 - 1012.5).abs() < 0.5, "{:?}", r.dst);
         assert_eq!(l.background, Background::BlurFill);
+        assert_eq!(l.preset.as_deref(), Some("zoom-fit"));
+        // a box with a height: 960 x 540 px window -> 1080 x 607.5, centred
+        let l = zoom_fit_layout(1920, 1080, &canvas, Rect { x: 0.25, y: 0.1, w: 0.5, h: 0.5 });
+        let r = &l.regions[0];
+        assert!((r.src.y - 0.1).abs() < 1e-9 && (r.src.h - 0.5).abs() < 1e-9);
+        assert!((r.dst.h * 1920.0 - 607.5).abs() < 0.5 && (r.dst.y + r.dst.h / 2.0 - 0.5).abs() < 1e-9, "{:?}", r.dst);
     }
 
     #[test]

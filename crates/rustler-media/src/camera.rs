@@ -212,6 +212,10 @@ pub struct CameraParams {
     pub switch_cut_over: f64,
     /// Longest speaker-switch pan (s).
     pub switch_pan_max: f64,
+    /// The face box stays at least this share of the crop width inside both crop edges (wins
+    /// over look-room and the safe box; impossible only when the face is wider than the crop
+    /// allows or sits at the frame edge).
+    pub margin_frac: f64,
 }
 
 impl Default for CameraParams {
@@ -244,6 +248,7 @@ impl CameraParams {
             switch: SwitchStyle::Auto,
             switch_cut_over: 0.40,
             switch_pan_max: 0.6,
+            margin_frac: 0.08,
         };
         match style {
             CameraStyle::Smooth | CameraStyle::Locked => smooth,
@@ -357,7 +362,21 @@ pub fn plan_detailed(samples: &[CamSample], crop_w: f64, events: &[CamEvent], p:
             }
         }
     }
-    let target: Vec<f64> = cx.iter().zip(&shift).map(|(c, s)| clamp_c(c + s * crop_w)).collect();
+    // Where the crop centre may be so the face box keeps the margin inside both crop edges.
+    let margin = p.margin_frac.max(0.0) * crop_w;
+    let allowed: Vec<(f64, f64)> = (0..n)
+        .map(|i| {
+            if prim[i].is_none() {
+                return (f64::NEG_INFINITY, f64::INFINITY);
+            }
+            let (left, right) = (cx[i] - widths[i] / 2.0, cx[i] + widths[i] / 2.0);
+            let (lo_c, hi_c) = (right + margin - crop_w / 2.0, left - margin + crop_w / 2.0);
+            if lo_c > hi_c { (cx[i], cx[i]) } else { (lo_c, hi_c) }
+        })
+        // Inside the frame: a face at the frame edge cannot get its margin.
+        .map(|(a, b)| (clamp_c(a), clamp_c(b)))
+        .collect();
+    let target: Vec<f64> = cx.iter().zip(&shift).zip(&allowed).map(|((c, s), &(a, b))| (c + s * crop_w).clamp(a, b)).collect();
     let safe = p.safe_frac * crop_w;
     let hard = p.hard_frac * crop_w;
 
@@ -378,12 +397,22 @@ pub fn plan_detailed(samples: &[CamSample], crop_w: f64, events: &[CamEvent], p:
             CameraStyle::Locked => median(&target[a..b]),
             _ => median(&window(&times, &target, a, b, times[a] + p.lookahead)),
         };
+        let fits = |x: f64| x >= allowed[a].0 - 0.004 && x <= allowed[a].1 + 0.004;
+        // A move still running at a shot cut belongs to the old shot: it stops at the cut, and the
+        // new shot starts from where the camera is then (or cuts when that framing does not fit).
+        if let (Some(_), Some((te, EventKind::ShotCut))) = (cam, entry) {
+            if let Some(m) = moves.last_mut().filter(|m| m.dur > 0.0 && m.end() > te && m.start < te) {
+                m.stop = te;
+                cam = Some(m.at(te));
+                busy = te;
+            }
+        }
         let c = match cam {
             None => {
                 first = rest0;
                 rest0
             }
-            Some(c) if (rest0 - c).abs() <= safe => c,
+            Some(c) if (rest0 - c).abs() <= safe && fits(c) => c,
             Some(c) => {
                 let (te, kind) = entry.unwrap_or((times[a], EventKind::ShotCut));
                 let d = (rest0 - c).abs();
@@ -416,7 +445,7 @@ pub fn plan_detailed(samples: &[CamSample], crop_w: f64, events: &[CamEvent], p:
         };
         let mut c = c;
         if p.style != CameraStyle::Locked {
-            hold_or_move(&times, &target, a, b, &mut c, &mut busy, &mut moves, p, safe, hard);
+            hold_or_move(&times, &target, &allowed, a, b, &mut c, &mut busy, &mut moves, p, safe, hard);
         }
         cam = Some(c);
     }
@@ -475,6 +504,7 @@ pub fn plan_detailed(samples: &[CamSample], crop_w: f64, events: &[CamEvent], p:
 fn hold_or_move(
     times: &[f64],
     target: &[f64],
+    allowed: &[(f64, f64)],
     a: usize,
     b: usize,
     cam: &mut f64,
@@ -484,6 +514,9 @@ fn hold_or_move(
     safe: f64,
     hard: f64,
 ) {
+    // Tolerance on the face margin (frame widths): detection jitter must not trigger moves.
+    const MARGIN_TOL: f64 = 0.004;
+    let outside = |j: usize, c: f64| c < allowed[j].0 - MARGIN_TOL || c > allowed[j].1 + MARGIN_TOL;
     let mut i = a;
     while i < b {
         if times[i] < *busy {
@@ -491,11 +524,13 @@ fn hold_or_move(
             continue;
         }
         let d = target[i] - *cam;
-        if d.abs() <= safe {
+        // The face is too near a crop edge for a sustained moment (two samples): move now.
+        let squeezed = outside(i, *cam) && (i + 1 >= b || outside(i + 1, *cam));
+        if d.abs() <= safe && !squeezed {
             i += 1;
             continue;
         }
-        let side = d.signum();
+        let side = if d.abs() > 1e-9 { d.signum() } else { 1.0 };
         // Is the subject really out (most of the next `min_out`), or about to leave the frame?
         let horizon = times[i] + p.min_out;
         let (mut out_n, mut tot) = (0usize, 0usize);
@@ -512,12 +547,13 @@ fn hold_or_move(
         }
         let covered = last_t - times[i] >= p.min_out * 0.75 || b == times.len();
         let persistent = covered && out_n as f64 >= 0.75 * tot as f64;
-        if !(persistent || d.abs() > hard) {
+        if !(persistent || d.abs() > hard || squeezed) {
             i += 1;
             continue;
         }
-        let new = median(&window(times, target, i, b, times[i] + p.lookahead));
-        if (new - *cam).abs() <= safe * 0.5 {
+        let new = median(&window(times, target, i, b, times[i] + p.lookahead)).clamp(allowed[i].0, allowed[i].1);
+        let min_step = if squeezed { MARGIN_TOL } else { safe * 0.5 };
+        if (new - *cam).abs() <= min_step {
             i += 1;
             continue;
         }
