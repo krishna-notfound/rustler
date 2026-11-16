@@ -673,3 +673,22 @@ merge, then templates (Opus), knowledge refresh, clips.auto, `rustler setup run`
   progress had `eta_s`; frames looked at (blur-fit wide shot, center-crop close-up, template captions + progress bar).
 - Not run: the URL path (no network in tests). Open: no whisper fallback when a video has no captions (the error
   hint says to import sections and use `--source-id`).
+
+### 2026-11-16 — v0.2.0 released (merge of waves C–E)
+- Merged to `main`: timeline v2 (f33), smart defaults + light active speaker (f34), templates (f35), hook styles /
+  keyword+emoji captions / flash-flashblack-whip / cover (f36), `clips.auto` (f37), knowledge/skill/MUSE refresh.
+  179 registry commands, 22 guides, 15 prompts.
+- Merge fixes: the timeline document's `TransitionKind` lacked `flash`/`flashblack`/`whip` (a clip with one of
+  them made `timeline.show` fail) — added, with a check in `tests/hooks_captions.rs`; `rustler-tools` asset test
+  expected 7 built-ins (now 9 after the two new caption presets). Cold open keeps its white-flash *effect* item
+  (renders verified; a flash transition would overlap the cut and shift times).
+- Tests: `cargo test --workspace --no-fail-fast` → 92 test targets ok, 1 failed (the stale asset count, fixed);
+  reran tools, core, commands `hooks_captions/timeline/timeline_edit/templates/auto`, knowledge: all pass.
+- Build caches moved off C: (user rule): repo-local untracked `.cargo/config.toml` → `D:/rustler-build/main`;
+  agents use `D:\rustler-build\<name>`.
+- Release: version 0.2.0 (workspace + internal crate pins), Windows zip (rustler.exe + rustler-desktop.exe) and
+  Linux tarball (WSL, zig glibc-2.31 linker), SHA256SUMS; marked latest. `install.sh` verified in WSL with a fresh
+  HOME (`--no-setup`): resolves latest = v0.2.0, checksum ok, `rustler --version` = 0.2.0. Installed engine refreshed
+  with `rustler setup run` (doctor ready). Muse must re-run `rustler setup run` after upgrading.
+- Running: real trial 2 on a copy of rustler-real1 on D: (same 5 moments; `clips auto` + a directed pass),
+  report → `docs/research/trial-2-2026-11-16.md`.
