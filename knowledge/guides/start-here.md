@@ -92,7 +92,7 @@ Work in this order. Each step has its own guide.
 | 2 Plan | Let Rustler rank candidate windows, then judge them yourself; choose start/end units | `highlights candidates`, `highlights signals`, `transcript read-window`, `see tiles --around`, `see frame` | `finding-hooks`, `cut-points` |
 | 3 Cut | Create the clip from unit ids (smart defaults already trim fillers and pauses > 1 s and set the per-shot layout + framing; read `smart.decisions`), then refine the cut points | `clip create`, `edit refine`, `edit remove-pauses`, `edit remove-words`, `edit trim`, `history restore` | `cut-points`, `layouts-and-framing` |
 | 4 Frame | Check the automatic layout and framing on the contact sheet, override where wrong; streamers get the webcam split | `layout plan`, `clip set-layout`, `crop track-active`, `crop track-face`, `layout detect-webcam`, `layout from-frame-boxes` | `layouts-and-framing`, `streamer-clips` |
-| 5 Style | Captions, hook title, transitions, effects, progress bar | `caption set`, `caption create-style`, `overlay add-text`, `transition set`, `effect add`, `overlay progress-bar` | `captions-and-style`, `editing-toolkit` |
+| 5 Style | One look for the batch (template), captions, hook title style, transitions (incl. flash and whip), effects, progress bar | `template apply`, `caption set`, `caption keywords`, `overlay add-text --style hook-big`, `transition set`, `effect add`, `overlay progress-bar` | `templates-and-brand`, `captions-and-style`, `editing-toolkit` |
 | 6 Sound | Clean dialogue, music bed, sound effects (library files via `asset:<id>`) | `audio denoise`, `audio add-music`, `audio add-sfx`, `audio volume`, `asset search` | `audio`, `assets` |
 | 7 Preview | Check single frames before spending a full render | `render preview-frame` | `quality-checklist` |
 | 8 Brief | When there is a brief: save it once, check every clip | `brief set`, `brief check`, `brief description` | `briefs-and-batches` |
@@ -100,7 +100,8 @@ Work in this order. Each step has its own guide.
 | 10 **Watch** | Run QC, then **open and look at the contact sheet** | `qc run` | `quality-checklist` |
 | 11 Fix | Let Rustler suggest the fixes; apply the safe ones; judge the creative ones | `fix suggest`, `fix apply`, `qc compare`, `edit *`, `history undo` | `quality-checklist` |
 | 12 Variants | Only when a strong clip has a real open question | `variant create`, `variant compare` | `briefs-and-batches` |
-| 13 Export | Copy the passing render + report to `exports/` | `export clip`, `export batch` | `platform-specs` |
+| 12b Retention, cover, post copy | Fix dead zones, pick the cover, write the per-platform post JSON | `clip retention`, `clip cover`, `clip meta-context`, `clip meta-set`, `campaign analyze` | `director-retention`, `campaigns-and-posting` |
+| 13 Export | Copy the passing render + report + cover + post JSON to `exports/` | `export clip`, `export batch` | `platform-specs` |
 | 14 Hand over | See where everything stands; pack the project to move or archive it | `project status`, `project pack` | `briefs-and-batches` |
 
 Speech is only part of a video. `analyze deep` adds what the transcript cannot tell you (all local, no AI API):
@@ -180,7 +181,48 @@ rustler project pack                                                   # zip it 
 Order matters in two places: add transitions after the segments exist (they need `seg_` ids from
 `clip show`), and add the hook title and effects after the final cut: their times are output-timeline
 seconds, so after any later re-cut run `overlay list`, `effect list` and `audio list` and move what
-drifted (`overlay edit`, `effect remove` + `effect add`).
+drifted (`overlay edit`, `effect remove` + `effect add`). Or write the whole clip in one step with the
+timeline document (`timeline show`, `timeline apply`): see `editing-toolkit`.
+
+### The v2 recommended flow (fewest calls, best result)
+
+Smart defaults and templates do the repetitive work, so you spend your calls on judgement. In this order:
+
+```
+# 1 smart defaults: clip create already picks a layout per shot, tracks the face or the active speaker,
+#   and trims fillers and pauses > 1 s. Read smart.decisions; override only what the contact sheet gets wrong.
+rustler clip create --name moment-1 --source-id src_X --start-unit 41 --end-unit 47 --expect-text "nobody tells you"
+rustler layout plan clp_X                                    # why each shot got its layout (add --apply to re-plan)
+#   --raw skips the smart defaults when you want to build the framing yourself.
+# 2 template: one look for the whole batch (captions, hook look, punch-ins, progress bar, loudness)
+rustler template list                                        # starters: podcast-viral, streamer-split
+rustler template apply podcast-viral --clip-ids clp_X --dry-run    # then without --dry-run; history undo reverts it
+#   or in one call: rustler clip create ... --template podcast-viral
+# 3 retention and director: measure the finished edit, then fix the dead zones
+rustler render run clp_X --quality draft
+rustler clip retention clp_X                                 # dead zones with the exact fix commands, 0-100 score
+rustler campaign analyze                                     # strategy from the brief/campaign (per_view vs per_clip)
+# 4 hooks: a viral hook title, a cold open on the payoff, a flash or whip at the cut
+rustler overlay hook-styles                                  # hook-big, hook-box-yellow, hook-outline, hook-pov, hook-question
+rustler overlay add-text clp_X "Nobody tells you this" --style hook-big --start 0 --end 3 --sfx asset:<whoosh-id>
+rustler edit cold-open clp_X --start-unit 57 --end-unit 57   # open on the hook line, white flash at the cut
+rustler caption keywords clp_X --auto                        # with the keyword-highlight caption preset
+# 5 cover: sharp frame, face visible, saved with the export
+rustler render run clp_X && rustler qc run clp_X             # exit 7 = failed; OPEN the contact sheet
+rustler clip cover clp_X --auto                              # LOOK at the image it returns
+# 6 post JSON: you write the title, description, hashtags per platform; Rustler checks the limits and rules
+rustler clip meta-context clp_X                              # the words, limits, campaign rules, brief
+rustler clip meta-set clp_X --input-json @meta.json          # shorts / reels / tiktok copy
+# 7 export: the mp4, report, srt, cover and post.json land in exports/
+rustler export clip clp_X --name moment-1
+```
+
+Never publish: exports are files for a human to post. Settings that change the defaults (smart defaults on or
+off, default template, QC faces) live in `rustler config list` / `rustler config set`. Optional one-command
+pipeline: `rustler clips auto --source-id src_X --count 3 --template podcast-viral` (or `--url`; `--dry-run` shows the
+plan first) picks moments, creates the clips with smart defaults and the template, applies cheap retention fixes,
+renders, runs QC, picks the cover and exports. It never publishes and leaves the post copy empty for you to write
+(`clip meta-set`); read its report and look at every contact sheet. Guide: `clips-auto`.
 
 ## 4. Rules (non-negotiable)
 
@@ -225,7 +267,12 @@ section was trimmed, or a model fell back to CPU. Details: `cli-reference-conven
 - File on disk → `workflow-local-file`
 - Picking moments → `finding-hooks`, then `cut-points`
 - Streamer clip with webcam → `streamer-clips`, then `layouts-and-framing`
-- Hook titles, transitions, effects, progress bar → `editing-toolkit`
+- Hook titles, transitions, effects, progress bar, the whole-clip timeline document, cold opens, merges, speed, freezes, image layers, masks, B-roll → `editing-toolkit`
+- Retention, hooks that hold, directing a whole job → `director-retention` (prompt `direct_campaign`)
+- One look for many clips, brand kit, starters `podcast-viral` and `streamer-split` → `templates-and-brand` (prompt `apply_template_batch`)
+- Copy a style from example shorts → `learn-style-from-videos` (prompt `learn_style_from_folder`)
+- Campaign rules, posting copy, post JSON → `campaigns-and-posting` (prompt `write_clip_meta`)
+- A fast first pass over a whole source in one call, then correcting it → `clips-auto`
 - A job brief, several clips, variants, batch export → `briefs-and-batches`
 - Music, sound effects, fonts, custom caption styles → `assets`, then `audio`
 - Hindi/English mix → `hinglish`

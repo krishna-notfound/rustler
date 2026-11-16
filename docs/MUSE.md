@@ -11,7 +11,7 @@ Muse needs a GitHub token with read access to `krishna-notfound/rustler`
 export RUSTLER_TOKEN=<token>
 curl -fsSL -H "Authorization: Bearer $RUSTLER_TOKEN" -H "Accept: application/vnd.github.raw" \
   https://api.github.com/repos/krishna-notfound/rustler/contents/scripts/install.sh | bash
-# installs ~/.rustler/app/rustler, puts it on PATH, runs `rustler setup run` (lite, ~0.5 GB; latest release is v0.1.1, pin with `--version v0.1.1`)
+# installs ~/.rustler/app/rustler, puts it on PATH, runs `rustler setup run` (lite, ~0.5 GB; latest release is v0.2.0, pin with `--version v0.2.0`)
 rustler doctor run            # must say "ready": true
 rustler doctor run --network  # probes YouTube through yt-dlp; tells you which fix below you need
 ```
@@ -24,27 +24,45 @@ If no release binary works on that machine, build from source:
 (needs a C compiler; see `docs/linux.md` for the no-root zig recipe), then `./target/release/rustler setup run`.
 
 ## 3. Teach Muse
-Tell Muse to read, in this order: `rustler guide show start-here`, `rustler guide show workflow-youtube-longform`,
-`rustler guide show finding-hooks`, then `rustler prompt show make_viral_clips --args '{"source":"<url>","count":"5"}'`.
+Tell Muse to read, in this order: `rustler guide show start-here` (the v2 recommended flow is in section 3),
+`rustler guide show workflow-youtube-longform`, `rustler guide show finding-hooks`,
+`rustler guide show templates-and-brand`, `rustler guide show director-retention`,
+`rustler guide show campaigns-and-posting`, then
+`rustler prompt show make_viral_clips --args '{"source":"<url>","count":"5"}'`.
+Fast first pass over a whole source: `rustler clips auto --source-id <src> --count 5 --template podcast-viral --dry-run`, then without `--dry-run` (guide `clips-auto`; it never publishes and leaves the post copy for you to write).
+Several clips with one look: `rustler prompt show apply_template_batch`. A paid campaign: `rustler prompt show direct_campaign`.
 If Muse speaks MCP: `rustler mcp serve` (stdio). Skill file: `skills/rustler/SKILL.md`.
 
 ## 4. Copy-paste prompt for Muse
 ```
 You are my short-form clip editor. Use the `rustler` CLI (already installed; run `rustler help`).
-Source: <YouTube URL>. Make 5 strong 9:16 clips (25–60 s each) for Shorts/Reels.
+Read `rustler guide show start-here` first. Source: <YouTube URL>. Make 5 strong 9:16 clips (25-60 s each)
+for Shorts/Reels. You do the thinking and you LOOK at the images; Rustler calls no AI APIs.
 1. rustler project create --name job1 --dir ~/clips/job1 ; cd ~/clips/job1
 2. rustler source info <url> ; rustler source fetch-transcript <url>   (first YouTube lookup ~3 min)
-   — or fetch the captions with your own tools and `rustler transcript import <url> --file captions.vtt`
+   - or fetch the captions with your own tools and `rustler transcript import <url> --file captions.vtt`
 3. rustler highlights candidates <pending-id> --count 20 --min-len 25 --max-len 60 ; read the best with
    `rustler transcript read-window` and pick 5 standalone moments with a hook in the first 2 seconds.
 4. rustler source import <url> --sections MM:SS-MM:SS ...   (only those sections)
 5. rustler analyze quick <src> --transcribe auto   (reuses YouTube captions; no whisper needed)
 6. Look at frames yourself: rustler see tiles <src> ; rustler see frame --source-id <src> --t 5 --grid true
-   Wide shots with on-screen graphics → blur-fit; close-ups → center-crop + `rustler crop track-face`.
-7. rustler clip create ... --start-unit/--end-unit --expect-text "<first words>" --caption-style hormozi-pop
-   rustler overlay add-text <clip> --text "<hook ≤ 7 words>"
-8. rustler render run <clip> ; rustler qc run <clip> ; LOOK at the contact sheet ; fix ; rustler export clip <clip>
-Never publish anything. Send me the files in ~/clips/job1/exports/ with each clip's report.
+7. SMART DEFAULTS: rustler clip create --name c1 --source-id <src> --start-unit A --end-unit B --expect-text "<first words>" --template podcast-viral
+   It picks the layout per shot, tracks the face or active speaker, trims fillers and pauses, and applies the
+   template (captions, hook look, punch-ins, progress bar, loudness). Read `smart.decisions`; check
+   `rustler layout plan <clip>` and the preview; override only what looks wrong (clip set-layout, crop track-active).
+   (Streamer with a webcam: --template streamer-split, and `rustler layout detect-webcam <src> --clip-id <clip>`.)
+8. HOOK: rustler overlay add-text <clip> "<hook, 7 words max>" --style hook-big --start 0 --end 3
+   (styles: `rustler overlay hook-styles`). Best line late in the moment? `rustler edit cold-open <clip> --start-unit A --end-unit B`.
+   Optional: `rustler caption keywords <clip> --auto` with the keyword-highlight caption style.
+9. rustler render preview-frame <clip> --out-t 1.0 ; LOOK. Then rustler render run <clip> ; rustler qc run <clip> ; LOOK at the contact sheet ; fix.
+10. RETENTION CHECK: rustler clip retention <clip> ; fix every dead zone it lists with the command it suggests, re-render, check again.
+    Drop a clip that stays weak.
+11. COVER: rustler clip cover <clip> --auto ; LOOK at the image.
+12. POST JSON: rustler clip meta-context <clip> ; write the title, description and hashtags for shorts/reels yourself ;
+    save them with `rustler clip meta-set <clip> --input-json @meta.json` (guide `campaigns-and-posting`).
+13. rustler export clip <clip> --name <slug>   (mp4 + report + srt + cover + post.json in exports/)
+NEVER publish, upload or post anything. Send me the files in ~/clips/job1/exports/ with each clip's report,
+what you saw on the contact sheet, and anything you could not verify.
 ```
 
 ## 5. Speed notes (measured)

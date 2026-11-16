@@ -34,15 +34,27 @@ open loop, the payoff, the emotion.
 
 ## 3. Hooks
 For every moment write the hook: on-screen text (≤ 7 words) + first spoken line + visual opening (normal start,
-or cold open on the payoff). For the top moments run the `hook_lab` prompt to compare 5 variants.
+or cold open on the payoff). For the top moments run the `hook_lab` prompt to compare 5 variants. Pick the
+hook-title style from `rustler overlay hook-styles` (`hook-big`, `hook-box-yellow`, `hook-outline`, `hook-pov`,
+`hook-question`); a cold open is `rustler edit cold-open <clip_id> --start-unit A --end-unit B`.
 
 ## 4. One look (template)
 Decide once for the whole batch: caption style, layout per shot type, hook-title style, punch-in strength, music
-policy. Per-clip pay: copy the creator's own shorts. Apply the same settings to every clip.
+policy. Per-clip pay: copy the creator's own shorts (`learn-style-from-videos`, prompt `learn_style_from_folder`).
+Make the look a **template** and apply the same one to every clip: start from `rustler template list` (starters
+`podcast-viral`, `streamer-split`), or style one clip by hand and `rustler template create <name> --from-clip <clip_id>`,
+then `rustler template apply <name> --clip-ids <ids> --dry-run` and without `--dry-run` (the `apply_template_batch`
+prompt walks through it; guide `templates-and-brand`). Hook text stays per clip.
 
 ## 5. Edit each clip for retention
-1. `rustler clip create …` on sentence boundaries; `rustler edit refine <clip_id>`; `rustler edit remove-pauses <clip_id>`.
-2. Layout and captions; the hook title: `rustler overlay add-text <clip_id> "<hook>" --style hook-top --start 0 --end 2.5`.
+1. `rustler clip create …` on sentence boundaries (smart defaults pick the layout per shot and trim fillers and
+   pauses; read `smart.decisions`, or pass `--raw`; add `--template <name>` to apply the look at once);
+   `rustler edit refine <clip_id>`. Cold open on the payoff when the hook is not the first line:
+   `rustler edit cold-open <clip_id> --start-unit A --end-unit B`. Bigger rebuilds (reorder, B-roll, speed,
+   freeze frames): `rustler timeline show <clip_id>` then `rustler timeline apply` (`editing-toolkit`).
+2. Layout and captions (the template, `rustler layout plan <clip_id>` to check the framing); the hook title:
+   `rustler overlay add-text <clip_id> "<hook>" --style hook-big --start 0 --end 3` (a style from `overlay hook-styles`;
+   `--sfx` adds a whoosh). Pace at cuts: `rustler transition set <clip_id> <seg_id> flash|whip`.
 3. Credit/watermark from the brief: `rustler overlay add-text <clip_id> "<credit>" --style lower-third`.
 4. `rustler clip retention <clip_id>`: fix every dead zone that matters with its suggested command (punch-in on
    the stressed word, text pop, jump cut, layout change); make the ending sentence-final, loopable if you can.
@@ -58,6 +70,7 @@ Drop a clip whose `retention_score` stays under 70 after fixes or whose own scor
 costs reach for the strong ones.
 
 ## 6. Ship
-`rustler render batch --all true --quality final --only-missing true`, then `rustler export batch …` (or
-`rustler export clip <clip_id>` one by one). Report to the user: per clip the name, duration, both scores, the
+`rustler render batch --all true --quality final --only-missing true`; then pick each clip's cover from its final
+render (`rustler clip cover <clip_id> --auto`, look at the image); then `rustler export batch …` (or
+`rustler export clip <clip_id>` one by one: it copies the cover and writes the post JSON). Report to the user: per clip the name, duration, both scores, the
 hook, what you fixed, and anything from the checklist you could not verify. Never publish or upload.

@@ -26,6 +26,15 @@ Update `docs/progress-log.md` (dated entry) and the feature file's *Status Log* 
 If implementation changes the architecture, scope or standards documented in `docs/context/`, update the relevant
 file before continuing.
 
+## Using Rustler as an editing agent (v2)
+
+If your task is to *make clips* (not to change the repo), read `skills/rustler/SKILL.md` and `rustler guide show start-here`.
+v2 capabilities: smart defaults at `clip create` (layout and framing per shot, filler/pause trim; `--raw` off), templates
+(`template apply`, starters `podcast-viral` and `streamer-split`, `clip create --template`), the whole-clip timeline document
+(`timeline show/schema/apply`, cold open, insert, speed, freeze, merge), retention/director tools (`clip retention`, campaigns),
+hook styles, keyword captions, flash/whip transitions, `clip cover`, and per-platform post JSON (`clip meta-set`).
+179 commands; `rustler commands list` is the authority.
+
 ## Rules that apply to every agent
 
 - No AI API calls. Rustler runs local tools only.

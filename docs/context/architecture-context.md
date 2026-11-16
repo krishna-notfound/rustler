@@ -46,7 +46,9 @@ Project folder layout (written by `ProjectStore`):
 | `scenes.json`, `audio_events.json` | `Scenes`, `AudioEvents`, `LoudnessPoint`, `Silence` | Analysis outputs |
 | `clip.json` | `Clip`, `Segment`, `Layout`, `Region`, `Rect`, `Fit`, `Background`, `CaptionTrack`, `AudioSettings`, `Canvas` | Current revision |
 | `history/<rev>.clip.json` | Snapshot of a clip at a revision | Used by undo and restore |
-| `extras.json` | Music bed settings and similar per-clip extras | Written by `audio.add_music` |
+| `extras.json` | Layers and per-clip extras: music, sfx, overlays, effects, transitions, images, cutaways, masks, freezes, segment speeds, `cover`, `post`, `meta`, `template_ref` | Snapshotted to `history/<rev>.extras.json`; the whole clip (clip.json + extras) is exposed as one `rustler.timeline@2` document by `timeline.show` / `timeline.apply` (f33) |
+| `config.json` (project) / `<home>/config.json` (global) | Settings (`config.*`, f30) | Project wins over global; explicit flags win over both |
+| `templates/<name>@<ver>.json`, `campaigns/<id>.json`, `references/<name>/` | Templates (f35), campaigns (f31), style-reference sets (f32) | Templates also resolve from `<home>/templates/` and the built-in starters |
 | `report.json` | `QcReport`, `QcCheck`, `QcStatus` | Written by `qc.run` and export |
 | `events.ndjson` | Append-only event log | One line per mutation |
 

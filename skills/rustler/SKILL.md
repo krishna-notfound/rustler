@@ -10,7 +10,7 @@ audio events, faces, speakers), renders frames, compiles one FFmpeg render and r
 transcripts, LOOK at images, pick moments and judge results. Every command prints one JSON envelope on
 stdout (`ok`, `data`, `warnings`, or `error` with `hint`); progress goes to stderr. Exit codes: 0 ok,
 2 usage, 3 not found, 4 missing dependency, 5 network, 6 media, 7 QC failed, 8 cancelled, 9 revision
-conflict, 10 internal. 118 commands; the knowledge book is the manual (`rustler guide list`).
+conflict, 10 internal. 179 commands; the knowledge book is the manual (`rustler guide list`).
 
 ## 1. Bootstrap and discovery
 
@@ -64,28 +64,57 @@ rustler export clip clp_X --name c1                # exports/c1.mp4 + .report.js
 After `qc run`, OPEN the contact sheet image (`data.contact_sheet`; over MCP it arrives as an image) and
 judge it with `rustler guide show quality-checklist` before you call the clip done.
 
+## 2b. v2: smart defaults, templates, timeline, retention, hooks, cover, post JSON
+
+`clip create` already picks a layout per shot, tracks the face or active speaker, and trims fillers and pauses > 1 s
+(read `smart.decisions`; `--raw` turns it off; `layout plan clp_X` explains it). Then, in this order:
+
+```
+rustler template apply podcast-viral --clip-ids clp_X --dry-run   # starters: podcast-viral, streamer-split; or clip create --template ...
+rustler clip retention clp_X                          # dead zones with exact fixes; fix, re-render, re-check
+rustler overlay hook-styles                           # hook-big | hook-box-yellow | hook-outline | hook-pov | hook-question
+rustler overlay add-text clp_X "Nobody tells you this" --style hook-big --start 0 --end 3
+rustler edit cold-open clp_X --start-unit 57 --end-unit 57     # open on the payoff line (flash at the cut)
+rustler caption keywords clp_X --auto                 # with the keyword-highlight caption preset
+rustler clip cover clp_X --auto                       # after render; LOOK at it; export saves <name>.cover.jpg
+rustler clip meta-context clp_X                       # then write the copy yourself and save it:
+rustler clip meta-set clp_X --input-json @meta.json   # per platform; export writes <name>.post.json
+```
+
+Whole-clip control: `timeline show clp_X` / `timeline apply clp_X --base-revision N --input-json @patch.json`;
+also `edit insert-segment|speed|freeze`, `clip merge|duplicate`, layers `image|cutaway|mask add`, `asset render-card`.
+Campaign jobs: `campaign create|analyze|mark`. Style from examples: `reference import|analyze`. Settings: `config list|set`.
+Optional one-command pipeline: `rustler clips auto --source-id src_X --count 3 --template podcast-viral` (`--dry-run` first; never publishes, post copy stays yours; guide `clips-auto`). Guides: `templates-and-brand`, `director-retention`,
+`campaigns-and-posting`, `learn-style-from-videos`, `editing-toolkit`.
+
 ## 3. Command groups (each command: `rustler group action`; flags via `commands describe`)
 
 | Group | Commands |
 |---|---|
-| setup/help | `setup run`, `doctor run`, `guide list/show/search`, `prompt list/show` |
+| setup/help | `setup run`, `doctor run`, `guide list/show/search`, `prompt list/show`, `config list/get/set/unset` |
 | project | `create`, `show`, `status`, `list`, `open`, `pack`, `unpack`, `set-permissions`, `set-settings` |
 | source | `info`, `fetch-transcript`, `search`, `import`, `list`, `show` |
 | analyze | `quick`, `transcribe`, `scenes`, `audio`, `deep`, `ocr`, `events`, `faces`, `speakers` |
-| transcript, see | `transcript get/search/read-window`; `see frame/tiles/preview` |
+| transcript, see | `transcript get/search/read-window/import`; `see frame/tiles/preview` |
 | highlights | `signals`, `candidates` |
-| clip | `create`, `add-segment`, `list`, `show`, `set-layout`, `set-captions` |
-| edit | `set-range`, `trim`, `refine`, `split`, `delete-segment`, `move-segment`, `remove-pauses`, `remove-words` |
+| clip | `create` (`--raw`, `--template`), `add-segment`, `list`, `show`, `set-layout`, `set-captions`, `merge`, `duplicate`, `retention`, `score-set`, `cover`, `meta-context`, `meta-set` |
+| edit | `set-range`, `trim`, `refine`, `split`, `delete-segment`, `move-segment`, `remove-pauses`, `remove-words`, `insert-segment`, `cold-open`, `speed`, `freeze` |
+| timeline | `show`, `schema`, `apply` (JSON-Patch or whole document, one revision) |
 | history | `list`, `undo`, `restore` |
-| layout | `list-presets`, `presets`, `detect-webcam`, `show`, `from-frame-boxes`, `edit-region`, `add-region`, `remove-region`, `reorder`, `save-preset`, `apply-preset`, `delete-preset` |
-| crop | `track-face`, `track-speaker`, `clear` |
-| caption | `set`, `list-styles`, `styles`, `create-style`, `export-srt`, `speaker-colors`; `speaker rename` |
-| overlay | `add-text`, `edit`, `list`, `remove`, `progress-bar` |
-| transition, effect | `transition set/list/clear` (cut, fade, dissolve, wipeleft, wiperight, slideup, zoomin); `effect add/list/remove` (punch-in, zoom-slow, shake, flash) |
+| layout | `list-presets`, `presets`, `plan`, `detect-webcam`, `show`, `from-frame-boxes`, `edit-region`, `add-region`, `remove-region`, `reorder`, `save-preset`, `apply-preset`, `delete-preset` |
+| crop | `track-face`, `track-active`, `track-speaker`, `clear` |
+| caption | `set`, `list-styles`, `styles`, `create-style`, `export-srt`, `speaker-colors`, `keywords`, `word`, `words-list`, `words-clear`; `speaker rename` |
+| overlay, text | `overlay add-text/edit/list/remove/progress-bar/hook-styles`; `text create-style/styles` |
+| image, cutaway, mask | `add`, `edit`, `list`, `remove` each (logo/sticker layer, B-roll, blur/box over part of the picture) |
+| transition, effect | `transition set/list/clear` (cut, fade, dissolve, wipeleft, wiperight, slideup, zoomin, flash, flashblack, whip); `effect add/list/remove` (punch-in, zoom-slow, shake, flash) |
 | audio | `add-music`, `remove-music`, `add-sfx`, `remove-sfx`, `list`, `denoise`, `volume` |
-| asset | `list`, `search`, `show`, `add` (license required), `remove`; use `asset:<id>` as an audio path |
+| asset | `list`, `search`, `show`, `add`, `remove`, `render-card`; use `asset:<id>` as an audio path |
+| template | `list`, `show`, `create`, `update`, `apply`, `diff`, `delete`, `export`, `import` |
+| reference | `import`, `analyze`, `list`, `show` (style from example shorts) |
+| campaign | `create`, `list`, `show`, `delete`, `analyze`, `mark` |
 | render, qc, fix | `render run/preview-frame/batch`; `qc run/compare`; `fix suggest/apply` |
 | export | `clip`, `batch` |
+| clips | `auto` (one-call pipeline: pick, create, fix, render, QC, cover, export) |
 | brief, variant | `brief set/show/clear/check/description`; `variant create/list/compare` |
 
 ## 4. Fixing and styling (every edit is a new revision; `history undo clp_X` reverts)
@@ -95,11 +124,11 @@ judge it with `rustler guide show quality-checklist` before you call the clip do
 | Wrong start/end | `edit set-range clp_X --start-unit N --end-unit M --expect-text "..."`, `edit trim clp_X --start-delta 0.3`, `edit refine` |
 | Dead air, fillers | `edit remove-pauses clp_X --keep 0.25`, `edit remove-words clp_X` |
 | Multi-part clip | `clip add-segment`, `edit split clp_X <out_t>`, `edit move-segment`, `transition set clp_X seg_A dissolve` |
-| Layout | `clip set-layout clp_X --preset blur-fit` (center-crop, blur-fit, split-vertical); regions: `layout edit-region ... --nudge` |
+| Layout | `layout plan clp_X` (why each shot got its layout; `--apply`), `clip set-layout clp_X --preset blur-fit` (center-crop, blur-fit, split-vertical); regions: `layout edit-region ... --nudge` |
 | Streamer cam | `layout detect-webcam src_X --clip-id clp_X`; check the preview, nudge off any gameplay sliver |
-| Off-center / two people | `crop track-face clp_X`; `analyze speakers src_X` then `crop track-speaker clp_X` |
+| Off-center / two people | `crop track-face clp_X`; `crop track-active clp_X` (light, lite install); `analyze speakers src_X` then `crop track-speaker clp_X` |
 | Captions | `caption set clp_X --style clean-white --position-y 0.7 --max-words-per-line 3`; `caption create-style`; `caption speaker-colors` |
-| Hook, credit | `overlay add-text clp_X "..." --style hook-top\|lower-third\|plain`; `overlay progress-bar clp_X --enabled true` |
+| Hook, credit | `overlay add-text clp_X "..." --style hook-big\|hook-box-yellow\|hook-outline\|hook-pov\|hook-question\|hook-top\|lower-third\|plain` (`--sfx` whoosh); `overlay progress-bar clp_X --enabled true` |
 | Energy | `effect add clp_X punch-in --start 4.2 --end 4.8`, `audio add-sfx clp_X asset:<id> --at-word '{...}'` |
 | Audio | `audio denoise`, `audio add-music clp_X --path asset:<id> --volume-db -18`, `audio volume` |
 | QC failure | `fix suggest` / `fix apply`; `qc compare clp_X rnd_A rnd_B` shows what changed |
@@ -127,7 +156,9 @@ the cut is final. `--expect-revision N` guards concurrent edits (exit 9: re-read
 `start-here`, `workflow-youtube-longform`, `workflow-local-file`, `finding-hooks`, `cut-points`,
 `layouts-and-framing`, `captions-and-style`, `audio`, `quality-checklist`, `hinglish`, `platform-specs`,
 `troubleshooting`, `cli-reference-conventions` (the full command map), `streamer-clips`, `editing-toolkit`,
-`briefs-and-batches`, `assets`.
+`briefs-and-batches`, `assets`, `campaigns-and-posting`, `director-retention`, `learn-style-from-videos`,
+`templates-and-brand`, `clips-auto`.
 
 Prompts: `make_viral_clips`, `clip_from_stream`, `streamer_split_clip`, `quick_scan_source`,
-`hinglish_podcast_clips`, `batch_from_brief`, `polish_clip`, `review_clip`, `fix_qc_failures`, `restyle_clip`.
+`hinglish_podcast_clips`, `batch_from_brief`, `polish_clip`, `review_clip`, `fix_qc_failures`, `restyle_clip`,
+`direct_campaign`, `hook_lab`, `learn_style_from_folder`, `write_clip_meta`, `apply_template_batch`.

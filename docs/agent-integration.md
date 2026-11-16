@@ -10,7 +10,7 @@ Files that ship for this:
 |---|---|
 | `skills/rustler/SKILL.md` | Claude Code / Agent Skills: loaded automatically when the user asks for clips |
 | `skills/rustler/AGENTS.md` | Any other agent: the same essentials in plain markdown, plus MCP config |
-| `knowledge/` | The knowledge book (17 guides, 10 prompts), served by `rustler guide` / `rustler prompt` and by MCP |
+| `knowledge/` | The knowledge book (22 guides, 15 prompts), served by `rustler guide` / `rustler prompt` and by MCP |
 
 ## 1. Put the CLI on PATH
 
@@ -91,15 +91,15 @@ highlights, captions or reframing. It is short on purpose and points to guides f
 
 - **Tools.** Every registry command becomes a tool named `group_action`: `source_info`,
   `source_import`, `analyze_quick`, `transcript_get`, `see_tiles`, `clip_create`, `render_run`,
-  `qc_run`, `export_clip`, and so on: 118 tools (`rustler commands list` shows all; the guide
+  `qc_run`, `export_clip`, and so on: 179 tools (`rustler commands list` shows all; the guide
   `cli-reference-conventions` groups them by area: project, source, analyze, highlights, clip, edit,
   layout, crop, caption, overlay, transition, effect, audio, asset, render, qc, fix, export, brief,
-  variant, speaker). Annotations mark read-only, destructive, network and long-running tools.
+  variant, speaker, timeline, template, campaign, reference, config, image, cutaway, mask, text). Annotations mark read-only, destructive, network and long-running tools.
 - **Prompts.** Ready workflows: `make_viral_clips`, `clip_from_stream`, `streamer_split_clip`,
   `quick_scan_source`, `hinglish_podcast_clips`, `batch_from_brief`, `polish_clip`, `review_clip`,
-  `fix_qc_failures`, `restyle_clip`.
+  `fix_qc_failures`, `restyle_clip`, `direct_campaign`, `hook_lab`, `learn_style_from_folder`, `write_clip_meta`, `apply_template_batch`.
   On the CLI: `rustler prompt list` / `rustler prompt show <name> --args '{...}'`.
-- **Resources.** `rustler://guides/<id>` (the 17 guides), `rustler://commands`,
+- **Resources.** `rustler://guides/<id>` (the 22 guides), `rustler://commands`,
   `rustler://project/state`.
 - **Images.** `see_frame`, `see_tiles`, `render_preview_frame` and the QC contact sheet come back as
   MCP image content, so a vision-capable agent looks at them directly. Over the CLI the output holds

@@ -28,11 +28,16 @@ MCP) and MCP prompts.
 | 10 | `hinglish` | Language settings, romanisation, search, captions and titles for Hinglish |
 | 11 | `platform-specs` | Format, durations, lengths that perform, titles/descriptions/hashtags, report template |
 | 12 | `troubleshooting` | Exit codes, setup, revision conflicts, blocked downloads, resumable jobs, Windows |
-| 13 | `cli-reference-conventions` | Grammar, flags, envelope, MCP naming, images, the complete command map (118 commands by area) |
+| 13 | `cli-reference-conventions` | Grammar, flags, envelope, MCP naming, images, the complete command map (179 commands by area) |
 | 14 | `streamer-clips` | Stream VOD to webcam-top / gameplay-bottom clip: detect-webcam, split, regions, presets, speakers |
-| 15 | `editing-toolkit` | edit.*, hook titles and overlays, transitions, effects, progress bar, polish order, example sequences |
+| 15 | `editing-toolkit` | timeline document, edit.* (cold open, insert, speed, freeze), clip merge/duplicate, hook titles and styles, transitions (incl. flash/whip), effects, progress bar, image/cutaway/mask layers, keyword captions, polish order |
 | 16 | `briefs-and-batches` | brief set/check/description, variants, render/export batch, project status/pack |
 | 17 | `assets` | asset list/search/add with licenses, `asset:<id>`, bundled CC0 SFX, custom caption styles |
+| 18 | `campaigns-and-posting` | campaign rules (machine and agent), per-platform copy from `clip meta-context`, post JSON, cover frame |
+| 19 | `director-retention` | retention, hook formulas, dead zones, `clip retention`, directing a whole job |
+| 20 | `learn-style-from-videos` | `reference import/analyze`: measure example shorts, LOOK at the sheets, write the style down |
+| 21 | `templates-and-brand` | `template.*`, starters `podcast-viral` and `streamer-split`, apply to many clips, export/import bundles |
+| 22 | `clips-auto` | `clips auto`: the one-call pipeline, how to read its report and change each decision, when to work by hand |
 
 ## Prompts (MCP workflows)
 
@@ -48,6 +53,11 @@ MCP) and MCP prompts.
 | `review_clip` | clip_id* | Senior-editor critique + fixes |
 | `fix_qc_failures` | clip_id* | Map QC failures/warnings to edits until it passes |
 | `restyle_clip` | clip_id*, style* | Change captions/layout/music to a requested look |
+| `direct_campaign` | source_id*, campaign_id | Brief to strategy to diverse moments to hooks to one look to retention-checked batch |
+| `hook_lab` | clip_id* | Compare five hook variants for a moment |
+| `learn_style_from_folder` | folder*, name*, notes | Import example shorts, measure, look, write the style spec |
+| `write_clip_meta` | clip_id*, platform | Write per-platform title/description/hashtags and save them with `clip meta-set` |
+| `apply_template_batch` | clip_ids*, template, from_clip | Dry-run and apply one template to many clips, write each hook, look, QC, export |
 
 `*` = required.
 
@@ -55,7 +65,7 @@ MCP) and MCP prompts.
 
 - Commands are written in CLI form (`rustler clip create …`); the MCP tool is `group_action`
   (`clip_create`).
-- Every command named in these files exists in the registry (118 at the time of writing); verify any
+- Every command named in these files exists in the registry (179 at the time of writing); verify any
   command with `rustler commands describe <name>`. `rustler commands list` is the authority.
 - On Windows PowerShell 5.1, JSON inside flags loses its double quotes: use `--input-json @file.json`
   (see `troubleshooting`).
