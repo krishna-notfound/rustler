@@ -144,7 +144,7 @@ Campaign jobs: `campaign create|analyze|mark`. Style from examples: `reference i
 Optional one-command pipeline: `rustler clips auto --source-id src_X --count 3 --template podcast-viral` (`--dry-run` first; never publishes, post copy stays yours; guide `clips-auto`). Guides: `templates-and-brand`, `director-retention`,
 `campaigns-and-posting`, `learn-style-from-videos`, `editing-toolkit`.
 
-## Command groups (179 commands; `rustler commands list` is the authority)
+## Command groups (185 commands; `rustler commands list` is the authority)
 
 Each edit is a new revision (`history undo clp_X` reverts). Flags: `rustler commands describe <group.action>`.
 

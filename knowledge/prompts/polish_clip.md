@@ -40,8 +40,10 @@ payoff or the tension ("He quit his job for this"), never describe the video. A 
 ## 5. Motion
 - Transitions only between segments where the place or topic changes: `rustler transition set {{clip_id}}
   <seg_id> dissolve --duration 0.25` (this shortens the clip by the overlap; re-check the brief duration).
-- Effects on beats: `effect add {{clip_id}} punch-in --start <t> --end <t+0.6>` on the emphasis word,
-  `flash` or `shake` on an impact. Two or three in 30 s. Nothing in the first 0.5 s.
+- Effects only where a moment earns them (your call; Rustler never adds zooms for you): a subtle punch-in
+  held for the phrase, `effect add {{clip_id}} punch-in --start <t> --end <t+3..8> --amount 1.08`, on the
+  punchline or a number; `flash` or `shake` on a real impact. One or two in 30 s at most, none in the first
+  0.5 s. Never a quick zoom in/out every few seconds.
 - `overlay progress-bar {{clip_id}} --enabled true` on 30-60 s explainers.
 Output times come from `clip show`; `render preview-frame {{clip_id}} --out-t <t>` at each effect and at the
 last second. Look before moving on.

@@ -28,9 +28,10 @@ design §5.3).
 - `clip.create --template <name[@ver]>` and config `template.default` (explicit: resolved and checked before the
   clip is written, error → no clip; configured default that cannot apply → warning). The template is applied after the smart defaults (f34), as one more revision.
 
-**Out:** spec §5.3 fields `layout_rules` (faces=1 / faces>=2 / screen), `cutaway_rules`, `cleanup`,
-`keyword_highlight` / `emoji`, `export` (quality / lengths), `post_defaults`, `brand.cta_card/outro_card`, music by
-tag/mood. Unknown fields are rejected, so a spec-shaped template with these fails validation (listed paths).
+**In (v2 fields, 2026-11-16):** `layout_rules` (per-shot layout + tracking from the smart defaults' shot plan or faces.json),`ncaptions `keyword_highlight` / `emoji`, `cutaway_rules` (asset_tag / punch_in on weak visual stretches), `audio.music` by`n`tag` / `mood`, `brand` (logo, CTA card, outro card), `export` (quality / fps / length window), `post_defaults`.
+
+**Out:** spec §5.3 `cleanup` (fillers / pauses / bad takes; the smart defaults do cleanup at `clip.create`). Unknown fields are
+still rejected (listed paths).
 
 ## How apply works
 
@@ -69,7 +70,11 @@ next free version.
 - `crates/rustler-commands/src/template_cmds.rs` (new), `crates/rustler-commands/starters/{podcast-viral,streamer-split}.json` (new)
 - `crates/rustler-commands/src/lib.rs` (module + register), `timeline_cmds.rs` (`apply` made `pub`),
   `clip_cmds.rs` (`ClipCreateIn.template` + apply after create)
-- `crates/rustler-commands/tests/templates.rs` (new)
+- `crates/rustler-commands/tests/templates.rs` (new), `tests/templates_v2.rs` (v2 fields)
+- v2 fields: `template_cmds.rs` (types, validation, capture, build, `clip_export`, `clip_post_defaults`,
+  `merge_post_defaults`), `render_cmds.rs` (default quality), `qc_cmds.rs` (`brief_for`: length window),
+  `post_cmds.rs` (`post_json` merges posting defaults), `smart_cmds.rs` (`classify` → `pub(crate)`),
+  `keyword_cmds.rs` (`clip_words` → `pub(crate)`)
 - knowledge: `knowledge/guides/templates-and-brand.md` (new), `learn-style-from-videos.md` (spec section points at templates)
 
 ## Decisions
@@ -77,9 +82,28 @@ next free version.
 - Templates live in `templates/` (not the asset library's `assets/templates/` kind) as the plan says.
 - Hook text is per clip: the template restyles existing hook-top titles and only adds one when `hook.text` is
   set (template or overrides); a missing hook is a warning naming `overlay add-text`.
-- `podcast-viral` does not set a layout (framing is per shot); `streamer-split` uses the documented default panes
+- `podcast-viral` sets no single layout; its `layout_rules` frame per shot (faces=1 center-crop + face track,
+  faces>=2 center-crop + active, screen zoom-fit, no_face blur-fit). `streamer-split` uses the documented default panes
   (facecam top-right) and keeps segments that are already split (e.g. from `layout detect-webcam`).
-- Starters reference no assets, so they apply on any install.
+- Starters reference no assets, so they apply on any install. They add no punch-ins and set no punch-in
+  `cutaway_rules` (user rule: zooms are the agent's decision); an agent's own template may carry them.
+- `layout_rules` read shot data, they do not compute it: smart-defaults layout decisions (extras `smart_defaults`,
+  shot class from the classifier's reason) first, else `analysis/<source>/faces.json` through
+  `smart_cmds::classify` (made `pub(crate)`, unchanged). No data → warning, segment unchanged. Tracking needs the
+  face engine, so a center-crop without a crop path gets the exact `crop track-*` command as a warning. A segment
+  already on the rule's preset keeps its framing; rules take precedence over `layout`.
+- `cutaway_rules` weak zones = gaps between visual changes (the punch-in planner input: cuts, text, images,
+  cutaways, freezes, flashes; zoom effects subtract as motion) longer than the threshold, merged like the retention
+  map (`retention::merge_change_times`). Scene cuts inside a segment are not counted. `punch_in` uses
+  `PunchConfig::default()` in each zone. `asset_tag` uses image assets (the library has no video kind).
+- Music / cutaway images picked by tag are chosen at apply time (stable per clip id), so they are not template
+  refs and are not bundled; logo / card / music-by-id assets are refs and are bundled.
+- `export` lives in extras `export` (tracks.extra); `render.run` quality: `--quality` → clip export → setting
+  `render.quality` → final (the setting was documented but not read before). QC uses the export length window
+  instead of the brief's (its label still says "brief"). `post_defaults` lives in extras `post_defaults`, merged
+  at apply into `meta.post` platforms and by `export.clip` into the post JSON (never replacing copy; the CTA line
+  is appended only to an existing description).
+- `emoji: off` clears emoji from caption word overrides (also the agent's); `on` only warns when there are none.
 - `template.update` on a built-in writes the agent's own version (project, else global) that shadows it.
 
 ## Status Log
@@ -88,3 +112,18 @@ next free version.
   apply_writes_timeline_items, apply_missing_asset_errors_with_name, export_import_roundtrip_with_assets,
   starter_templates_validate) + 3 unit tests; clip/config/timeline/timeline_edit/variant suites green;
   `cargo check --workspace --tests` clean. No real render with a template was run in this task.
+- 2026-11-16: v2 fields built (layout_rules, captions keyword_highlight / emoji, cutaway_rules, audio.music by tag /
+  mood, brand logo / cta_card / outro_card, export, post_defaults): captured by `--from-clip`, applied through
+  timeline.apply (tagged `by_template`, re-apply 0 ops), validated with JSON paths, shown in `template show`, brand /
+  music-by-id assets bundled by export / import. Starters: podcast-viral gains layout_rules + one keyword a line +
+  export; both starters export final@30 fps, no punch-ins, no cutaway_rules (main 6e1dbc6 kept). New
+  `tests/templates_v2.rs` 8 passed; `cargo test -p rustler-commands` 39 suites, 401 passed, 0 failed;
+  `cargo test -p rustler-knowledge` 9 passed; `cargo check --workspace --tests` clean. Real data (copy of trial3):
+  template captured from directed clip clp_01m7j6v110 (layout_rules faces=1 from smart-defaults decisions matched by
+  source time, keyword colour, post hashtags), patched with brand cards / logo rendered by `asset render-card`, a
+  tagged music bed, an asset_tag pip cutaway rule, export draft 10-45 s and post defaults; applied to two other clips
+  (re-apply 0 ops), rendered clp_01m7j6w4dc without --quality (record says draft), preview frames at 1 / 5.6 / 13 /
+  23.8 s show logo, pip cutaway, CTA above the captions, outro card; `qc run` checks 10-45 s; `export clip` post JSON
+  carries the hashtags and the CTA line. Found and fixed during the run: decisions keyed by stale segment ids (now
+  matched by source time on one-source clips), merged multi-face reasons, cutaways over the hook / outro card and
+  default card / pip boxes over the caption band.

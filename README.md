@@ -56,7 +56,7 @@ Streamer clips: `rustler layout detect-webcam <source-id> --clip-id <clip-id>`. 
 v2: `clip create` picks layout and framing per shot by itself, `rustler template apply podcast-viral` gives clips one look,
 `rustler clip retention` finds dead zones, `rustler overlay hook-styles` lists viral hook titles, `rustler clip cover` picks the
 cover frame and `rustler clip meta-set` stores the per-platform post copy that export writes as `<name>.post.json`.
-Every command (179): `rustler commands list`. On Windows PowerShell 5.1, pass JSON flag values via `--input-json @file.json`.
+Every command (185): `rustler commands list`. On Windows PowerShell 5.1, pass JSON flag values via `--input-json @file.json`.
 
 Give an agent the skill in `skills/rustler/` and see `docs/agent-integration.md`.
 

@@ -119,6 +119,7 @@ async fn prepare(
     workdir: &Path,
     out: &Path,
     two_pass_loudness: bool,
+    graded: bool,
 ) -> Result<Prepared> {
     std::fs::create_dir_all(workdir).map_err(|e| io_err("create", workdir, e))?;
     let sources = source_media(store, clip)?;
@@ -174,6 +175,10 @@ async fn prepare(
     warnings.extend(fx_cmds::apply_to_compile(&map, clip, &mut cx)?);
     // Images, masks, cutaways (word anchors resolved, files checked).
     warnings.extend(crate::layer_cmds::apply_to_compile(store, paths, clip, &map, &mut cx).await?);
+    // Colour grade: only what the agent set (`graded` = false renders the "before" picture).
+    if graded {
+        warnings.extend(crate::grade_cmds::apply_to_compile(store, &paths.home, clip, &map, &mut cx)?);
+    }
     if !cx.overlays.is_empty() && ass.is_none() {
         // Overlays need the fonts even when there are no captions.
         stage_fonts(paths, store, &fonts_dir)?;
@@ -196,6 +201,11 @@ async fn prepare(
 
 /// Renders one preview frame of `clip_id` at output time `out_t`; returns the absolute jpg path.
 pub(crate) async fn preview_frame_image(ctx: &Ctx, clip_id: &ClipId, out_t: f64) -> Result<PathBuf> {
+    preview_frame_image_with(ctx, clip_id, out_t, true, "").await
+}
+
+/// [`preview_frame_image`] with or without the colour grade; `tag` goes into the file name.
+pub(crate) async fn preview_frame_image_with(ctx: &Ctx, clip_id: &ClipId, out_t: f64, graded: bool, tag: &str) -> Result<PathBuf> {
     let store = ctx.store()?;
     let clip = store.load_clip(clip_id)?;
     let duration = TimeMap::from_segments(&clip.segments).duration();
@@ -205,10 +215,10 @@ pub(crate) async fn preview_frame_image(ctx: &Ctx, clip_id: &ClipId, out_t: f64)
     let t = tmap.map_time(t).min((tmap.duration() - 0.04).max(0.0));
     let dir = abs_root(&store).join("clips").join(clip.id.as_str()).join("preview");
     let work = dir.join("work");
-    let jpg = dir.join(format!("frame_{}ms.jpg", (t * 1000.0).round() as u64));
+    let jpg = dir.join(format!("frame_{}ms{tag}.jpg", (t * 1000.0).round() as u64));
     let paths = ToolPaths::from_home(&ctx.home);
     // Preview frames have no audio pass: two-pass loudness is irrelevant here.
-    let prepared = prepare(&paths, &store, &clip, RenderQuality::Draft, false, &work, &work.join("preview.mp4"), false).await?;
+    let prepared = prepare(&paths, &store, &clip, RenderQuality::Draft, false, &work, &work.join("preview.mp4"), false, graded).await?;
     rustler_media::preview_frame(&paths, &prepared.compiled, t, &jpg).await?;
     Ok(jpg)
 }
@@ -239,7 +249,8 @@ async fn render_preview_frame(ctx: Ctx, i: PreviewFrameIn) -> Result<PreviewFram
 #[derive(Deserialize, JsonSchema)]
 pub struct RenderRunIn {
     pub clip_id: ClipId,
-    /// draft (fast, small) | final (default)
+    /// draft (fast, small) | final. Default: the clip's template export quality, else the
+    /// `render.quality` setting (final).
     pub quality: Option<RenderQuality>,
     /// Use a hardware encoder when one passes a probe (default true).
     pub prefer_gpu: Option<bool>,
@@ -269,7 +280,12 @@ pub struct RenderRunOut {
 async fn render_run(ctx: Ctx, i: RenderRunIn) -> Result<RenderRunOut> {
     let store = ctx.store()?;
     let clip = store.load_clip(&i.clip_id)?;
-    let quality = i.quality.unwrap_or(RenderQuality::Final);
+    // --quality, else the clip's template export default, else the `render.quality` setting (final).
+    let quality = i
+        .quality
+        .or_else(|| crate::template_cmds::clip_export(&store, &clip.id).and_then(|x| x.quality))
+        .or_else(|| crate::config_cmds::setting_or_default::<RenderQuality>(&ctx, "render.quality"))
+        .unwrap_or(RenderQuality::Final);
     // Rendered length: transitions shorten the clip by their overlaps.
     let duration = fx_cmds::effective_duration_of(&store, &clip)?;
     let render_id = RenderId::new();
@@ -300,7 +316,7 @@ async fn render_run(ctx: Ctx, i: RenderRunIn) -> Result<RenderRunOut> {
         .err()
         .map(|e| format!("could not record the layers this render used ({e}); freshness checks fall back to file times"));
     let mut prepared =
-        prepare(&paths, &store, &clip, quality, i.prefer_gpu.unwrap_or(true), &workdir, &out, two_pass).await?;
+        prepare(&paths, &store, &clip, quality, i.prefer_gpu.unwrap_or(true), &workdir, &out, two_pass, true).await?;
     let encoder = prepared.encoder.clone();
     let mut report =
         rustler_media::render_with_report(&paths, &prepared.compiled, duration, &ctx.cancel, &ctx.progress).await?;

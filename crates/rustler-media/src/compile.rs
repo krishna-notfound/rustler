@@ -448,6 +448,10 @@ pub struct CompileExtras {
     /// Freeze frames on the edit timeline; each lengthens the rendered clip by its duration.
     #[serde(default)]
     pub freezes: Vec<Freeze>,
+    /// Colour grade per segment id (already merged clip + segment override; `lut` resolved to a
+    /// file path). Applied to the source picture before layout and overlays ([`crate::grade`]).
+    #[serde(default)]
+    pub grades: HashMap<SegmentId, crate::grade::Grade>,
 }
 
 impl Default for CompileExtras {
@@ -469,6 +473,7 @@ impl Default for CompileExtras {
             cutaways: Vec::new(),
             segment_speed: HashMap::new(),
             freezes: Vec::new(),
+            grades: HashMap::new(),
         }
     }
 }
@@ -1146,6 +1151,12 @@ pub fn compile_with(
     for (name, body) in &plan.cmd_files {
         write_file(&workdir.join(name), body)?;
     }
+    for (name, src) in &plan.lut_files {
+        std::fs::copy(src, workdir.join(name)).map_err(|e| {
+            RustlerError::new(ErrorCode::NotFound, STAGE, format!("LUT file {}: {e}", src.display()))
+                .hint("re-add the LUT (`rustler asset add <file.cube> --kind lut`) or clear it with `rustler grade set <clip_id> --lut none`")
+        })?;
+    }
     if let Some(ass) = ass_file {
         stage_ass(ass, workdir)?;
     }
@@ -1285,6 +1296,8 @@ pub struct GraphPlan {
     pub denoise_filter: Option<String>,
     /// Inputs of the image / cutaway layers, in input order after the sound effects.
     pub layer_inputs: Vec<LayerInput>,
+    /// LUT files of the colour grades: (staged name in workdir, source file).
+    pub lut_files: Vec<(String, PathBuf)>,
 }
 
 pub fn build_graph(
@@ -1303,9 +1316,24 @@ pub fn build_graph(
     let mut seg_audio: Vec<String> = Vec::new();
     let tmap = TransitionMap::with_retime(clip, &extras.transitions, &extras.segment_speed, &extras.freezes);
     let (seg_frames, seg_samples) = segment_lengths(&tmap);
+    // Colour grades: one chain per segment (none when neutral); LUT files staged by index.
+    let graded: Vec<Option<&crate::grade::Grade>> = clip.segments.iter().map(|s| extras.grades.get(&s.id)).collect();
+    let lut_paths = crate::grade::distinct_luts(graded.iter().flatten().filter_map(|g| g.lut_ref()).map(PathBuf::from).collect::<Vec<_>>().iter());
+    let lut_files: Vec<(String, PathBuf)> =
+        lut_paths.iter().enumerate().map(|(k, p)| (crate::grade::staged_lut_name(k), p.clone())).collect();
 
     for (i, seg) in clip.segments.iter().enumerate() {
         let src = &sources[&seg.source_id];
+        let grade = match graded[i] {
+            Some(g) => {
+                let lut = g.lut_ref().and_then(|l| lut_files.iter().find(|(_, p)| p == &PathBuf::from(l))).map(|(n, _)| n.as_str());
+                crate::grade::chain_for(g, lut, &format!("s{i}"))
+                    .map_err(|m| RustlerError::new(ErrorCode::Validation, STAGE, format!("grade of segment {}: {m}", seg.id)))?
+                    .map(|c| format!(",{c}"))
+                    .unwrap_or_default()
+            }
+            None => String::new(),
+        };
         let (frames, samples) = (seg_frames[i], seg_samples[i]);
         let speed = tmap.speed(i);
         // Freeze frames of this segment: (frame index in the moving picture, held frames,
@@ -1342,6 +1370,7 @@ pub fn build_graph(
             crop_keys.as_deref(),
             speed,
             &tail,
+            &grade,
         );
 
         let gain = extras
@@ -1530,6 +1559,7 @@ pub fn build_graph(
         noise_graph,
         denoise_filter,
         layer_inputs,
+        lut_files,
     })
 }
 
@@ -1989,6 +2019,7 @@ fn segment_video(
     crop_keys: Option<&[CropKey]>,
     speed: f64,
     tail: &str,
+    grade: &str,
 ) {
     // Regions drawn back to front; the crop path follows regions[0] wherever it sorts.
     let mut order: Vec<usize> = (0..regions.len()).collect();
@@ -2006,7 +2037,7 @@ fn segment_video(
     let rate = if (speed - 1.0).abs() > 1e-9 { format!("setpts=PTS/{},", num6(speed)) } else { String::new() };
     let prep = format!(
         "[{i}:v:0]{rate}fps={fps}:start_time=0:round=near,tpad=stop_mode=clone:stop_duration=1,\
-         trim=end_frame={frames},setpts=PTS-STARTPTS"
+         trim=end_frame={frames},setpts=PTS-STARTPTS{grade}"
     );
     let inputs: Vec<String> = (0..uses.max(1)).map(|k| format!("[s{i}in{k}]")).collect();
     if uses <= 1 {

@@ -31,10 +31,12 @@ pub enum AssetKind {
     Template,
     /// A text look (font, size, colours, box, shadow) made by `text.create_style`.
     TextStyle,
+    /// A 3D colour LUT (`.cube`) for `grade.set --lut asset:<id>`.
+    Lut,
 }
 
 impl AssetKind {
-    pub const ALL: [AssetKind; 8] = [
+    pub const ALL: [AssetKind; 9] = [
         AssetKind::Font,
         AssetKind::Music,
         AssetKind::Sfx,
@@ -43,6 +45,7 @@ impl AssetKind {
         AssetKind::Layout,
         AssetKind::Template,
         AssetKind::TextStyle,
+        AssetKind::Lut,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -55,6 +58,7 @@ impl AssetKind {
             AssetKind::Layout => "layout",
             AssetKind::Template => "template",
             AssetKind::TextStyle => "text_style",
+            AssetKind::Lut => "lut",
         }
     }
 
@@ -69,6 +73,7 @@ impl AssetKind {
             AssetKind::Layout => "layouts",
             AssetKind::Template => "templates",
             AssetKind::TextStyle => "text_styles",
+            AssetKind::Lut => "luts",
         }
     }
 

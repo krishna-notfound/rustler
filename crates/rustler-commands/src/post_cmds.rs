@@ -270,7 +270,7 @@ pub(crate) fn post_json(store: &ProjectStore, clip: &Clip, file: &Path) -> Resul
         (None, Some(id)) => json!({"id": id, "missing": true}),
         (None, None) => Value::Null,
     };
-    let body = json!({
+    let mut body = json!({
         "schema": SCHEMA,
         "clip": clip.id,
         "name": clip.name,
@@ -289,6 +289,16 @@ pub(crate) fn post_json(store: &ProjectStore, clip: &Clip, file: &Path) -> Resul
         "score": crate::director_cmds::report_score(store, &clip.id),
         "created_at": Utc::now(),
     });
+    // A template's posting defaults (always-hashtags, mentions, CTA line) are added to the copy;
+    // nothing the agent wrote is replaced.
+    if let Some(d) = crate::template_cmds::clip_post_defaults(store, &clip.id) {
+        crate::template_cmds::merge_post_defaults(&mut body, &d);
+        if let Some(pl) = body.get_mut("platforms").and_then(Value::as_object_mut) {
+            for copy in pl.values_mut() {
+                crate::template_cmds::merge_post_defaults(copy, &d);
+            }
+        }
+    }
     Ok((body, warnings))
 }
 

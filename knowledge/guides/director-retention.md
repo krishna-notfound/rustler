@@ -73,21 +73,26 @@ By second 3 the viewer must know *why to keep watching*: a question is open, a c
 stake. That is an **open loop**. Every open loop needs its **payoff** before the end; the last third of the clip
 pays the biggest loop. Never open a loop the clip cannot close (it reads as bait and kills replays).
 
-## 4. Pacing: a visual change every 2-3 s
+## 4. Pacing: change the picture when the content earns it
 
 `clip.retention` counts visual changes: cuts, jump cuts, layout changes, transitions, scene cuts, effects
 (punch-in start and end), text pops, images/cutaways and frame-difference spikes on the render. A stretch over
-2.5 s with none is a **static dead zone**. Target `pacing.per_10s` ≥ 4.
+6 s with none is a **static dead zone**. Target `pacing.per_10s` ≥ 1.5 (about one change every 6-7 s).
+
+**Zooms are your decision, never automatic.** Rustler does not add punch-ins by itself: not at `clip create`,
+not from the starter templates, not in `clips auto`. `clip retention` only *suggests* them. Watch the clip and
+zoom only where a moment earns it (the punchline, a number, a reveal, a strong reaction). Constant zooming in and
+out is the fastest way to make a clip look cheap; a talking head with good captions holds attention on its own.
 
 Ways to break a static stretch, in order of subtlety:
-- **Punch-in** on the stressed word: `rustler effect add <clip_id> punch-in --start a --end b` (or `--words`).
-  The zoom in and the zoom out are both changes. Vary the amount (1.08-1.2) so it does not feel mechanical.
-  The `punch_in` fix of `clip retention` comes from the punch-in planner (the same one template punch-in
-  patterns use): stressed words, at most 5 changes in any 10 s (counting what is already there and the other
-  dead zones' fixes), 0.5 s from cuts and transitions, never on graphic / blur-fit segments or cutaways, never on
-  top of an existing zoom, varied `--amount`, and `--focus-x/--focus-y` on the face when `faces.json` exists.
-  When nothing fits, the fix is `punch_in_skipped` (no command): use a text pop or a cutaway there. Do not add
-  punch-ins by hand at a faster rhythm than that: 8-9 changes per 10 s reads as nervous, not energetic.
+- **Punch-in** on the moment that matters: `rustler effect add <clip_id> punch-in --start a --end b` (or
+  `--words`). Hold it for the phrase (3-8 s, like cutting to a tighter second camera), keep it subtle
+  (`--amount` 1.06-1.12), and use at most one every ~6-8 s. A 0.5 s zoom in/out "pump" every couple of seconds
+  reads as nervous, not energetic. The `punch_in` suggestion of `clip retention` comes from the punch-in planner
+  (stressed words, ≤ 1.5 changes per 10 s, 0.5 s from cuts and transitions, never on graphic / blur-fit segments
+  or cutaways, never on top of an existing zoom, `--focus-x/--focus-y` on the face when `faces.json` exists);
+  run it only if you agree after looking. When nothing fits, the suggestion is `punch_in_skipped`: use a text pop
+  or a cutaway there, or leave it.
 - **Text pop**: 1-3 words of the line that matters, `overlay add-text … --style plain`, ~1.2 s.
 - **Jump cut**: remove a pause (`edit remove-pauses`) or a weak sentence; the reframe itself is a change.
 - **Layout change**: split-screen to the listener's reaction, or wide → tight.

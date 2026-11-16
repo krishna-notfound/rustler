@@ -155,7 +155,7 @@ rustler clip set-layout clp_X --preset split-vertical --params '{...from detect-
 rustler caption set clp_X --style hormozi-pop --position-y 0.7 --max-words-per-line 3
 rustler overlay add-text clp_X "Nobody tells you this" --style hook-top --start 0 --end 3   # the hook title (<= 7 words)
 rustler transition set clp_X seg_A dissolve --duration 0.3             # only between segments
-rustler effect add clp_X punch-in --start 4.2 --end 5.0                # on the emphasis word
+rustler effect add clp_X punch-in --start 4.2 --end 8.0 --amount 1.08 # only if the moment earns it (held, subtle)
 rustler overlay progress-bar clp_X --enabled true
 # 6 sound
 rustler audio denoise clp_X --strength light
@@ -194,7 +194,7 @@ Smart defaults and templates do the repetitive work, so you spend your calls on 
 rustler clip create --name moment-1 --source-id src_X --start-unit 41 --end-unit 47 --expect-text "nobody tells you"
 rustler layout plan clp_X                                    # why each shot got its layout (add --apply to re-plan)
 #   --raw skips the smart defaults when you want to build the framing yourself.
-# 2 template: one look for the whole batch (captions, hook look, punch-ins, progress bar, loudness)
+# 2 template: one look for the whole batch (captions, hook look, progress bar, loudness; zooms stay your call)
 rustler template list                                        # starters: podcast-viral, streamer-split
 rustler template apply podcast-viral --clip-ids clp_X --dry-run    # then without --dry-run; history undo reverts it
 #   or in one call: rustler clip create ... --template podcast-viral
@@ -275,5 +275,6 @@ section was trimmed, or a model fell back to CPU. Details: `cli-reference-conven
 - A fast first pass over a whole source in one call, then correcting it → `clips-auto`
 - A job brief, several clips, variants, batch export → `briefs-and-batches`
 - Music, sound effects, fonts, custom caption styles → `assets`, then `audio`
+- Colour grading (only when the footage needs it; never by default), matching shots, LUTs → `color-grading`
 - Hindi/English mix → `hinglish`
 - Something broke → `troubleshooting`

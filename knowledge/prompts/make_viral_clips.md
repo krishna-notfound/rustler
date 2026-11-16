@@ -87,8 +87,8 @@ Never upload or post anything.
 - `render run <clip>` → `qc run <clip>` → **open the contact sheet**; `fix suggest <clip>` lists the fixes
   (`fix apply <clip>` runs the safe ones).
 - Fix every fail and decide every warn; check face, captions, safe zones, hook frame, last frame.
-- `clip retention <clip>` measures the render: fix each dead zone with the command it suggests (punch-in, text pop,
-  jump cut, layout change) and make the ending sentence-final (`director-retention`).
+- `clip retention <clip>` measures the render: fix the dead zones that matter with the fix you choose after looking (jump cut,
+  text pop, layout change; a held, subtle punch-in only where the moment earns it; Rustler never zooms by itself) and make the ending sentence-final (`director-retention`).
 - Repeat until it passes (max 3 rounds per problem, then choose another moment).
 
 ## 6. Cover, post copy, export and report

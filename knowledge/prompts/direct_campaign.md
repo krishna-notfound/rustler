@@ -56,8 +56,8 @@ prompt walks through it; guide `templates-and-brand`). Hook text stays per clip.
    `rustler overlay add-text <clip_id> "<hook>" --style hook-big --start 0 --end 3` (a style from `overlay hook-styles`;
    `--sfx` adds a whoosh). Pace at cuts: `rustler transition set <clip_id> <seg_id> flash|whip`.
 3. Credit/watermark from the brief: `rustler overlay add-text <clip_id> "<credit>" --style lower-third`.
-4. `rustler clip retention <clip_id>`: fix every dead zone that matters with its suggested command (punch-in on
-   the stressed word, text pop, jump cut, layout change); make the ending sentence-final, loopable if you can.
+4. `rustler clip retention <clip_id>`: fix the dead zones that matter, choosing the fix yourself after looking
+   (jump cut, text pop, layout change; a held, subtle punch-in only where the moment earns it, never by default); make the ending sentence-final, loopable if you can.
 5. `rustler render run <clip_id> --quality draft`, `rustler clip retention <clip_id>` again (now measured on the
    render), look at `rustler render preview-frame <clip_id> --out-t 0.3`.
 6. `rustler clip score-set <clip_id> --hook H --flow F --value V --trend T --notes "<quote per part>"`.

@@ -80,15 +80,17 @@ pub struct PunchConfig {
 impl Default for PunchConfig {
     fn default() -> Self {
         Self {
-            max_changes_per_10s: 5.0,
+            // Rare and subtle: a tight shot held for a phrase (like a second camera), about one
+            // every 6-8 s, never a zoom in/out pump every couple of seconds.
+            max_changes_per_10s: 1.5,
             max_static_s: crate::retention::STATIC_GAP_S - 0.1,
-            min_spacing_s: 1.0,
+            min_spacing_s: 3.0,
             min_cut_gap_s: 0.5,
-            len_s: 2.2,
-            min_len_s: 0.8,
-            max_len_s: 2.4,
-            amount_min: 1.08,
-            amount_max: 1.20,
+            len_s: 5.0,
+            min_len_s: 2.5,
+            max_len_s: 8.0,
+            amount_min: 1.06,
+            amount_max: 1.12,
         }
     }
 }
@@ -263,7 +265,8 @@ pub fn plan(input: &PunchInput, cfg: &PunchConfig) -> Vec<PlannedPunch> {
             return false;
         }
         // Density: every 10 s window that holds s or e.
-        let cap = cfg.max_changes_per_10s.floor().max(1.0) as usize;
+        // One punch-in is two changes (in and out), so a cap below 2 would forbid every punch-in.
+        let cap = (cfg.max_changes_per_10s.ceil() as usize).max(2);
         for p in [s, e] {
             let mut starts: Vec<f64> = changes.iter().copied().filter(|c| *c >= p - 10.0 && *c <= p).collect();
             starts.push(p - 10.0);
@@ -457,11 +460,15 @@ mod tests {
         let p = plan(&input, &PunchConfig::default());
         let ch = all_changes(&input, &p);
         let rate = per_10s(ch.len(), 51.0);
-        assert!(rate <= 5.0 && rate >= 3.5, "rate {rate}: {p:?}");
-        assert!(longest_static(&ch, 51.0) <= 2.5 + 1e-6, "{p:?}");
-        // Varied amounts in range; neighbours differ.
-        assert!(p.iter().all(|x| (1.08..=1.20).contains(&x.amount)));
-        assert!(p.windows(2).all(|w| (w[0].amount - w[1].amount).abs() >= 0.02), "{p:?}");
+        // Rare: about one held punch-in every ~10 s (in + out = 2 changes), never a zoom pump.
+        assert!((1.0..=2.0).contains(&rate), "rate {rate}: {p:?}");
+        // No stretch is left much longer than a held punch-in's spacing (the tail can stay plain:
+        // a punch-in there would sit on the clip's end).
+        assert!(longest_static(&ch, 51.0) <= 10.0, "{p:?}");
+        // Held for a phrase, subtle, varied; neighbours differ.
+        assert!(p.iter().all(|x| x.end - x.start >= 2.5), "{p:?}");
+        assert!(p.iter().all(|x| (1.06..=1.12).contains(&x.amount)), "{p:?}");
+        assert!(p.windows(2).all(|w| (w[0].amount - w[1].amount).abs() >= 0.01), "{p:?}");
         // Stressed words are 1 in 5 here and the even-spacing window is 0.8 s wide: they are
         // picked more often than chance.
         let on = p.iter().filter(|x| x.word.as_deref() == Some("NEVER")).count();
@@ -471,8 +478,8 @@ mod tests {
     #[test]
     fn keeps_away_from_cuts_and_blocked_spans() {
         let input = PunchInput {
-            duration: 20.0,
-            words: words(66, 0.3),
+            duration: 30.0,
+            words: words(100, 0.3),
             cuts: vec![5.0, 12.0],
             blocked: vec![(5.0, 12.0)],
             ..Default::default()
@@ -493,12 +500,12 @@ mod tests {
             duration: 30.0,
             words: words(100, 0.3),
             existing: vec![(4.0, 5.5), (10.0, 11.5)],
-            window: Some((12.0, 20.0)),
+            window: Some((12.0, 26.0)),
             ..Default::default()
         };
         let p = plan(&input, &PunchConfig::default());
         assert!(!p.is_empty());
-        assert!(p.iter().all(|x| x.start >= 12.0 && x.end <= 20.0), "{p:?}");
+        assert!(p.iter().all(|x| x.start >= 12.0 && x.end <= 26.0), "{p:?}");
         assert!(p.iter().all(|x| !overlaps((x.start, x.end), (10.0, 11.5))));
     }
 
@@ -512,9 +519,9 @@ mod tests {
     #[test]
     fn focus_follows_the_face_and_stays_inside() {
         let input = PunchInput {
-            duration: 10.0,
-            words: words(33, 0.3),
-            focus: vec![FocusSpan { start: 0.0, end: 10.0, x: 0.05, y: 0.4 }],
+            duration: 20.0,
+            words: words(66, 0.3),
+            focus: vec![FocusSpan { start: 0.0, end: 20.0, x: 0.05, y: 0.4 }],
             ..Default::default()
         };
         let p = plan(&input, &PunchConfig::default());

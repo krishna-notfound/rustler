@@ -45,4 +45,4 @@ repos/       cloned upstream repos studied in research (gitignored, read-only)
 | 2 Architecture | approved — `superpowers/specs/2026-11-15-rustler-design.md` |
 | 3 Specs | design approved; f01–f09 detailed in the Slice 1 plan |
 | 4 Implementation plan | approved; executing (Slice 1 + 5-hour scope) |
-| 5+ Implementation | COMPLETE — all slices built, CLI (179 cmds) + full GUI; see `progress-log.md` |
+| 5+ Implementation | COMPLETE — all slices built, CLI (185 cmds) + full GUI; see `progress-log.md` |

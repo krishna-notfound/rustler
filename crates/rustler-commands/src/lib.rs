@@ -16,6 +16,7 @@ pub mod edit_cmds;
 pub mod extras;
 pub mod fix_cmds;
 pub mod fx_cmds;
+pub mod grade_cmds;
 pub mod guide_cmds;
 pub mod highlights_cmds;
 pub mod keyword_cmds;
@@ -61,6 +62,7 @@ pub fn register_all(reg: &mut Registry) {
     overlay_cmds::register(reg);
     audio_cmds::register(reg);
     fx_cmds::register(reg);
+    grade_cmds::register(reg);
     render_cmds::register(reg);
     qc_cmds::register(reg);
     reference_cmds::register(reg);
