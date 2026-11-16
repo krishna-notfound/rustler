@@ -60,14 +60,38 @@ Without `--segment-id`, `clip set-layout` applies to every segment. Anything bey
 ### Face tracking (`crop track-face`)
 
 ```
-rustler crop track-face clp_X                     # all segments
+rustler crop track-face clp_X                     # all segments (style smooth, look-room on)
 rustler crop track-face clp_X --segment-id seg_Y  # one segment
+rustler crop track-face clp_X --style locked      # one framing per shot
+rustler crop track-face clp_X --style follow --no-look-room
 ```
 
-Detects faces at ~4 fps on the proxy, smooths the path (median + One-Euro filter + dead zone) and
-drives the crop's x position. Use it when the speaker moves or sits off-centre. Check the contact
-sheet afterwards: face inside the frame in every tile, no jumps. With two faces it follows the
-dominant one; if it swings between people, use `crop track-speaker` (below) or a fixed `focus_x` / `blur-fit`.
+Detects faces (with landmarks) at ~4 fps on the proxy and **plans** the crop path over the whole
+segment like a camera operator would. Use it when the speaker moves or sits off-centre. With two faces
+it follows the dominant one; if it swings between people, use `crop track-speaker` (below) or a fixed
+`focus_x` / `blur-fit`.
+
+#### Camera styles (`--style`)
+
+| Style | What the camera does | Use for |
+|---|---|---|
+| `smooth` (default) | Holds still while the face stays inside a safe box (±18 % of the crop width around the framing point). Moves only when the face leaves it for 0.5 s or would leave the frame, with an eased move (slow start, slow stop; ≤ 0.35 frame widths/s) to where the person settles. Starts 0.15 s before the face reaches the box edge. | Almost everything: talking heads, podcasts, people who lean. |
+| `locked` | One fixed framing per shot (the median position); moves only at cuts. | A still talking head; a tripod look. Check the tiles: a big lean can leave the frame. |
+| `follow` | Tighter safe box (±7 %), quicker eased moves (≤ 0.6 frame widths/s). | Someone who walks or moves a lot. |
+
+What it always does: a single-frame false detection (a poster face, a blip) never moves the camera; when
+the source cuts to another shot the crop **cuts** with it (never pans across a cut); the renderer gets a
+key per frame during a move and nothing while holding, so moves are smooth and holds are perfectly still.
+
+**Look-room** (`--look-room`, on by default; `--no-look-room` to centre the face): when the person turns
+their head, the framing shifts toward the side they face by up to 10 % of the crop width (measured from the
+nose against the eyes, smoothed over ~2 s; a frontal face stays centred). A profile speaker then has space
+in front of the face instead of the nose touching the crop edge. The result's `look_room_shift` says how much
+was used (> 0 = room on the right).
+
+The result reports `moves` and `cuts` per segment. QC checks the motion (`camera_motion`: moves per minute,
+direction changes, jitter, moves that start at full speed, top speed); a warning names the fix.
+Check the contact sheet afterwards: face inside the frame in every tile, room in front of a turned face.
 
 ### Following the active speaker (podcasts and interviews: `crop track-speaker`)
 
@@ -99,7 +123,11 @@ person like this, strongest evidence first (read `segments[].turns[]`, `reason` 
   (profile views, tiny faces, sunglasses), use `blur-fit`, or split the clip at the turn and set
   `focus_x` per segment.
 
-The crop pans about 0.2 s before the first word; turns shorter than 1 s ("mm-hm", "yeah") never move it.
+Speaker switches (`--switch`): `auto` (default) **cuts** on the turn start (a sentence boundary) when
+the reframe is wider than 40 % of the frame and otherwise **pans** with an eased move of at most 0.6 s
+centred on the turn start; `--switch cut` always cuts, `--switch pan` always pans. Within a turn the
+camera behaves like `crop track-face` (`--style smooth|locked|follow`, `--look-room`; look-room costs one
+extra face pass). Turns shorter than 1 s ("mm-hm", "yeah") never move it.
 When the chosen person is not on screen after a cut (a reaction shot, the other camera), the crop
 follows the largest face that is on screen instead of holding a position from the old shot; with no face
 at all (a graphic) it holds the last position.

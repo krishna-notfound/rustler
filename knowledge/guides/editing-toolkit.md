@@ -1,9 +1,9 @@
 ---
 id: editing-toolkit
-title: "Editing toolkit: cuts, hook titles, transitions, effects, progress bar"
-summary: "Every edit command with when to use it and example sequences: refine/trim/split/remove-pauses/remove-words, history, overlay hook titles and lower thirds, transitions, effects, the progress bar, and the polish order."
+title: "Editing toolkit: cuts, hook titles, transitions, effects, progress bar, layers"
+summary: "Every edit command with when to use it and example sequences: refine/trim/split/remove-pauses/remove-words, history, overlay hook titles and lower thirds, transitions, effects, the progress bar, image layers, masks, cutaways (B-roll), keyword captions, and the polish order."
 order: 15
-tags: [edit, overlay, hook, transition, effect, progress-bar, history, polish]
+tags: [edit, overlay, hook, transition, effect, progress-bar, history, polish, image, mask, cutaway, b-roll, keyword]
 ---
 
 # Editing toolkit
@@ -110,7 +110,70 @@ A thin bar that fills the width over the clip, on top of everything. It helps re
 explainers; skip it on very short clips. At `bottom` it sits in the platform's lower UI zone, so
 `top` is the default.
 
-## 6. Example sequences
+## 6. Layers: images, masks, cutaways, keyword captions
+
+Each layer kind has its own commands and its own `extras.json` key (`images`, `masks`, `cutaways`,
+`caption_word_overrides`). Rects are normalized to the 1080x1920 canvas (`{"x","y","w","h"}`, all
+inside 0..1, w and h > 0.02). Times are edit-timeline seconds like overlays; instead you can hang an
+item on transcript words with `--start-word` / `--end-word` `{"source_id":"src_X","word_i":42}`
+(indices from `transcript get`). Word-anchored items follow re-cuts; if a re-cut removes the word the
+item is skipped with a warning (`list` shows a `problem`), never shown at a wrong time. Every write
+takes `--base-revision` (stale -> `revision_conflict`) and `--dry-run`. On PowerShell 5.1 pass JSON
+values with `--input-json @file.json`.
+
+```
+rustler image add clp_X --file logo.png --rect '{"x":0.74,"y":0.03,"w":0.22,"h":0.08}' --anim-in fade
+rustler image add clp_X --asset ast_fire --rect '{"x":0.4,"y":0.55,"w":0.2,"h":0.12}' --start-word '{"source_id":"src_X","word_i":42}' --anim-in pop
+rustler image edit clp_X img_1 --opacity 0.6 --z 2 --above-captions true
+rustler image list clp_X          # resolved + rendered times, problems
+rustler image remove clp_X img_1
+```
+`image add` takes `--asset`, `--file` or `--url` (png, jpg, webp, bmp, or a GIF that loops), fits the
+image inside the rect (`--fit contain`, or `cover` to fill it), with `--scale`, `--opacity` 0..1,
+`--rotation` degrees, `--anim-in` / `--anim-out` (`none | fade | pop | slide_up`, `--anim-duration`,
+default 0.3 s) and `--z` (higher on top). Images sit **below the captions** unless
+`--above-captions true`. Default time: the whole clip.
+
+```
+rustler mask add clp_X --kind blur --rect '{"x":0.75,"y":0.02,"w":0.23,"h":0.07}'                # channel logo
+rustler mask add clp_X --kind box --rect '{"x":0.05,"y":0.78,"w":0.9,"h":0.08}' --start 2 --end 9   # burned-in subtitles
+rustler mask edit clp_X msk_1 --kind pixelate --strength 40
+rustler mask list clp_X
+rustler mask remove clp_X msk_1
+```
+Masks hide something in the **source picture** (pop-ups, watermarks, someone else's subtitles): `blur`
+(`--strength` = radius px, default 20), `box` (solid `--color`, default black), `pixelate` (`--strength`
+= block px, default 24). Look at a `see frame` first to place the rect. A camera effect zooms the mask
+together with the picture.
+
+```
+rustler cutaway add clp_X --source-id src_B --src-start 12 --start 3 --end 5.5 --mode full
+rustler cutaway add clp_X --file chart.png --mode pip --rect '{"x":0.52,"y":0.58,"w":0.44,"h":0.25}' --start 6 --end 9
+rustler cutaway edit clp_X cut_1 --mode pip --rect '{"x":0.5,"y":0.6,"w":0.45,"h":0.25}'
+rustler cutaway list clp_X
+rustler cutaway remove clp_X cut_1
+```
+A cutaway is B-roll: another imported source, an asset, a file or a URL (video or image). `full`
+replaces the picture for the range while the speech keeps playing; `pip` shows it inside the rect.
+`--fit cover` (default) fills, `contain` shows all of it. `--mute false` mixes the cutaway's own audio
+in (images and silent files stay muted). Keep full cutaways short (1-3 s) and on a sentence that
+describes what is shown.
+
+```
+rustler caption word clp_X --match million --color "#FFE000" --scale 1.3      # every "million" in the clip
+rustler caption word clp_X --source-id src_X --word-i 42 --emoji "🔥"
+rustler caption word clp_X --source-id src_X --word-i 17 --hide true          # leave a word out of the captions
+rustler caption words-list clp_X
+rustler caption words-clear clp_X                                             # or --source-id/--word-i for one
+```
+Keyword captions: a colour, a size factor (0.5-2.5), an emoji after the word, or hide it. Calling it
+again on the same word merges the changes. While the word is spoken the style's active-word highlight
+colour wins; the size stays. One or two keywords per sentence at most.
+
+**Stacking order** (bottom to top): video -> full cutaways -> masks -> camera effects -> PiP
+cutaways -> images (by `z`) -> captions -> text overlays -> images with `above_captions` -> progress bar.
+
+## 7. Example sequences
 
 **Talking-head polish (≈ 40 s):**
 ```
@@ -144,10 +207,11 @@ second; then `render run`, `qc run`, contact sheet. If you do not like a step, `
 (repeat to go further back) or remove just that item (`overlay remove`, `effect remove`,
 `transition clear`).
 
-## 7. What not to do
+## 8. What not to do
 
 - No effect or transition in the first 0.5 s: the hook frame must be clean.
 - Do not hide a weak cut with a transition; fix the cut (`edit refine`, `cut-points`).
 - Do not stack hook title + big caption + lower third + progress bar at once: pick what carries the
   clip. If `caption_over_face` or `caption_safe_zone` warns, move the caption (`caption set --position-y`).
-- Time-anchored items (overlays, effects, `--at` sound effects) do not follow later cuts: add them last.
+- Time-anchored items (overlays, effects, `--at` sound effects, layers given in seconds) do not follow later cuts: add them last, or anchor layers to words (`--start-word`).
+- `history undo` restores segments, not layers: remove a layer with its own `remove` command.

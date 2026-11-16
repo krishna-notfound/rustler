@@ -74,3 +74,10 @@ with keyframes. An agent can run `crop.track_face` on a clip and clear the crop 
 ## Status Log
 
 - 2026-11-15 — Face tracking merged: engine `faces.track` plus Rust crop keys (85 Python and 13 Rust tests at the merge). `crop.track_face` and `crop.clear` are wired. Crop pan verified by frame colour in the render tests. No live face-tracking run is recorded in the progress log.
+- 2026-11-16 — **Smooth camera (v2 §5.10)**: `rustler_media::camera` plans the crop path offline (hold-or-move with a
+  ±18 % safe box, minimum-jerk eased moves under velocity/acceleration limits, follows a lean from its onset, median
+  outlier rejection, look-room from YuNet landmarks capped for big close-ups, crop cuts on source shot cuts incl.
+  reaction shots detected by a head-direction flip and `scenes.json`). `crop.track_face` / `crop.track_speaker` take
+  `style: locked|smooth|follow` (default smooth) and `look_room` (default true); track-speaker also `switch:
+  auto|cut|pan`. `faces.track` returns 5 landmarks (`lm`). QC `camera_motion` (engine-free, from the crop paths).
+  Real check on the Vinh Giang trial clips (frames looked at): see `docs/progress-log.md` 2026-11-16 smooth camera.

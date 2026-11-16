@@ -88,6 +88,21 @@ def _num(params: Dict[str, Any], key: str, default: Optional[float]) -> Optional
     return float(v)
 
 
+def landmarks(row, fw: int, fh: int) -> List[List[float]]:
+    """YuNet's five landmarks of one detection row, normalized 0..1 of the frame and clamped.
+
+    Row layout (OpenCV ``FaceDetectorYN``): ``x, y, w, h``, then ``(x, y)`` of the right eye,
+    left eye, nose tip, right mouth corner, left mouth corner (the subject's right/left, so the
+    "right eye" is usually on the image's left), then the score.
+    """
+    out = []
+    for k in range(5):
+        lx = min(max(float(row[4 + 2 * k]) / fw, 0.0), 1.0)
+        ly = min(max(float(row[5 + 2 * k]) / fh, 0.0), 1.0)
+        out.append([round(lx, 5), round(ly, 5)])
+    return out
+
+
 def track(params: Dict[str, Any], progress: Callable[..., None]) -> Dict[str, Any]:
     video_path = params.get("video_path")
     if not isinstance(video_path, str) or not video_path:
@@ -167,6 +182,7 @@ def track(params: Dict[str, Any], progress: Callable[..., None]) -> Dict[str, An
                             "w": round(x1 - x0, 5),
                             "h": round(y1 - y0, 5),
                             "score": round(float(r[-1]), 4),
+                            "lm": landmarks(r, fw, fh),
                         }
                     )
             faces.sort(key=lambda f: f["w"] * f["h"], reverse=True)

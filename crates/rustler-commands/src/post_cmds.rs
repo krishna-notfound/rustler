@@ -286,7 +286,7 @@ pub(crate) fn post_json(store: &ProjectStore, clip: &Clip, file: &Path) -> Resul
         "cover": extra("cover"),
         "campaign": campaign_json,
         "marks": post.marks,
-        "score": extra("score"),
+        "score": crate::director_cmds::report_score(store, &clip.id),
         "created_at": Utc::now(),
     });
     Ok((body, warnings))

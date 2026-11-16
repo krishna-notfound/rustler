@@ -6,14 +6,17 @@ pub mod audio_analysis;
 pub mod card;
 pub mod compile;
 pub mod encoders;
+pub mod camera;
 pub mod facepath;
 pub mod frames;
+pub mod layers;
 pub mod probe;
 mod proc;
 mod proc_render;
 pub mod proxy;
 pub mod qc;
 pub mod render;
+pub mod retention;
 pub mod tiles;
 
 pub use audio_analysis::analyze_audio;
