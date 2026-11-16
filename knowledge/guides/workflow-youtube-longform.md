@@ -118,6 +118,8 @@ Each section becomes **its own source** (`src_…`) with `original_offset` = the
 original video. **Times inside a section source start near 0.** To map: `t_section = t_youtube −
 original_offset`. Never reuse a YouTube timestamp directly in a section source.
 
+Downloads default to **720p**, which is smaller and faster and plenty for a 9:16 short cut from a 16:9 source. Pass `--quality 480|720|1080|best` when you need more or less (use `1080` or `best` only if a tight crop on a small subject needs the extra pixels). If you only need the words (a podcast, a talk, a transcript-only scan), add `--audio-only`: it downloads just the audio, so the source has no video and can be transcribed and analysed (`analyze quick`) but cannot be used with `clip create`. Both flags only apply to URLs.
+
 ## Step 5: build the understanding pack per section
 
 ```
