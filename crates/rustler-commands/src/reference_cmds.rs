@@ -435,7 +435,17 @@ pub fn speech_from_cues(cues: &[(f64, f64, String)], video_duration: f64, limit:
         return None;
     }
     let words: usize = cues.iter().map(|c| c.2.split_whitespace().count()).sum();
-    let spoken: f64 = cues.iter().map(|c| (c.1.min(limit) - c.0).max(0.0)).sum();
+    // Time spent speaking: cue spans merged across gaps of up to 0.5 s (word-level cues leave gaps between words).
+    let mut spans: Vec<(f64, f64)> = cues.iter().map(|c| (c.0, c.1.min(limit))).filter(|s| s.1 > s.0).collect();
+    spans.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    let mut merged: Vec<(f64, f64)> = Vec::new();
+    for s in spans {
+        match merged.last_mut() {
+            Some(l) if s.0 - l.1 <= 0.5 => l.1 = l.1.max(s.1),
+            _ => merged.push(s),
+        }
+    }
+    let spoken: f64 = merged.iter().map(|s| s.1 - s.0).sum();
     if words == 0 || spoken <= 0.0 {
         return None;
     }
@@ -830,7 +840,7 @@ mod tests {
         assert_eq!(parse_subtitles(vtt)[0].2, "hello there friend");
         let sp = speech_from_cues(&c, 10.0, 180.0).unwrap();
         assert_eq!(sp["words"], 6);
-        // 6 words over 0.24 + 1.0 s of cues = 290 wpm while speaking, 36 wpm over 10 s
+        // 6 words over 0.24 + 1.0 s of speech (gap of 0.61 s is not bridged) = 290 wpm while speaking, 36 wpm over 10 s
         assert_eq!(sp["wpm_while_speaking"], 290.0);
         assert_eq!(sp["wpm_over_video"], 36.0);
         assert!(speech_from_cues(&[], 10.0, 10.0).is_none());
