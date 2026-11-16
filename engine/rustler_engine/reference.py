@@ -628,6 +628,7 @@ def measure(params: Dict[str, Any], progress: Callable[..., None]) -> Dict[str, 
 
     times: List[float] = []
     smalls: List[Any] = []
+    raws: List[Any] = []
     hists: List[Any] = []
     feats: List[Any] = []
     samples: List[Dict[str, Any]] = []
@@ -651,6 +652,7 @@ def measure(params: Dict[str, Any], progress: Callable[..., None]) -> Dict[str, 
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         small = cv2.resize(gray, (sw, sh), interpolation=cv2.INTER_AREA)
         smalls.append(_norm(small))
+        raws.append(small)
         hsv = cv2.cvtColor(cv2.resize(frame, (sw, sh), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2HSV)
         hh = cv2.calcHist([hsv], [0, 1, 2], None, [8, 4, 4], [0, 180, 0, 256, 0, 256])
         hists.append(cv2.normalize(hh, hh, 1.0, 0.0, cv2.NORM_L1).flatten())
@@ -675,12 +677,17 @@ def measure(params: Dict[str, Any], progress: Callable[..., None]) -> Dict[str, 
     duration = times[-1] + 1.0 / eff_fps
 
     # ---- cuts
-    diffs: List[float] = []
-    for i in range(nframes - 1):
-        ds = float(np.abs(smalls[i] - smalls[i + 1]).mean())
-        dh_ = float(cv2.compareHist(hists[i].astype(np.float32), hists[i + 1].astype(np.float32), cv2.HISTCMP_BHATTACHARYYA))
-        # flat or very dark footage has almost no structure to compare, so a big colour-histogram jump counts too
-        diffs.append(max(ds, dh_ if dh_ > 0.45 else 0.0))
+    def frame_diffs(row_keep=None) -> List[float]:
+        norm = smalls if row_keep is None else [_norm(r[row_keep]) for r in raws]
+        out_d: List[float] = []
+        for i in range(nframes - 1):
+            ds = float(np.abs(norm[i] - norm[i + 1]).mean())
+            dh_ = float(cv2.compareHist(hists[i].astype(np.float32), hists[i + 1].astype(np.float32), cv2.HISTCMP_BHATTACHARYYA))
+            # flat or very dark footage has almost no structure to compare, so a big colour-histogram jump counts too
+            out_d.append(max(ds, dh_ if dh_ > 0.45 else 0.0))
+        return out_d
+
+    diffs = frame_diffs()
     cand = detect_cut_candidates(diffs, times, eff_fps)
 
     # ---- text bands (before zoom, whose feature matching masks text out)
@@ -692,6 +699,17 @@ def measure(params: Dict[str, Any], progress: Callable[..., None]) -> Dict[str, 
     clusters = cluster_bands(samples, height, width, cut_guess, motion)
     caption = pick_caption(clusters, duration)
     hook = pick_hook(clusters, samples, caption)
+    # Changing text (caption swaps, hook) must not read as a cut over flat footage: compare again without those rows.
+    changing = [c for c in clusters if c is caption or (c["presence"] >= 0.1 and c["change"] >= 0.15)]
+    if hook:
+        changing.append({"y0": hook["y0"], "y1": hook["y1"]})
+    if changing:
+        row_keep = np.ones(sh, dtype=bool)
+        for c in changing:
+            row_keep[max(0, int(c["y0"] * sh) - 1) : min(sh, int(np.ceil(c["y1"] * sh)) + 2)] = False
+        if row_keep.mean() >= 0.5:
+            diffs = frame_diffs(row_keep)
+            cand = detect_cut_candidates(diffs, times, eff_fps)
     text_rows: List[Tuple[float, float]] = []
     for c in clusters:
         if c["presence"] >= 0.1:
