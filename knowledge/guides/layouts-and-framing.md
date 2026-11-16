@@ -60,9 +60,19 @@ says what was done, why, and `override_with` lists the exact commands that undo 
   faces at 5 fps with the YuNet landmarks; lite install, no extra models):
   - one face → `center-crop` + smooth track with look-room (like `crop track-face`);
   - two or more faces → `center-crop` + the light active speaker (like `crop track-active`, below);
-  - no face, or graphics (flat areas + sharp edges: title cards, slides) → `blur-fit`, or **`zoom-fit`** when
-    the content sits in the middle (the centred part of the frame scaled up on a blurred fill).
+  - no face, or graphics (flat areas + sharp edges: title cards, slides, infographics over a small wide
+    shot) → **`zoom-fit`**: the content box (textured/edged area on a flat background, channel logos in
+    the corners left out, 3 % padding) scaled up on a blurred fill, when that shows it at least 1.25x
+    larger than `blur-fit` (at most 2.5x; a tiny box is widened). No clear box (busy full frame) →
+    `blur-fit`. The decision's `why` gives the box and the gain. Too tight? `rustler layout edit-region
+    clp_X --segment-id seg_Y --region-id main ...` or `clip set-layout --preset blur-fit`.
+  - Shot cuts are frame-accurate: a weak frame difference (dark sets) still counts when the faces change
+    between two samples (wide two-shot → close-up), and coarse `scenes.json` cuts snap to the nearest
+    frame-difference peak.
   - Segments are split only where the layout changes; a change shorter than 1.2 s is absorbed (no flicker).
+  - After the cleanup cuts, a piece shorter than 0.6 s next to a layout change is merged into the segment
+    that continues it in the source (decision `fragment`); it is kept when its layout simply carries on from
+    the piece before the cut (the shot's last moment, framed the same way).
   - Skipped (decision `skipped`) when you passed `--layout`/`--layout-params`, the source is already vertical,
     the media file is missing or the engine is not installed.
 - **Cleanup** (needs exact word timings; captions-based transcripts are left alone): filler words
@@ -130,7 +140,11 @@ key per frame during a move and nothing while holding, so moves are smooth and h
 their head, the framing shifts toward the side they face by up to 10 % of the crop width (measured from the
 nose against the eyes, smoothed over ~2 s; a frontal face stays centred). A profile speaker then has space
 in front of the face instead of the nose touching the crop edge. The result's `look_room_shift` says how much
-was used (> 0 = room on the right).
+was used (> 0 = room on the right). Look-room never pushes the face to the edge: the face box keeps at
+least 8 % of the crop width inside both crop edges (a face drifting that close starts an eased move even
+inside the hold box). Only a face at the very edge of the source frame can come closer. A move still
+running at a source shot cut stops there; the new shot keeps that framing only when it fits, else the crop
+cuts.
 
 The result reports `moves` and `cuts` per segment. QC checks the motion (`camera_motion`: moves per minute,
 direction changes, jitter, moves that start at full speed, top speed); a warning names the fix.

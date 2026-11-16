@@ -126,6 +126,29 @@ def test_dark_cut_is_as_visible_as_a_bright_one():
     assert same < 0.01
 
 
+def test_content_box_finds_the_graphic_and_skips_the_corner_logo():
+    import cv2
+
+    img = np.full((540, 960), 12, np.uint8)
+    # infographic: text-like bars in the centre top, people-like texture below it
+    for i in range(6):
+        cv2.putText(img, "TEN OF TEN %d" % i, (260, 80 + i * 40), cv2.FONT_HERSHEY_SIMPLEX, 0.9, 230, 2)
+    rng = np.random.default_rng(1)
+    img[330:520, 300:660] = rng.integers(20, 120, (190, 360), dtype=np.uint8)
+    # channel logo in the top-right corner
+    cv2.circle(img, (900, 50), 22, 255, -1)
+    box = active.graphics_stats(img)["box"]
+    x0, y0, x1, y1 = box
+    assert 0.22 <= x0 <= 0.3 and 0.68 <= x1 <= 0.78, box
+    assert 0.06 <= y0 <= 0.14 and y1 >= 0.94, box
+    # a busy full frame has no clear box
+    full = rng.integers(0, 255, (540, 960), dtype=np.uint8)
+    fb = active.graphics_stats(full)["box"]
+    assert fb[0] <= 0.02 and fb[1] <= 0.02 and fb[2] >= 0.98 and fb[3] >= 0.98, fb
+    # a flat frame has none
+    assert "box" not in active.graphics_stats(np.full((540, 960), 30, np.uint8))
+
+
 def test_tracks_follow_position_and_split_at_jumps():
     samples = [
         {"t": 0.0, "faces": [{"x": 0.1, "y": 0.2, "w": 0.1, "h": 0.2, "mouth": 0.1}, {"x": 0.7, "y": 0.2, "w": 0.1, "h": 0.2, "mouth": 0.0}]},
