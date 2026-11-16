@@ -188,7 +188,7 @@ impl OverlayStyle {
     /// Font size = canvas width * factor.
     pub fn default_font_size_factor(self) -> f64 {
         match self {
-            Self::HookTop => 0.075,
+            Self::HookTop => 0.085,
             Self::LowerThird => 0.05,
             Self::Plain => 0.065,
         }
@@ -222,7 +222,7 @@ pub struct TextOverlay {
     /// Vertical centre of the text block, 0 = top .. 1 = bottom of the canvas.
     #[serde(default = "default_overlay_y")]
     pub position_y: f64,
-    /// Font size as a fraction of the canvas width (hook-top 0.075).
+    /// Font size as a fraction of the canvas width (hook-top 0.085).
     #[serde(default = "default_overlay_size")]
     pub font_size_factor: f64,
     /// Opaque dark box behind the text (white text either way).

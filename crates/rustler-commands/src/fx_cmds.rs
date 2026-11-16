@@ -15,7 +15,7 @@ use crate::audio_cmds::{change, next_id};
 use crate::clip_cmds::log_event;
 use crate::extras;
 use rustler_captions::CaptionWord;
-use rustler_core::{Clip, ClipId, ErrorCode, ProjectStore, RustlerError, SegmentId, TimeMap};
+use rustler_core::{Clip, ClipId, ErrorCode, ProjectStore, RustlerError, SegmentId, SourceId, TimeMap, Word};
 use rustler_media::compile::{
     BarPosition, CompileExtras, Effect, EffectKind, ProgressBar, Transition, TransitionKind, TransitionMap,
     check_transitions, ffmpeg_color,
@@ -300,13 +300,19 @@ pub struct EffectAddIn {
     pub clip_id: ClipId,
     /// punch-in (instant zoom) | zoom-slow (1.0 -> amount) | shake | flash (white flash)
     pub kind: EffectKind,
-    /// Edit-timeline start (seconds).
-    pub start: f64,
+    /// Edit-timeline start (seconds). Give start + end, or `words`.
+    pub start: Option<f64>,
     /// Edit-timeline end (seconds).
-    pub end: f64,
+    pub end: Option<f64>,
     /// Zoom factor for punch-in / zoom-slow (1.01..2, default 1.15); shake amplitude as a
     /// fraction of the frame (0.002..0.08, default 0.02); not used by flash.
     pub amount: Option<f64>,
+    /// Words to land the effect on instead of start/end (comma list ok: `amazing,look`; case and
+    /// punctuation ignored). Every occurrence inside the clip gets one effect over
+    /// `[word.start - 0.05, word.end + 0.25]`; words not found in the clip are reported in `warnings`.
+    pub words: Option<Vec<String>>,
+    /// With `words`: only look in segments from this source.
+    pub source_id: Option<SourceId>,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -328,8 +334,14 @@ fn effect_view(e: Effect, tmap: &TransitionMap) -> EffectView {
 #[derive(Serialize, JsonSchema)]
 pub struct EffectOut {
     pub clip_id: ClipId,
-    pub effect_id: String,
-    pub effect: EffectView,
+    /// The created effect (start/end mode only; with `words` see `effect_ids`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effect_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effect: Option<EffectView>,
+    /// Every created effect id (one per word occurrence with `words`), in time order.
+    pub effect_ids: Vec<String>,
+    pub effects: Vec<EffectView>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dry_run: Option<bool>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -355,36 +367,151 @@ pub fn check_effect(stage: &str, e: &Effect, duration: f64) -> Result<()> {
     Ok(())
 }
 
+/// Lower-case alphanumerics of a word, for matching `Friends.` against `friends`.
+fn norm_word(s: &str) -> String {
+    s.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
+}
+
+/// Effect window around a spoken word: from just before it starts to a beat after it ends.
+const WORD_LEAD: f64 = 0.05;
+const WORD_TAIL: f64 = 0.25;
+
+/// Edit-timeline `(start, end)` windows for every occurrence of each requested word inside the
+/// clip (through the TimeMap), in time order, plus warnings for words that are not in the clip.
+fn word_windows(
+    store: &ProjectStore,
+    clip: &Clip,
+    wanted: &[String],
+    source: Option<&SourceId>,
+    duration: f64,
+) -> Result<(Vec<(f64, f64)>, Vec<String>)> {
+    const STAGE: &str = "effect.add";
+    if let Some(src) = source
+        && !clip.segments.iter().any(|s| &s.source_id == src)
+    {
+        return Err(validation(STAGE, format!("clip {} has no segment from source {src}", clip.id))
+            .hint("`rustler clip show <clip_id>` lists the segments and their sources"));
+    }
+    let mut warnings = Vec::new();
+    let mut by_source: std::collections::HashMap<SourceId, Vec<Word>> = std::collections::HashMap::new();
+    for seg in &clip.segments {
+        if source.is_some_and(|s| s != &seg.source_id) || by_source.contains_key(&seg.source_id) {
+            continue;
+        }
+        match crate::clip_cmds::load_transcript(store, &seg.source_id)? {
+            None => warnings.push(format!(
+                "source {} has no transcript, so its words cannot be found (run `rustler analyze transcribe {}`)",
+                seg.source_id, seg.source_id
+            )),
+            Some(tr) => {
+                by_source.insert(seg.source_id.clone(), crate::clip_cmds::select_script_words(&tr, None, clip.captions.script).0);
+            }
+        }
+    }
+    let caption_words = crate::clip_cmds::build_caption_words(clip, &by_source);
+    let mut windows: Vec<(f64, f64)> = Vec::new();
+    for want in wanted {
+        let key = norm_word(want);
+        let mut found = 0;
+        for w in caption_words.iter().filter(|w| norm_word(&w.text) == key) {
+            found += 1;
+            let start = (w.out_start - WORD_LEAD).max(0.0);
+            let end = (w.out_end + WORD_TAIL).min(duration);
+            if end - start < 0.05 {
+                warnings.push(format!("'{want}' at {:.2}s is too close to the clip end for an effect; skipped", w.out_start));
+                continue;
+            }
+            windows.push((start, end));
+        }
+        if found == 0 {
+            warnings.push(format!("'{want}' not found in the clip (not spoken, or cut out); no effect added for it"));
+        }
+    }
+    windows.sort_by(|a, b| a.0.total_cmp(&b.0));
+    Ok((windows, warnings))
+}
+
 async fn effect_add(ctx: Ctx, i: EffectAddIn) -> Result<EffectOut> {
     const STAGE: &str = "effect.add";
     let store = ctx.store()?;
     let clip = store.load_clip(&i.clip_id)?;
     let duration = TimeMap::from_segments(&clip.segments).duration();
-    let mut e = Effect { id: String::new(), kind: i.kind, start: i.start, end: i.end.min(duration), amount: i.amount };
-    check_effect(STAGE, &Effect { end: i.end, ..e.clone() }, duration)?;
     let mut warnings = Vec::new();
-    if e.kind == EffectKind::Flash && e.amount.is_some() {
+    // (start, end) windows on the edit timeline, as given or resolved from words.
+    let windows: Vec<(f64, f64)> = match (&i.words, i.start, i.end) {
+        (Some(_), Some(_), _) | (Some(_), _, Some(_)) => {
+            return Err(validation(STAGE, "give either words or start + end, not both")
+                .hint("e.g. --words amazing,look  or  --start 4.2 --end 6.0"));
+        }
+        (Some(words), None, None) => {
+            let wanted: Vec<String> =
+                words.iter().flat_map(|w| w.split(',')).map(str::trim).filter(|w| !w.is_empty()).map(String::from).collect();
+            if wanted.is_empty() {
+                return Err(validation(STAGE, "words is empty").hint("e.g. --words amazing,look"));
+            }
+            let (w, warn) = word_windows(&store, &clip, &wanted, i.source_id.as_ref(), duration)?;
+            warnings = warn;
+            w
+        }
+        (None, Some(s), Some(e)) => {
+            if i.source_id.is_some() {
+                warnings.push("source_id only applies with words; ignored".into());
+            }
+            vec![(s, e)]
+        }
+        (None, _, _) => {
+            return Err(validation(STAGE, "give start and end, or words")
+                .hint("e.g. --start 4.2 --end 6.0  or  --words amazing,look"));
+        }
+    };
+    let by_words = i.words.is_some();
+    let mut effects: Vec<Effect> = Vec::new();
+    for &(s, e) in &windows {
+        let eff = Effect { id: String::new(), kind: i.kind, start: s, end: e.min(duration), amount: i.amount };
+        check_effect(STAGE, &Effect { end: e, ..eff.clone() }, duration)?;
+        effects.push(eff);
+    }
+    if i.kind == EffectKind::Flash && i.amount.is_some() {
         warnings.push("flash does not use amount (it always starts fully white)".into());
     }
-    if e.kind == EffectKind::Flash && e.end - e.start > 1.0 {
+    if i.kind == EffectKind::Flash && effects.iter().any(|e| e.end - e.start > 1.0) {
         warnings.push("a flash longer than 1 s reads as a fade; 0.15-0.4 s is typical".into());
     }
-    e = change(&ctx, &store, &clip.id, EFFECTS_KEY, Vec::is_empty, |list: &mut Vec<Effect>| {
-        e.id = next_id("fx", list.iter().map(|x| x.id.as_str()));
-        list.push(e.clone());
-        Ok(e.clone())
-    })?;
+    let created = if effects.is_empty() {
+        Vec::new()
+    } else {
+        change(&ctx, &store, &clip.id, EFFECTS_KEY, Vec::is_empty, |list: &mut Vec<Effect>| {
+            for e in &mut effects {
+                e.id = next_id("fx", list.iter().map(|x| x.id.as_str()));
+                list.push(e.clone());
+            }
+            Ok(effects.clone())
+        })?
+    };
     if !ctx.dry_run {
-        log_event(&ctx, &store, STAGE, serde_json::json!({"clip_id": clip.id, "effect_id": e.id, "kind": e.kind}))?;
+        for e in &created {
+            log_event(&ctx, &store, STAGE, serde_json::json!({"clip_id": clip.id, "effect_id": e.id, "kind": e.kind}))?;
+        }
     }
-    let mid = (e.start + e.end) / 2.0;
-    let next = vec![
-        format!("rustler render preview-frame {} --out-t {mid:.2}", clip.id),
-        format!("rustler render run {} --quality draft", clip.id),
-    ];
+    let mut next = Vec::new();
+    if let Some(e) = created.first() {
+        let mid = (e.start + e.end) / 2.0;
+        next.push(format!("rustler render preview-frame {} --out-t {mid:.2}", clip.id));
+        next.push(format!("rustler render run {} --quality draft", clip.id));
+    }
     let tmap = transition_map(&store, &clip)?;
-    let v = effect_view(e, &tmap);
-    Ok(EffectOut { clip_id: clip.id.clone(), effect_id: v.effect.id.clone(), effect: v, dry_run: ctx.dry_run.then_some(true), warnings, next })
+    let mut views: Vec<EffectView> = created.into_iter().map(|e| effect_view(e, &tmap)).collect();
+    let effect_ids: Vec<String> = views.iter().map(|v| v.effect.id.clone()).collect();
+    let (effect_id, effect) = if by_words || views.len() != 1 {
+        (None, None)
+    } else {
+        // Start/end mode: keep the single-effect fields v1 callers read.
+        let v = views.remove(0);
+        let single = EffectView { effect: v.effect.clone(), amount_used: v.amount_used, rendered_start: v.rendered_start, rendered_end: v.rendered_end };
+        views.push(v);
+        (Some(single.effect.id.clone()), Some(single))
+    };
+    Ok(EffectOut { clip_id: clip.id.clone(), effect_id, effect, effect_ids, effects: views, dry_run: ctx.dry_run.then_some(true), warnings, next })
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -545,11 +672,12 @@ pub fn register(reg: &mut Registry) {
     ));
     reg.register(typed(
         "effect.add",
-        "Add a camera effect over an edit-timeline range: punch-in (instant zoom), zoom-slow, shake, flash; applied to the composed frame under the captions",
+        "Add a camera effect over an edit-timeline range (start + end) or on spoken words (words): punch-in (instant zoom), zoom-slow, shake, flash; applied to the composed frame under the captions",
         &["clip_id", "kind"],
         write,
         vec![
             Example { description: "punch in on the punchline", cli: "rustler effect add clp_x punch-in --start 4.2 --end 6.0" },
+            Example { description: "punch in on every 'amazing' and 'look' (0.05 s before to 0.25 s after the word)", cli: "rustler effect add clp_x punch-in --words amazing,look" },
             Example { description: "slow 1.0 -> 1.2 zoom", cli: "rustler effect add clp_x zoom-slow --start 0 --end 5 --amount 1.2" },
             Example { description: "white flash at a cut", cli: "rustler effect add clp_x flash --start 3.0 --end 3.25" },
         ],
