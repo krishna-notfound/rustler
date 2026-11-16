@@ -318,6 +318,12 @@ def _speakers_active(params, progress):
     return speakers.active(params, progress)
 
 
+def _reference_measure(params, progress):
+    from . import reference
+
+    return reference.measure(params, progress)
+
+
 def default_methods() -> Dict[str, Handler]:
     return {
         "engine.ping": _ping,
@@ -332,4 +338,5 @@ def default_methods() -> Dict[str, Handler]:
         "audio.events": _audio_events,
         "speakers.diarize": _speakers_diarize,
         "speakers.active": _speakers_active,
+        "reference.measure": _reference_measure,
     }
