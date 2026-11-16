@@ -304,7 +304,7 @@ async fn export_with_custom_name_and_captions_off_has_no_srt() {
     assert_eq!(video.parent().unwrap(), fx.root.join("exports"));
     assert_eq!(video.file_name().unwrap(), "_evil_name.mp4");
     assert!(out.get("srt").is_none());
-    assert_eq!(std::fs::read_dir(fx.root.join("exports")).unwrap().count(), 2);
+    assert_eq!(std::fs::read_dir(fx.root.join("exports")).unwrap().count(), 3, "mp4 + report + post.json");
 }
 
 #[tokio::test]

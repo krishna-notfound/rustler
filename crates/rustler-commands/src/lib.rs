@@ -4,7 +4,9 @@ pub mod analyze_cmds;
 pub mod asset_cmds;
 pub mod audio_cmds;
 pub mod brief_cmds;
+pub mod campaign_cmds;
 pub mod clip_cmds;
+pub mod config_cmds;
 pub mod cut_cmds;
 pub mod director_cmds;
 pub mod edit_cmds;
@@ -16,6 +18,7 @@ pub mod highlights_cmds;
 pub mod layout_cmds;
 pub mod media_ref;
 pub mod overlay_cmds;
+pub mod post_cmds;
 pub mod project_cmds;
 pub mod qc_cmds;
 pub mod render_cmds;
@@ -57,4 +60,7 @@ pub fn register_all(reg: &mut Registry) {
     variant_cmds::register(reg);
     asset_cmds::register(reg);
     speaker_cmds::register(reg);
+    config_cmds::register(reg);
+    campaign_cmds::register(reg);
+    post_cmds::register(reg);
 }
