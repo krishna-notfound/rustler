@@ -44,6 +44,7 @@ Status reflects `docs/progress-log.md` (2026-11-15) and the docs pass that ran t
 | f28 | — (not written) | CUDA/NVENC tuning, parallel renders, proxies | later | f08, f14 | Planned |
 | f29 | `f29_speakers.md` | analyze.speakers (diarization), speaker.rename, caption.speaker_colors, crop.track_speaker | later | f06, f14 | Built |
 | f30 | `f30_lite_by_default.md` | Lite install by default (base engine, whisper base), heavy analyzers opt-in (`setup run --with ...`), QC face checks opt-in, `analyze quick --transcribe`, open music/assets (`asset add --url`, `source:<id>` audio) | later | f01, f21, f23 | Built |
+| f31 | `f31_director_retention.md` | Director layer: `clip.retention` (retention map, dead zones + fix commands, 0-100 retention score), `clip.score_set` (agent hook/flow/value/trend), `campaign.analyze` (rules, payout strategy, clip count, checklist); guide `director-retention`, prompts `direct_campaign`, `hook_lab` | v2 | f18, f20, f21, f22 | Built |
 
 The 5-hour build (2026-11-15) delivered f01–f10, f11, f12, f14, f16, f17 and f24; the "complete everything" phase then added f07b, f15, f17 (rest), f18–f23, f25–f27 and f29 (118 registered commands). The original 5-hour scope is in
 `docs/superpowers/plans/2026-11-15-slice1-first-real-clip.md` (section "5-HOUR SCOPE").

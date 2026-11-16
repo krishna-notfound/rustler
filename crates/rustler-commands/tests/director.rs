@@ -249,6 +249,10 @@ async fn campaign_analyze_with_and_without_brief() {
     assert_eq!(a["hard_rules"]["must_not"], json!(["Do not show other brands"]));
     let r2 = a["checklist"].as_array().unwrap().iter().find(|c| c["id"] == "r2").unwrap();
     assert_eq!(r2["by"], "rustler");
+    let r1 = a["checklist"].as_array().unwrap().iter().find(|c| c["id"] == "r1").unwrap();
+    assert_eq!(r1["by"], "agent");
+    assert!(r1["command"].as_str().unwrap().starts_with("rustler campaign mark <clip_id> r1"), "{r1}");
+    assert!(a["checklist"].as_array().unwrap().iter().any(|c| c["id"] == "attach"));
 
     // Inline brief wins over brief.json; unknown campaign is not_found.
     let a = call(&reg, &ctx, "campaign.analyze", json!({"brief": {"platform": "reels"}})).await.unwrap();

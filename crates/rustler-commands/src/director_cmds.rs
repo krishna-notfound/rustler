@@ -1060,6 +1060,7 @@ async fn campaign_analyze(ctx: Ctx, i: CampaignIn) -> Result<CampaignOut> {
     }
 
     // Checklist.
+    let camp_id = (from == "campaign").then(|| text(b, &["id"])).flatten();
     let check_cmd = if has_brief_file { Some("rustler brief check <clip_id>".to_string()) } else { None };
     let mut checklist = Vec::new();
     let mut add = |id: &str, t: String, by: &str, cmd: Option<String>| checklist.push(CheckItem { id: id.into(), text: t, by: by.into(), command: cmd });
@@ -1082,8 +1083,21 @@ async fn campaign_analyze(ctx: Ctx, i: CampaignIn) -> Result<CampaignOut> {
         let tags: Vec<String> = required.mentions.iter().chain(&required.hashtags).cloned().collect();
         add("post_tags", format!("post text includes {}", tags.join(" ")), "rustler", has_brief_file.then(|| "rustler brief description <clip_id>".to_string()));
     }
+    if let Some(cid) = &camp_id {
+        add(
+            "attach",
+            format!("clip attached to campaign {cid} and posting copy written (export writes <name>.post.json)"),
+            "rustler",
+            Some(format!("rustler clip meta-set <clip_id> --campaign-id {cid} --input-json @meta.json")),
+        );
+    }
     for (id, t, machine) in &camp_rules {
-        add(id, t.clone(), if *machine { "rustler" } else { "agent" }, None);
+        let cmd = if *machine {
+            Some("rustler qc run <clip_id>".to_string())
+        } else {
+            camp_id.as_ref().map(|_| format!("rustler campaign mark <clip_id> {id} --pass true --reason \"what you saw\""))
+        };
+        add(id, t.clone(), if *machine { "rustler" } else { "agent" }, cmd);
     }
     add("hook", "a hook in the first second (text on screen at 0, speech before 0.5 s, or motion)".into(), "rustler", Some("rustler clip retention <clip_id>".into()));
     add("dead_zones", "no dead zone: nothing static > 2.5 s, no silence >= 0.8 s".into(), "rustler", Some("rustler clip retention <clip_id>".into()));

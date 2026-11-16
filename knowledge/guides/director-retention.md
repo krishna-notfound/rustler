@@ -2,7 +2,7 @@
 id: director-retention
 title: "Director's playbook: make them hold and watch"
 summary: "Retention is the game: hook formulas for the first second, the 3-second rule, open loops and payoff, a visual change every 2-3 s, emotional arc, loopable endings, caption pacing, music energy, Hinglish hooks, what kills retention, and how to use clip.retention, clip.score_set and campaign.analyze."
-order: 18
+order: 19
 tags: [director, retention, hooks, pacing, loop, score, campaign, editorial]
 ---
 

@@ -49,7 +49,10 @@ policy. Per-clip pay: copy the creator's own shorts. Apply the same settings to 
 5. `rustler render run <clip_id> --quality draft`, `rustler clip retention <clip_id>` again (now measured on the
    render), look at `rustler render preview-frame <clip_id> --out-t 0.3`.
 6. `rustler clip score-set <clip_id> --hook H --flow F --value V --trend T --notes "<quote per part>"`.
-7. `rustler brief check <clip_id>` (when a brief exists), `rustler qc run <clip_id>` and look at the contact sheet.
+7. Campaign jobs: attach the clip and write its posting copy (`rustler clip meta-context <clip_id>`, then
+   `rustler clip meta-set <clip_id> --campaign-id {{campaign_id}} --input-json @meta.json`) and record every agent rule
+   you checked (`rustler campaign mark <clip_id> <rule_id> --pass true --reason "what you saw"`).
+8. `rustler brief check <clip_id>` (when a brief exists), `rustler qc run <clip_id>` and look at the contact sheet.
 
 Drop a clip whose `retention_score` stays under 70 after fixes or whose own score is under 70 — a weak clip
 costs reach for the strong ones.

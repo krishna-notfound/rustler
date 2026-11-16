@@ -1,6 +1,6 @@
 # f31 — Director layer: retention map, agent score, campaign analysis
 
-**Status:** In progress  |  **Depends on:** f18, f20, f21, f22  |  **Owner:** director agent (wave C)
+**Status:** Built  |  **Depends on:** f18, f20, f21, f22  |  **Owner:** director agent (wave C)
 
 ## Purpose
 
@@ -31,7 +31,7 @@ judges. After this feature the agent can measure where a clip loses attention (`
 - `crates/rustler-commands/src/director_cmds.rs` (new) + registration line in `crates/rustler-commands/src/lib.rs`
 - `crates/rustler-commands/tests/director.rs` (new)
 - `crates/rustler-media/src/retention.rs` (new) + `pub mod retention;` in `crates/rustler-media/src/lib.rs`
-- one line in `crates/rustler-commands/src/qc_cmds.rs` (export report `score`)
+- one line in `crates/rustler-commands/src/qc_cmds.rs` (export report `score`) and one in `post_cmds.rs` (`post.json` `score`)
 - `knowledge/guides/director-retention.md`, `knowledge/prompts/direct_campaign.md`, `knowledge/prompts/hook_lab.md`
 
 **Read-only dependencies:** `fx_cmds` (TransitionMap, effects), `overlay_cmds`, `clip_cmds` (caption words),
@@ -56,13 +56,21 @@ judges. After this feature the agent can measure where a clip loses attention (`
 
 ## Acceptance Criteria
 
-- [ ] Synthetic clip: static dead zone detected; after the suggested `effect.add` the zone is gone and the score rises.
-- [ ] First-frame hook detection (overlay at 0, fast speech, none); ending type (loopable / hard stop / cta).
-- [ ] `campaign.analyze` with and without a brief; with a campaign file.
-- [ ] `score_set` validation 0–25; score in `clip.show` extras and export report.
-- [ ] Real run on a copy of rustler-real1: 5 clips scored; dead zones checked against contact sheets.
-- [ ] `cargo test -p rustler-commands --test director`, `cargo test -p rustler-media retention`, `cargo test -p rustler-knowledge` pass.
+- [x] Synthetic clip: static dead zone detected; after the suggested `effect.add` the zone is gone and the score rises.
+- [x] First-frame hook detection (overlay at 0, fast speech, none); ending type (loopable / hard stop / cta).
+- [x] `campaign.analyze` with and without a brief; with a campaign file.
+- [x] `score_set` validation 0–25; score in `clip.show` extras and export report.
+- [x] Real run on a copy of rustler-real1: 5 clips scored; dead zones checked against contact sheets.
+- [x] `cargo test -p rustler-commands --test director`, `cargo test -p rustler-media retention`, `cargo test -p rustler-knowledge` pass.
 
 ## Status Log
 
 - 2026-11-16 — feature file written; build started.
+- 2026-11-16 — built. `cargo test -p rustler-commands --test director` 6/6 (incl. a real render: cut spike at 3.0 s,
+  stale-render fallback), `rustler-media` retention unit tests 7/7, `rustler-knowledge` 9/9. Frame-spike threshold set to
+  0.12 (measured on the trial renders: camera cuts 0.27-0.52, jump cuts 0.13-0.20, gestures < 0.10; 0.25 missed jump cuts).
+  Real run on a copy of rustler-real1 (5 clips, measured on their renders): scores 50, 63, 54, 43, 62; every clip has a
+  hook (text at 0 + speech < 0.2 s) but long locked talking-head stretches (longest static 6.6-17.7 s) and 0.8-1.5 s
+  pauses. Applying clip 04's suggested punch-ins took it from 43 to 80; the re-render showed a frame spike at every
+  punch-in start/end. Integration: export report and `post.json` (`post_cmds`) carry `score` = {agent, retention}.
+  Known blind spots: graphics building up inside a still shot and slow camera moves are not counted as visual changes.
