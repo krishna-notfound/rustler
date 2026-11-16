@@ -271,11 +271,14 @@ pub struct ClipView {
     pub next: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    /// `clip.create` only: what the smart defaults did, each decision with its undo/override command.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub smart: Option<crate::smart_cmds::SmartReport>,
 }
 
 fn view(clip: Clip, dry: bool, next: Vec<String>, warnings: Vec<String>) -> ClipView {
     let duration = TimeMap::from_segments(&clip.segments).duration();
-    ClipView { clip, duration, dry_run: dry.then_some(true), next, warnings }
+    ClipView { clip, duration, dry_run: dry.then_some(true), next, warnings, smart: None }
 }
 
 fn default_next(clip: &Clip) -> Vec<String> {
@@ -411,6 +414,9 @@ pub struct ClipCreateIn {
     pub captions: Option<bool>,
     /// Caption style preset name (see caption.list_styles).
     pub caption_style: Option<String>,
+    /// Skip the smart defaults (per-shot layout + framing, filler and pause trim); also off when
+    /// the setting `clip.smart_defaults` is false. Default false.
+    pub raw: Option<bool>,
 }
 
 async fn clip_create(ctx: Ctx, i: ClipCreateIn) -> Result<ClipView> {
@@ -430,6 +436,7 @@ async fn clip_create(ctx: Ctx, i: ClipCreateIn) -> Result<ClipView> {
         "clip.create",
     )?;
     let canvas = project.settings.canvas;
+    let explicit_layout = i.layout.is_some() || i.layout_params.is_some();
     let preset = i.layout.as_deref().unwrap_or("center-crop");
     let layout = make_layout(&source, &canvas, preset, &i.layout_params.unwrap_or_default())?;
 
@@ -480,7 +487,18 @@ async fn clip_create(ctx: Ctx, i: ClipCreateIn) -> Result<ClipView> {
         "clip.create",
         serde_json::json!({"clip_id": clip.id, "source_id": source.id, "start": range.start, "end": range.end}),
     )?;
-    Ok(view(clip, false, next, warnings))
+    // Smart defaults (v2 §5.5): per-shot layout + framing, filler and pause trim, each a revision
+    // the report tells how to undo. `--raw` or `clip.smart_defaults = false` keeps the raw clip.
+    let smart_on = !i.raw.unwrap_or(false) && crate::config_cmds::setting_or_default::<bool>(&ctx, "clip.smart_defaults").unwrap_or(true);
+    if !smart_on {
+        return Ok(view(clip, false, next, warnings));
+    }
+    let opts = crate::smart_cmds::SmartOptions { layout: !explicit_layout, cleanup: true };
+    let (clip, report) = crate::smart_cmds::apply_smart_defaults(&ctx, &store, clip, opts).await?;
+    let mut v = view(clip, false, next, warnings);
+    v.next = default_next(&v.clip);
+    v.smart = Some(report);
+    Ok(v)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1155,10 +1173,12 @@ const WRITE: Annotations = Annotations { read_only: false, destructive: false, n
 pub fn register(reg: &mut Registry) {
     reg.register(typed(
         "clip.create",
-        "Create a clip from a source by transcript unit ids (preferred) or start/end seconds",
+        "Create a clip from a source by transcript unit ids (preferred) or start/end seconds. Smart defaults (unless --raw or setting clip.smart_defaults=false): per-shot layout + framing (one face: smooth track; two+: light active speaker; no face/graphics: blur-fit or zoom-fit; skipped when --layout is given), filler words and pauses > 1 s trimmed; `smart.decisions` lists each automatic decision with the command that undoes or overrides it",
         &[],
         WRITE,
         vec![
+            Example { description: "clip with smart defaults (layout, framing, fillers, pauses)", cli: "rustler clip create --name hook --source-id src_x --start-unit 12 --end-unit 14" },
+            Example { description: "raw clip: no automatic layout, framing or trims", cli: "rustler clip create --name raw --source-id src_x --start 10 --end 40 --raw" },
             Example {
                 description: "clip from units 12..14, checking the opening words, blur-fit layout",
                 cli: "rustler clip create --name hook --source-id src_x --start-unit 12 --end-unit 14 --expect-text \"fellow Americans\" --layout blur-fit",

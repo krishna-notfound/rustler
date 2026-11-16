@@ -526,6 +526,32 @@ Paused mid-task, WIP pushed: timeline doc + edit commands (Opus), smart defaults
 hook presets / keyword+emoji captions / flash+whip / cover frame (Sonnet) — branches `worktree-agent-*` listed by
 `git branch -r | grep worktree-agent`. Resume: SendMessage each agent (or relaunch with the same brief on its branch),
 merge, then templates (Opus), knowledge refresh, clips.auto, `rustler setup run` (new engine), release v0.2.0, trial.
+
+### 2026-11-17 — Smart defaults + light active speaker + layout plan (f34, v2 §5.5(1)(2), branch `worktree-agent-a48fa90501c766f70`)
+- `clip.create` now applies smart defaults unless `--raw` or `config set clip.smart_defaults false`: per-shot layout +
+  framing (one face → center-crop + smooth track with look-room; ≥ 2 faces → center-crop + light active speaker; no
+  face / graphics → blur-fit, **zoom-fit** when the content is centred; split only where the layout changes, < 1.2 s
+  changes absorbed; skipped when `--layout` is given), conservative filler removal (`crates/rustler-commands/data/
+  fillers_{en,hi}.txt`: um/uh/... anywhere; "you know", "like", matlab/haan/na only between pauses), pauses > 1.0 s
+  trimmed to 0.15 s (skipped for approximate caption timings). Each step is a clip revision; the result's `smart`
+  lists every decision with `override_with` commands and `undo_all` (`history restore <clip> --revision 1`).
+- New `crop.track_active` (no diarization; lite install) and `layout.plan {clip, --apply}`; engine `faces.active`
+  (YuNet landmarks → mouth box, head motion subtracted, contrast-normalised; positional tracks; luma-normalised
+  frame-accurate cut scan that also sees dark-footage cuts; graphics stats). +2 registry commands.
+- Real check (temp copy of `rustler-real1`; `faces.active` from the repo engine): `clip create` on 8-14 s ranges 2-7 s,
+  on 94 s of 1080p ~55-70 s (the scan decodes every frame). % of 1-s two-shot samples with the speaker's face in the
+  crop — trial (Vinh talking, Raj listening): track-active 14/14, 8/8, 6/6; track-speaker 0/14 (`dominant`, picked
+  Raj), 8/8, 6/6. Hand-labelled Vance excerpt: track-active 76 % (53/70) vs track-speaker 100 %; Boyle 65 % (28/43)
+  vs 100 %. Contact sheets looked at: trial clips framed on Vinh with room on the side he faces; on Vance the
+  switches land ~2 s late and the first wide shot after a close-up can start on the wrong person (no identity
+  across cuts). Guide says: prefer `crop track-speaker` for long interviews with tiny wide-shot faces.
+- Tests: `cargo test -p rustler-commands --lib smart` (14), `--test smart` (7, 3 with the real engine), engine
+  `test_active.py` (8). `tests/fix.rs` fixture now passes `raw: true` (its premise is a center-crop clip of a
+  face-less test pattern, which the smart defaults would blur-fit).
+- Needs `rustler setup run` with this build for `faces.active` in the installed engine; until then smart layout is
+  skipped with a `skipped` decision (cleanup still runs). `config` doc string for `clip.smart_defaults` still says
+  "used from v0.3.0 on" (config_cmds.rs, not owned).
+
 ### 2026-11-17 — Timeline v2 document + timeline edit commands (f33, branch `worktree-agent-ae7f9cafc65fc59fc`)
 - `rustler.timeline@2` (`rustler_core::Timeline`, item types in `rustler_core::timeline`): every extras key maps 1:1
   (`overlays` -> `tracks.text`, `crop_paths`/`segment_speed` -> `tracks.video[].crop_path/speed`, `audio_fx`/`music`/

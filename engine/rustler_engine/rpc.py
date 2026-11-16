@@ -318,6 +318,12 @@ def _speakers_active(params, progress):
     return speakers.active(params, progress)
 
 
+def _faces_active(params, progress):
+    from . import active
+
+    return active.active(params, progress)
+
+
 def _reference_measure(params, progress):
     from . import reference
 
@@ -338,5 +344,6 @@ def default_methods() -> Dict[str, Handler]:
         "audio.events": _audio_events,
         "speakers.diarize": _speakers_diarize,
         "speakers.active": _speakers_active,
+        "faces.active": _faces_active,
         "reference.measure": _reference_measure,
     }
