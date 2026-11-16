@@ -114,3 +114,7 @@ renders, checks quality, fixes problems, and delivers finished short-form clips.
   hashtags + campaign requirements); titles/hashtags written by the agent via a skill ("top-up" layer), not
   templates inside Rustler. Design draft: `docs/superpowers/specs/2026-11-16-rustler-v2-design.md` (approach A
   recommended, awaiting approval). OpusClip analysis: `docs/research/opusclip.md`.
+- 2026-11-16: **Approach A approved** ("clips are good"). New priorities: **smooth camera movement** and the
+  agent as **director** — analyse the campaign requirements, understand what holds viewers and goes viral
+  (retention is the game: "if we can't make someone hold and watch our reel, we won't go viral"), full control
+  over assets/music/templates, creative hook thinking; goal = maximum views. Git default branch renamed to `main`.

@@ -392,3 +392,15 @@ Demo outputs: `%TEMP%\rustler-e2e\exports\jfk-hook.mp4`, `%TEMP%\rustler-stream\
 - Muse's 23-item list triaged; OpusClip researched (`docs/research/opusclip.md`); v2 design drafted
   (`docs/superpowers/specs/2026-11-16-rustler-v2-design.md`), builder check running; awaiting user approval.
 - Note: git push over SSH is blocked on this network → push over HTTPS with the gh token.
+
+## 2026-11-16
+- v0.1.1 released (Windows + Linux; install.sh verified in WSL; ~500 tests green crate by crate).
+- Real trial: 5 clips (Vinh Giang × Raj Shamani) → release `clips-trial-1`, all QC pass; user: "clips are good".
+  4 bugs found + fixed (crop path lost on split/trim, track-face with blur-fit parts, static crop crash, ">>" in
+  captions). Gaps: face centring without look-room, small hook text, can't hide source pop-ups, dark scene cuts.
+- Muse's 23-item list → `docs/research/muse-live-test-2026-11-15.md`; OpusClip analysis → `docs/research/opusclip.md`.
+- v2 design `docs/superpowers/specs/2026-11-16-rustler-v2-design.md`: approach A approved; added director layer
+  (campaign analysis, retention map/score, playbook, hook lab, cold open) and smooth camera; builder-check
+  questions answered as Claude's calls. Awaiting final approval of the design doc.
+- Git: default branch renamed master → **main** (GitHub default updated, master deleted); origin now HTTPS
+  (SSH port blocked on this network).

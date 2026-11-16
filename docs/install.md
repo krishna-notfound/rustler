@@ -58,7 +58,7 @@ Installs into `~/.rustler/app` (override `RUSTLER_INSTALL_DIR` / `--dir`), symli
 `~/.claude/skills/rustler` if `~/.claude` exists (override `RUSTLER_CLAUDE_DIR`). Needs `curl` (or `gh`), `tar`,
 `sha256sum`; no compiler.
 
-The installers are read from the default branch (`master`); no `?ref=` is needed.
+The installers are read from the default branch (`main`); no `?ref=` is needed.
 
 ## What the installers print
 
