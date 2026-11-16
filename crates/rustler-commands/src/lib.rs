@@ -21,6 +21,7 @@ pub mod overlay_cmds;
 pub mod post_cmds;
 pub mod project_cmds;
 pub mod qc_cmds;
+pub mod reference_cmds;
 pub mod render_cmds;
 pub mod see_cmds;
 pub mod setup_cmds;
@@ -52,6 +53,7 @@ pub fn register_all(reg: &mut Registry) {
     fx_cmds::register(reg);
     render_cmds::register(reg);
     qc_cmds::register(reg);
+    reference_cmds::register(reg);
     fix_cmds::register(reg);
     layout_cmds::register(reg);
     highlights_cmds::register(reg);
