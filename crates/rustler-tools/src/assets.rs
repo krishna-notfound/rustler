@@ -718,7 +718,7 @@ mod tests {
         })
         .unwrap();
         let first = load_manifest(d.path());
-        assert_eq!(first.len(), 7);
+        assert_eq!(first.len(), 9);
         update_manifest(d.path(), |m| {
             for e in builtin_entries() {
                 upsert(m, e);

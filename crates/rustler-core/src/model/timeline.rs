@@ -513,6 +513,12 @@ pub enum TransitionKind {
     Wiperight,
     Slideup,
     Zoomin,
+    /// White flash at the cut (0.1 s default).
+    Flash,
+    /// Dip to black at the cut (0.1 s default).
+    Flashblack,
+    /// Horizontal motion-blur whip (0.2 s default).
+    Whip,
 }
 
 /// extras `transitions[]`: into the segment after `after_segment_id`.

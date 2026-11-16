@@ -214,7 +214,12 @@ async fn transition_kinds_flash_whip_have_short_defaults() {
     assert_eq!(f["transitions"][0]["duration"], 0.1);
     let w = call(&reg, &ctx, "transition.set", json!({"clip_id": id, "after_segment_id": seg(1), "kind": "whip"})).await.unwrap();
     assert_eq!(w["transitions"][1]["duration"], 0.2);
-    let b = call(&reg, &ctx, "transition.set", json!({"clip_id": id, "after_segment_id": seg(0), "kind": "flashblack", "duration": 0.15})).await.unwrap();
+    // The timeline document reads (and validates) the new kinds.
+    let tl = call(&reg, &ctx, "timeline.show", json!({"clip_id": id})).await.unwrap();
+    let tr = &tl["document"]["tracks"]["transitions"];
+    let kinds: Vec<&str> = tr.as_array().unwrap().iter().filter_map(|t| t["kind"].as_str()).collect();
+    assert_eq!(kinds, ["flash", "whip"], "{tr}");
+    let b =call(&reg, &ctx, "transition.set", json!({"clip_id": id, "after_segment_id": seg(0), "kind": "flashblack", "duration": 0.15})).await.unwrap();
     assert_eq!((b["transitions"][0]["kind"].as_str(), b["transitions"][0]["duration"].as_f64()), (Some("flashblack"), Some(0.15)));
     let d = call(&reg, &ctx, "transition.set", json!({"clip_id": id, "after_segment_id": seg(0), "kind": "dissolve"})).await.unwrap();
     assert_eq!(d["transitions"][0]["duration"], 0.3, "other kinds keep 0.3 s");
