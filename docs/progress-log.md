@@ -519,3 +519,10 @@ Before releasing: run `rustler setup run` with the new build so the engine has t
   sidecars (no transcription of references); `reference.import` keeps only the first 180 s of each video (`--max-seconds`).
 - Open: templates (Task 1.5) should consume `profile.json` (`based_on {reference_set}`); the engine copy in `~/.rustler/engine` needs
   `rustler setup` to pick up `reference.py`.
+
+## 2026-11-17 — PAUSED (3rd) — resume steps
+On `main` (pushed): everything through agent graphics + style references (f32). Not released yet (v0.1.2/v0.2.0).
+Paused mid-task, WIP pushed: timeline doc + edit commands (Opus), smart defaults + light active speaker (Opus),
+hook presets / keyword+emoji captions / flash+whip / cover frame (Sonnet) — branches `worktree-agent-*` listed by
+`git branch -r | grep worktree-agent`. Resume: SendMessage each agent (or relaunch with the same brief on its branch),
+merge, then templates (Opus), knowledge refresh, clips.auto, `rustler setup run` (new engine), release v0.2.0, trial.
