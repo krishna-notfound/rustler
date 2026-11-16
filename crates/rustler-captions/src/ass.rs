@@ -120,12 +120,68 @@ pub fn write_ass_colored_with(
             }),
         })
         .collect::<rustler_core::Result<Vec<Option<u32>>>>()?;
+    let paints: Vec<Paint> = parsed.into_iter().map(|colour| Paint { colour, scale: None }).collect();
+    write_ass_impl(words, Some(&paints), track, canvas, font_family, custom)
+}
+
+/// Per-word look for [`write_ass_painted_with`] (keyword captions): text colour `#RRGGBB` and a
+/// size factor (1 = preset size).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WordPaint {
+    pub colour: Option<String>,
+    pub scale: Option<f64>,
+}
+
+/// Like [`write_ass_colored_with`], with a per-word size factor as well (`paints[i]` parallel to
+/// `words`). The active-word highlight keeps the word's size. `Validation` for an invalid colour
+/// or a scale outside 0.2..4.
+pub fn write_ass_painted_with(
+    words: &[CaptionWord],
+    paints: &[WordPaint],
+    track: &CaptionTrack,
+    canvas: &Canvas,
+    font_family: &str,
+    custom: &[Preset],
+) -> rustler_core::Result<String> {
+    let parsed = paints
+        .iter()
+        .map(|p| {
+            let colour = match &p.colour {
+                None => None,
+                Some(s) => Some(parse_hex_colour(s).ok_or_else(|| {
+                    RustlerError::new(ErrorCode::Validation, "captions", format!("invalid word colour '{s}'"))
+                        .hint("use #RRGGBB, e.g. #FFE000")
+                })?),
+            };
+            let scale = match p.scale {
+                Some(f) if !(f.is_finite() && (0.2..=4.0).contains(&f)) => {
+                    return Err(RustlerError::new(ErrorCode::Validation, "captions", format!("invalid word scale {f}")));
+                }
+                Some(f) if (f - 1.0).abs() < 1e-6 => None,
+                other => other,
+            };
+            Ok(Paint { colour, scale })
+        })
+        .collect::<rustler_core::Result<Vec<Paint>>>()?;
     write_ass_impl(words, Some(&parsed), track, canvas, font_family, custom)
+}
+
+/// Parsed per-word look: ASS colour and size factor.
+#[derive(Clone, Copy, Debug, Default)]
+struct Paint {
+    colour: Option<u32>,
+    scale: Option<f64>,
+}
+
+/// `\fscx..\fscy..` for a size factor (percent).
+fn fsc(f: f64) -> String {
+    let p = (f * 100.0).round() as i64;
+    format!(r"\fscx{p}\fscy{p}")
 }
 
 fn write_ass_impl(
     words: &[CaptionWord],
-    colors: Option<&[Option<u32>]>,
+    colors: Option<&[Paint]>,
     track: &CaptionTrack,
     canvas: &Canvas,
     font_family: &str,
@@ -167,13 +223,31 @@ fn write_ass_impl(
     for (ci, chunk) in chunks.iter().enumerate() {
         let chunk_base = base_index;
         base_index += chunk.len();
-        // A visible non-active word, painted with its per-word colour when one is set.
-        let paint = |j: usize, d: &str| -> String {
-            match colors.and_then(|c| c.get(chunk_base + j)).copied().flatten() {
-                Some(c) => format!(r"{{\c{}}}{d}{{\c{back_to_primary}}}", tag_colour(c)),
+        let paint_of = |j: usize| -> Paint { colors.and_then(|c| c.get(chunk_base + j)).copied().unwrap_or_default() };
+        // Word j at its own size only (hidden layers keep the same line layout).
+        let sized = |j: usize, d: &str| -> String {
+            match paint_of(j).scale {
+                Some(f) => format!(r"{{{}}}{d}{{\fscx100\fscy100}}", fsc(f)),
                 None => d.to_string(),
             }
         };
+        // A visible non-active word, painted with its per-word colour and size when set.
+        let paint = |j: usize, d: &str| -> String {
+            let p = paint_of(j);
+            let mut open = String::new();
+            let mut close = String::new();
+            if let Some(c) = p.colour {
+                open.push_str(&format!(r"\c{}", tag_colour(c)));
+                close.push_str(&format!(r"\c{back_to_primary}"));
+            }
+            if let Some(f) = p.scale {
+                open.push_str(&fsc(f));
+                close.push_str(r"\fscx100\fscy100");
+            }
+            if open.is_empty() { d.to_string() } else { format!("{{{open}}}{d}{{{close}}}") }
+        };
+        // Extra tags for the active word: its size.
+        let active_size = |j: usize| -> String { paint_of(j).scale.map(fsc).unwrap_or_default() };
         let disp: Vec<String> = chunk
             .iter()
             .map(|w| {
@@ -209,7 +283,7 @@ fn write_ass_impl(
             match p.active {
                 ActiveStyle::Recolor => {
                     let t = join(&|j, d| {
-                        if j == i { format!(r"{{\c{ac}}}{d}{reset}") } else { paint(j, d) }
+                        if j == i { format!(r"{{\c{ac}{}}}{d}{reset}", active_size(j)) } else { paint(j, d) }
                     });
                     ev(0, "Default", format!("{lead}{t}"));
                 }
@@ -217,14 +291,35 @@ fn write_ass_impl(
                     // Layer 0: line with the active word hidden. Layer 1: only the active word
                     // visible (same line layout, so nothing reflows) and popping.
                     let base = join(&|j, d| {
-                        if j == i { format!(r"{{{HIDE}}}{d}{{{SHOW}}}") } else { paint(j, d) }
+                        if j == i {
+                            match paint_of(j).scale {
+                                Some(f) => format!(r"{{{HIDE}{}}}{d}{{{SHOW}\fscx100\fscy100}}", fsc(f)),
+                                None => format!(r"{{{HIDE}}}{d}{{{SHOW}}}"),
+                            }
+                        } else {
+                            paint(j, d)
+                        }
                     });
                     ev(0, "Default", format!("{lead}{base}"));
                     let top = join(&|j, d| {
                         if j == i {
-                            format!(r"{{{SHOW}\c{ac}{POP}}}{d}{{{HIDE}\fscx100\fscy100}}")
+                            let pop = match paint_of(j).scale {
+                                None => POP.to_string(),
+                                Some(f) => {
+                                    let p = |v: f64| (v * f).round() as i64;
+                                    format!(
+                                        r"{}\t(0,80,\fscx{}\fscy{})\t(80,160,\fscx{}\fscy{})",
+                                        fsc(f),
+                                        p(108.0),
+                                        p(112.0),
+                                        p(100.0),
+                                        p(100.0)
+                                    )
+                                }
+                            };
+                            format!(r"{{{SHOW}\c{ac}{pop}}}{d}{{{HIDE}\fscx100\fscy100}}")
                         } else {
-                            d.to_string()
+                            sized(j, d)
                         }
                     });
                     ev(1, "Default", format!("{lead}{{{HIDE}}}{top}"));
@@ -232,7 +327,14 @@ fn write_ass_impl(
                 ActiveStyle::Box => {
                     // Layer 0: only the active word's box visible. Layer 1: the normal line.
                     let boxed = join(&|j, d| {
-                        if j == i { format!(r"{{{SHOW}\1a&HFF&}}{d}{{{HIDE}}}") } else { d.to_string() }
+                        if j == i {
+                            match paint_of(j).scale {
+                                Some(f) => format!(r"{{{SHOW}\1a&HFF&{}}}{d}{{{HIDE}\fscx100\fscy100}}", fsc(f)),
+                                None => format!(r"{{{SHOW}\1a&HFF&}}{d}{{{HIDE}}}"),
+                            }
+                        } else {
+                            sized(j, d)
+                        }
                     });
                     ev(0, "Box", format!("{lead}{{{HIDE}}}{boxed}"));
                     let line = join(&|j, d| paint(j, d));

@@ -15,6 +15,7 @@ pub mod fix_cmds;
 pub mod fx_cmds;
 pub mod guide_cmds;
 pub mod highlights_cmds;
+pub mod layer_cmds;
 pub mod layout_cmds;
 pub mod media_ref;
 pub mod overlay_cmds;
@@ -54,6 +55,7 @@ pub fn register_all(reg: &mut Registry) {
     qc_cmds::register(reg);
     fix_cmds::register(reg);
     layout_cmds::register(reg);
+    layer_cmds::register(reg);
     highlights_cmds::register(reg);
     brief_cmds::register(reg);
     director_cmds::register(reg);

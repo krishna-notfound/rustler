@@ -8,6 +8,7 @@ pub mod encoders;
 pub mod camera;
 pub mod facepath;
 pub mod frames;
+pub mod layers;
 pub mod probe;
 mod proc;
 mod proc_render;
