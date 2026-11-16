@@ -624,3 +624,25 @@ merge, then templates (Opus), knowledge refresh, clips.auto, `rustler setup run`
   (6) `-q` hides command warnings in the CLI JSON.
 - Deviations: new files `keyword_cmds.rs` (for `caption.keywords`) and `emoji.rs`; one-line hooks in `render_cmds.rs` (emoji) and `qc_cmds.rs`
   (export cover); the cover record is extras key `cover` (post JSON already read it), not `meta.cover`.
+
+### 2026-11-16 — clips.auto (f37, v2 §5.7, branch `worktree-agent-aba989e64829b7b64`)
+- New command `clips.auto` (+1 registry command) in `auto_cmds.rs`: an optional pipeline over existing commands
+  (dispatched through the registry, no subprocesses). URL: one cached `source.info` + `source.fetch_transcript`,
+  rank on the captions, `source.import --sections` per pick (padded 3 s), `analyze.quick`; source: `analyze.quick`
+  when it has no transcript. Ranking = `highlights.candidates` score + 20 x first-2-s hook score (formula in the
+  output), non-overlapping, never over a clip that already covers the moment. Then `clip.create` (smart defaults +
+  template), `clip.meta_set --campaign-id`, `clip.retention` (edit timeline) and only the cheap fixes it suggests
+  (trim head/tail silence, remove pauses, then punch-ins after re-measuring), `render.batch` (progress re-emitted
+  as `clips.auto.render` with `eta_s`), `clip.retention` on the render, `qc.run`, `clip.cover --auto` (best effort, non-fatal), `export.clip` (post JSON skeleton;
+  copy stays empty for the agent). Per-clip report: why, retention before/after, fixes applied (+ undo command)
+  and suggested (text pops/cutaways are never applied), QC, export paths, `change[]` commands. `--dry-run` plans
+  only; `ranges` = the agent's own moments. A failing clip records `failed_stage` + `error`; the others go on.
+- Decisions: `quality` is the render quality (draft|final); the download height is `download_quality`. Export also
+  runs when QC failed only on `meta_present` (`needs_copy: true`). The agent's `clip.score_set` is never called.
+- Tests: `--test auto` 5 passed (dry-run plan + count + non-overlap, existing-clip avoidance, bad input, failure
+  isolation with real ffmpeg renders, real e2e on `boyle_twoshot_105s.mp4`: 2/2 exported in 96 s, retention 40->77
+  and 34->75 after punch-ins, QC pass with `meta_present` warn); lib `auto_cmds` 3 passed.
+- Real CLI run (scratch project on D:, `--template podcast-viral --quality draft`): 73 s, 2/2 exported, render
+  progress had `eta_s`; frames looked at (blur-fit wide shot, center-crop close-up, template captions + progress bar).
+- Not run: the URL path (no network in tests). Open: no whisper fallback when a video has no captions (the error
+  hint says to import sections and use `--source-id`).
