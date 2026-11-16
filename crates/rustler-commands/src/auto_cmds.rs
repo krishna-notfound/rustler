@@ -14,7 +14,7 @@
 //!    (trim head/tail silence, remove pauses, punch-ins). Text pops and cutaways are creative:
 //!    they are listed, never applied.
 //! 4. render — `render.batch` (progress with `eta_s`), `clip.retention` on the render, `qc.run`,
-//!    `export.clip` (writes `<name>.post.json`: title/description/hashtags stay empty for the
+//!    `clip.cover --auto` (best effort), `export.clip` (writes `<name>.post.json`: title/description/hashtags stay empty for the
 //!    agent to write with `clip.meta_set`; Rustler never writes copy and never publishes).
 //! 5. report — per clip: range, why, retention, QC, export paths, commands to change each decision.
 //!
@@ -102,6 +102,8 @@ pub struct AutoIn {
     pub raw: Option<bool>,
     /// Apply the cheap retention fixes (trim silence, remove pauses, punch-ins) (default true).
     pub fixes: Option<bool>,
+    /// Pick a cover frame with `clip.cover --auto` before export, best effort (default true).
+    pub cover: Option<bool>,
     /// Plan only: rank and return the picks with the commands that would run; nothing is imported,
     /// created or rendered (a URL's captions are still fetched to rank).
     #[serde(default)]
@@ -220,6 +222,9 @@ pub struct AutoClip {
     pub render: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub qc: Option<QcSummary>,
+    /// Cover frame chosen by `clip.cover --auto` (exported as `<name>.cover.jpg`, named in the post JSON).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cover: Option<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub export: Option<ExportSummary>,
     /// Dry run: the commands that would run for this clip.
@@ -256,6 +261,7 @@ pub struct Settings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub campaign: Option<String>,
     pub fixes: bool,
+    pub cover: bool,
     pub raw: bool,
 }
 
@@ -665,6 +671,7 @@ async fn clips_auto(ctx: Ctx, i: AutoIn) -> Result<AutoOut> {
     let pad = i.pad.unwrap_or(DEFAULT_PAD).clamp(0.0, 30.0);
     let quality = i.quality.unwrap_or(RenderQuality::Final);
     let fixes_on = i.fixes.unwrap_or(true);
+    let cover_on = i.cover.unwrap_or(true);
     let raw = i.raw.unwrap_or(false);
     // An explicit template must resolve before anything is written.
     let template = i.template.as_deref().map(str::trim).filter(|t| !t.is_empty()).map(String::from);
@@ -825,6 +832,7 @@ async fn clips_auto(ctx: Ctx, i: AutoIn) -> Result<AutoOut> {
         quality,
         campaign: campaign.as_ref().map(|c| c.id.clone()),
         fixes: fixes_on,
+        cover: cover_on,
         raw,
     };
 
@@ -853,6 +861,7 @@ async fn clips_auto(ctx: Ctx, i: AutoIn) -> Result<AutoOut> {
                 fixes_suggested: Vec::new(),
                 render: None,
                 qc: None,
+                cover: None,
                 export: None,
                 plan: Vec::new(),
                 change: Vec::new(),
@@ -889,6 +898,9 @@ async fn clips_auto(ctx: Ctx, i: AutoIn) -> Result<AutoOut> {
             c.plan.push(format!("rustler render batch --clip-ids <clip_ids> --quality {}", quality_str(quality)));
             c.plan.push("rustler clip retention <clip_id> --per-second false".into());
             c.plan.push("rustler qc run <clip_id> --allow-fail true".into());
+            if cover_on {
+                c.plan.push("rustler clip cover <clip_id> --auto true   # best effort".into());
+            }
             c.plan.push("rustler export clip <clip_id>   # writes <name>.post.json with empty copy for you to write".into());
             c.change = vec![
                 Change { decision: "this moment".into(), command: format!("rustler clips auto {} --dry-run --ranges <json array of {{start,end}}>   # your own moments", src_arg(&url, &rank_id)) },
@@ -1121,6 +1133,15 @@ async fn clips_auto(ctx: Ctx, i: AutoIn) -> Result<AutoOut> {
                     .hint(format!("rustler fix suggest {cid}   then re-render; export with `rustler export clip {cid}`")),
             );
             continue;
+        }
+        if cover_on {
+            match x.call("clip.cover", json!({"clip_id": cid, "auto": true})).await {
+                Ok(v) => {
+                    c.cover = v.get("image").and_then(Value::as_str).map(PathBuf::from);
+                    c.change.push(Change { decision: format!("cover frame at {:.2} s", f(&v, "out_t").unwrap_or(0.0)), command: format!("rustler clip cover {cid} --out-t <seconds>   then   rustler export clip {cid}") });
+                }
+                Err(e) => c.warnings.push(format!("no cover picked (export goes on without one): {}", e.message)),
+            }
         }
         match x.call("export.clip", json!({"clip_id": cid, "allow_fail": copy_only})).await {
             Ok(v) => {

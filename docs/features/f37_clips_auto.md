@@ -16,7 +16,7 @@ agent's judgement: every decision in the report carries the exact command that c
 `source.fetch_transcript`, `source.import --sections` per pick with padding, `analyze.quick`); local path
 (`analyze.quick` when there is no transcript); `clip.create` (smart defaults + `--template`); campaign attach
 (`clip.meta_set --campaign-id`); `clip.retention` and the cheap retention fixes; `render.batch` with `eta_s`;
-`clip.retention` on the render; `qc.run`; `export.clip` (post JSON skeleton); dry-run plan; `ranges` (the
+`clip.retention` on the render; `qc.run`; `clip.cover --auto` (best effort, `cover: false` skips); `export.clip` (post JSON skeleton); dry-run plan; `ranges` (the
 agent's own moments, the rest automated); NDJSON progress per stage; per-clip failure isolation.
 **Out (explicitly):** writing titles/descriptions/hashtags (Rustler never writes copy, `post_cmds.rs`);
 publishing/uploading; the agent's 4-part score (`clip.score_set` stays the agent's); creative retention fixes
@@ -106,3 +106,6 @@ ffmpeg + uv + engine and skips with a printed reason otherwise), `cargo test -p 
   QC pass with `meta_present` warn, exports + post.json). CLI run with `--template podcast-viral`: 73 s, 2/2
   exported, ETA in render progress, frames looked at (blur-fit wide shot, center-crop close-up, template captions
   and progress bar). URL path not run (no network in tests).
+- 2026-11-16 — Renamed f36 → f37 (main took f36), merged main, added best-effort `clip.cover --auto` before export
+  (`cover: false` skips it; failure is a clip warning). `--test auto` 5 passed after the merge; the e2e picked a cover
+  for both clips (post JSON `cover` set) and took 233 s (was 96 s without the cover step, run alongside another test).

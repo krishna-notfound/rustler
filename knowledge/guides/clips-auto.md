@@ -22,7 +22,7 @@ changes it, and you can do any step yourself at any time.
 | create | URL: `source import --sections` per pick (padded 3 s) + `analyze quick`; then `clip create` (smart defaults, `--template`), `clip meta-set --campaign-id` when `--campaign` is given |
 | fix | `clip retention --timeline-only`; applies only `trim_head`, `trim_tail`, `remove_pauses`, then `punch_in` (re-measured after a trim). Text pops and cutaways are listed in `fixes_suggested`, never applied |
 | render | `render batch` (progress `clips.auto.render` with `eta_s`) |
-| check | `clip retention` on the render, `qc run`, `export clip` |
+| check | `clip retention` on the render, `qc run`, `clip cover --auto` (best effort; `--cover false` skips it), `export clip` |
 
 The export writes `<name>.post.json` with **empty** title, description and hashtags: Rustler never writes copy
 and never publishes. Exports whose only QC failure is `meta_present` (the copy) still go out, marked
@@ -67,6 +67,7 @@ Then, for every exported clip:
 | the look | `rustler template apply <name> --clip-ids <clip_id>` |
 | a punch-in it added | `rustler effect remove <clip_id> <fx_id>` (in `fixes_applied[].undo`) |
 | a trim / pause cut it made | `rustler history undo <clip_id>` |
+| the cover frame | `rustler clip cover <clip_id> --out-t <seconds>`, then `rustler export clip <clip_id>` |
 | re-render and re-check | `rustler render run <clip_id>`, `rustler qc run <clip_id>`, `rustler export clip <clip_id>` |
 
 ## When to use it, when to do it yourself

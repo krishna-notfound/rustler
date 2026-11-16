@@ -633,7 +633,7 @@ merge, then templates (Opus), knowledge refresh, clips.auto, `rustler setup run`
   output), non-overlapping, never over a clip that already covers the moment. Then `clip.create` (smart defaults +
   template), `clip.meta_set --campaign-id`, `clip.retention` (edit timeline) and only the cheap fixes it suggests
   (trim head/tail silence, remove pauses, then punch-ins after re-measuring), `render.batch` (progress re-emitted
-  as `clips.auto.render` with `eta_s`), `clip.retention` on the render, `qc.run`, `export.clip` (post JSON skeleton;
+  as `clips.auto.render` with `eta_s`), `clip.retention` on the render, `qc.run`, `clip.cover --auto` (best effort, non-fatal), `export.clip` (post JSON skeleton;
   copy stays empty for the agent). Per-clip report: why, retention before/after, fixes applied (+ undo command)
   and suggested (text pops/cutaways are never applied), QC, export paths, `change[]` commands. `--dry-run` plans
   only; `ranges` = the agent's own moments. A failing clip records `failed_stage` + `error`; the others go on.

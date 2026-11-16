@@ -239,5 +239,13 @@ async fn end_to_end_on_test_media() {
         assert!(std::path::Path::new(c["export"]["post"].as_str().unwrap()).is_file());
         assert!(c["retention"]["score"].as_u64().is_some());
         assert_eq!(c["retention"]["measured_on"], "render");
+        // Cover is best effort; when picked, export names it in the post JSON.
+        if let Some(cover) = c["cover"].as_str() {
+            assert!(std::path::Path::new(cover).is_file());
+            let post: Value = serde_json::from_str(&std::fs::read_to_string(c["export"]["post"].as_str().unwrap()).unwrap()).unwrap();
+            assert!(!post["cover"].is_null(), "{post:#}");
+        } else {
+            eprintln!("no cover: {:?}", c["warnings"]);
+        }
     }
 }
