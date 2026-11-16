@@ -239,7 +239,8 @@ async fn render_preview_frame(ctx: Ctx, i: PreviewFrameIn) -> Result<PreviewFram
 #[derive(Deserialize, JsonSchema)]
 pub struct RenderRunIn {
     pub clip_id: ClipId,
-    /// draft (fast, small) | final (default)
+    /// draft (fast, small) | final. Default: the clip's template export quality, else the
+    /// `render.quality` setting (final).
     pub quality: Option<RenderQuality>,
     /// Use a hardware encoder when one passes a probe (default true).
     pub prefer_gpu: Option<bool>,
@@ -269,7 +270,12 @@ pub struct RenderRunOut {
 async fn render_run(ctx: Ctx, i: RenderRunIn) -> Result<RenderRunOut> {
     let store = ctx.store()?;
     let clip = store.load_clip(&i.clip_id)?;
-    let quality = i.quality.unwrap_or(RenderQuality::Final);
+    // --quality, else the clip's template export default, else the `render.quality` setting (final).
+    let quality = i
+        .quality
+        .or_else(|| crate::template_cmds::clip_export(&store, &clip.id).and_then(|x| x.quality))
+        .or_else(|| crate::config_cmds::setting_or_default::<RenderQuality>(&ctx, "render.quality"))
+        .unwrap_or(RenderQuality::Final);
     // Rendered length: transitions shorten the clip by their overlaps.
     let duration = fx_cmds::effective_duration_of(&store, &clip)?;
     let render_id = RenderId::new();

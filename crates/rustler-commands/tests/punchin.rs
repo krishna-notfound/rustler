@@ -30,6 +30,20 @@ fn fx() -> Fx {
     write_transcript(&store, &src.id, talk());
     let sfx = tmp.path().join("whoosh.wav");
     std::fs::write(&sfx, b"RIFF").unwrap();
+    // The starters add no punch-ins (the agent decides); an agent's own template with an explicit
+    // punch-in pattern drives the planner here.
+    let tdir = store.root.join("templates");
+    std::fs::create_dir_all(&tdir).unwrap();
+    let punchy = json!({
+        "schema": "rustler.template@1", "name": "punchy", "version": 1, "created_by": "agent",
+        "canvas": {"width": 1080, "height": 1920, "fps": 30.0},
+        "captions": {"enabled": true, "preset": "hormozi-pop", "position_y": 0.7, "max_words_per_line": 3},
+        "hook": {"position_y": 0.12, "font_size_factor": 0.1, "box": true, "duration": 3.0, "max_words": 7},
+        "progress_bar": {"enabled": true, "color": "#FFE000", "height": 8, "position": "top"},
+        "audio": {"loudnorm": true, "target_lufs": -14.0, "true_peak": -2.0},
+        "effects": [{"kind": "punch-in", "at": "emphasis", "duration": 2.0, "amount": 1.08, "amount_max": 1.2, "per_10s": 5.0}]
+    });
+    std::fs::write(tdir.join("punchy@1.json"), serde_json::to_vec_pretty(&punchy).unwrap()).unwrap();
     Fx { _tmp: tmp, store, ctx, reg: registry(), src, sfx: sfx.to_string_lossy().into_owned() }
 }
 
@@ -74,7 +88,7 @@ fn max_in_10s(ch: &[f64]) -> usize {
 async fn template_punch_ins_are_paced_snapped_and_varied() {
     let f = fx();
     let id = f.clip(1.0, 52.0).await; // 51 s, like trial-2 clip 02
-    f.call("template.apply", json!({"name": "podcast-viral", "clip_ids": [id]})).await;
+    f.call("template.apply", json!({"name": "punchy", "clip_ids": [id]})).await;
     let doc = f.doc(&id).await;
     let fx = effects(&doc);
     let ch = changes(&fx, &[]);
@@ -89,7 +103,7 @@ async fn template_punch_ins_are_paced_snapped_and_varied() {
         let s = span(e).0 + 0.04 + 1.0 - 0.5;
         let k = (s / 0.3).round();
         assert!((s - k * 0.3).abs() < 0.011, "{e} does not start on a word");
-        assert_eq!(e["by_template"], "podcast-viral@1");
+        assert_eq!(e["by_template"], "punchy@1");
     }
 }
 
@@ -102,7 +116,7 @@ async fn no_punch_ins_on_graphics_or_near_cuts() {
     f.call("edit.split", json!({"clip_id": id, "out_t": 20.0})).await;
     let segs: Vec<String> = f.doc(&id).await["tracks"]["video"].as_array().unwrap().iter().map(|s| s["id"].as_str().unwrap().into()).collect();
     f.call("clip.set_layout", json!({"clip_id": id, "segment_id": segs[1], "preset": "blur-fit"})).await;
-    f.call("template.apply", json!({"name": "podcast-viral", "clip_ids": [id]})).await;
+    f.call("template.apply", json!({"name": "punchy", "clip_ids": [id]})).await;
     let fx = effects(&f.doc(&id).await);
     assert!(!fx.is_empty());
     for e in &fx {
@@ -117,17 +131,17 @@ async fn no_punch_ins_on_graphics_or_near_cuts() {
 #[tokio::test]
 async fn template_tags_survive_effect_add_and_reapply_replaces() {
     let f = fx();
-    let c = f.call("clip.create", json!({"name": "t", "source_id": f.src.id, "start": 1.0, "end": 41.0, "template": "podcast-viral"})).await;
+    let c = f.call("clip.create", json!({"name": "t", "source_id": f.src.id, "start": 1.0, "end": 41.0, "template": "punchy"})).await;
     let id = c["id"].as_str().unwrap().to_string();
     let first = effects(&f.doc(&id).await);
-    assert!(!first.is_empty() && first.iter().all(|e| e["by_template"] == "podcast-viral@1"), "{first:?}");
+    assert!(!first.is_empty() && first.iter().all(|e| e["by_template"] == "punchy@1"), "{first:?}");
     // A hand-added effect (what clips auto's retention fix does) must not strip the tags.
     f.call("effect.add", json!({"clip_id": id, "kind": "flash", "start": 0.2, "end": 0.4})).await;
     let list = f.call("effect.list", json!({"clip_id": id})).await;
-    let tagged = list["effects"].as_array().unwrap().iter().filter(|e| e["by_template"] == "podcast-viral@1").count();
+    let tagged = list["effects"].as_array().unwrap().iter().filter(|e| e["by_template"] == "punchy@1").count();
     assert_eq!(tagged, first.len(), "{list}");
     // Re-applying replaces the template's punch-ins instead of stacking a second set.
-    f.call("template.apply", json!({"name": "podcast-viral", "clip_ids": [id]})).await;
+    f.call("template.apply", json!({"name": "punchy", "clip_ids": [id]})).await;
     let again = effects(&f.doc(&id).await);
     let punch = again.iter().filter(|e| e["kind"] == "punch-in").count();
     assert_eq!(punch, first.len(), "{again:?}");
@@ -138,7 +152,7 @@ async fn template_tags_survive_effect_add_and_reapply_replaces() {
 async fn shortening_drops_and_clamps_layers_then_template_applies() {
     let f = fx();
     let id = f.clip(1.0, 41.0).await;
-    f.call("template.apply", json!({"name": "podcast-viral", "clip_ids": [id]})).await;
+    f.call("template.apply", json!({"name": "punchy", "clip_ids": [id]})).await;
     f.call("effect.add", json!({"clip_id": id, "kind": "shake", "start": 18.0, "end": 22.0})).await;
     f.call("overlay.add_text", json!({"clip_id": id, "text": "LATE", "style": "plain", "start": 30.0, "end": 32.0})).await;
     f.call("audio.add_sfx", json!({"clip_id": id, "file": f.sfx, "at": 35.0})).await;
@@ -161,8 +175,8 @@ async fn shortening_drops_and_clamps_layers_then_template_applies() {
     assert!(doc["tracks"]["text"].as_array().is_none_or(|t| t.iter().all(|x| x["text"] != "LATE")));
     assert!(doc["tracks"]["audio"]["sfx"].as_array().is_none_or(|s| s.is_empty()));
     // The template applies again (trial 2: "/tracks/effects/9 ... is outside the clip").
-    f.call("template.apply", json!({"name": "podcast-viral", "clip_ids": [id], "dry_run": true})).await;
-    f.call("template.apply", json!({"name": "podcast-viral", "clip_ids": [id]})).await;
+    f.call("template.apply", json!({"name": "punchy", "clip_ids": [id], "dry_run": true})).await;
+    f.call("template.apply", json!({"name": "punchy", "clip_ids": [id]})).await;
 }
 
 #[tokio::test]
@@ -245,7 +259,7 @@ async fn punch_ins_centre_on_the_face_when_faces_are_known() {
     let dir = f.store.root.join("analysis").join(f.src.id.as_str());
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("faces.json"), serde_json::to_vec(&faces).unwrap()).unwrap();
-    f.call("template.apply", json!({"name": "podcast-viral", "clip_ids": [id]})).await;
+    f.call("template.apply", json!({"name": "punchy", "clip_ids": [id]})).await;
     let fx = effects(&f.doc(&id).await);
     assert!(!fx.is_empty());
     for e in &fx {

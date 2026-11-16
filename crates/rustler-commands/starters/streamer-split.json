@@ -2,13 +2,14 @@
   "schema": "rustler.template@1",
   "name": "streamer-split",
   "version": 1,
-  "description": "Streamer clip: facecam on top, gameplay below (split-vertical), hook title on the seam (<= 7 words, 3 s), hormozi-pop captions, planned punch-ins on stressed words (at most 4 visual changes per 10 s, 1.08-1.15), light denoise, progress bar, -14 LUFS.",
+  "description": "Streamer clip: facecam on top, gameplay below (split-vertical), hook title on the seam (<= 7 words, 3 s), hormozi-pop captions, light denoise, progress bar, -14 LUFS. No automatic punch-ins: add them yourself where a moment earns it (`rustler effect add <clip> punch-in --start <s> --end <s> --amount 1.08`).",
   "created_by": "built-in",
-  "based_on": { "trial": "streamer clip: detect-webcam (facecam top-right) -> split-vertical -> hook -> sfx -> denoise -> progress bar -> punch-in, QC pass" },
+  "based_on": { "trial": "streamer clip: detect-webcam (facecam top-right) -> split-vertical -> hook -> sfx -> denoise -> progress bar, QC pass" },
   "notes": [
     "Segments that already use split-vertical (e.g. from `rustler layout detect-webcam`) keep their panes; others get the default panes below (facecam assumed top-right). If the facecam is elsewhere, run `rustler layout detect-webcam <source_id> --clip-id <clip>` first, or pass overrides {\"layout\": {\"params\": {\"top\": {...}, \"bottom\": {...}}, \"force\": true}}.",
     "Write the hook title yourself (<= 7 words) with `rustler overlay add-text <clip> \"...\"` and apply the template again, or pass overrides {\"hook\": {\"text\": \"...\"}}.",
-    "A click/whoosh on the hook helps; add your own sound with overrides {\"audio\": {\"sfx\": [{\"asset\": \"<sfx asset id>\", \"at\": \"start\", \"volume_db\": -6}]}}."
+    "A click/whoosh on the hook helps; add your own sound with overrides {\"audio\": {\"sfx\": [{\"asset\": \"<sfx asset id>\", \"at\": \"start\", \"volume_db\": -6}]}}.",
+    "No punch-ins are added automatically; zoom only where a moment earns it: `rustler effect add <clip> punch-in --start <s> --end <s> --amount 1.08`."
   ],
   "canvas": { "width": 1080, "height": 1920, "fps": 30.0 },
   "layout": {
@@ -23,7 +24,5 @@
   "hook": { "at_seam": true, "position_y": 0.5, "font_size_factor": 0.09, "box": true, "duration": 3.0, "max_words": 7 },
   "progress_bar": { "enabled": true, "color": "#FFE000", "height": 8, "position": "top" },
   "audio": { "loudnorm": true, "target_lufs": -14.0, "true_peak": -2.0, "denoise": "light" },
-  "effects": [
-    { "kind": "punch-in", "at": "emphasis", "duration": 1.6, "amount": 1.08, "amount_max": 1.15, "per_10s": 4.0 }
-  ]
+  "export": { "quality": "final", "fps": 30.0 }
 }

@@ -240,7 +240,7 @@ pub fn named_words(raw: &[String]) -> Vec<String> {
 // ---------------------------------------------------------------------------------------------
 
 /// Transcript words that fall inside the clip, in edit-timeline order.
-fn clip_words(store: &ProjectStore, tm: &TimeMap) -> Result<Vec<ClipWord>> {
+pub(crate) fn clip_words(store: &ProjectStore, tm: &TimeMap) -> Result<Vec<ClipWord>> {
     let mut out = Vec::new();
     let mut seen: Vec<SourceId> = Vec::new();
     for s in tm.segments() {

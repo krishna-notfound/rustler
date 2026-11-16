@@ -800,7 +800,7 @@ pub fn content_crop(x0: f64, y0: f64, x1: f64, y1: f64, aspect: f64) -> Option<(
     Some((Rect { x: round3(x0), y: round3(y0), w: round3(x1 - x0), h: round3(y1 - y0) }, gain))
 }
 
-fn classify(samples: &[&ScanSample], start: f64, end: f64, aspect: f64) -> ShotPlan {
+pub(crate) fn classify(samples: &[&ScanSample], start: f64, end: f64, aspect: f64) -> ShotPlan {
     let n = samples.len().max(1);
     let face_rows: Vec<Vec<&ScanFace>> = samples.iter().map(|s| candidates(s)).collect();
     let with_face: Vec<&Vec<&ScanFace>> = face_rows.iter().filter(|r| !r.is_empty()).collect();
