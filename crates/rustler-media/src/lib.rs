@@ -3,6 +3,7 @@
 //! filtergraph compiler, rendering and QC.
 
 pub mod audio_analysis;
+pub mod card;
 pub mod compile;
 pub mod encoders;
 pub mod camera;

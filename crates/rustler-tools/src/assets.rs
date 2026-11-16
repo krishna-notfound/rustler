@@ -29,10 +29,12 @@ pub enum AssetKind {
     CaptionStyle,
     Layout,
     Template,
+    /// A text look (font, size, colours, box, shadow) made by `text.create_style`.
+    TextStyle,
 }
 
 impl AssetKind {
-    pub const ALL: [AssetKind; 7] = [
+    pub const ALL: [AssetKind; 8] = [
         AssetKind::Font,
         AssetKind::Music,
         AssetKind::Sfx,
@@ -40,6 +42,7 @@ impl AssetKind {
         AssetKind::CaptionStyle,
         AssetKind::Layout,
         AssetKind::Template,
+        AssetKind::TextStyle,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -51,6 +54,7 @@ impl AssetKind {
             AssetKind::CaptionStyle => "caption_style",
             AssetKind::Layout => "layout",
             AssetKind::Template => "template",
+            AssetKind::TextStyle => "text_style",
         }
     }
 
@@ -64,6 +68,7 @@ impl AssetKind {
             AssetKind::CaptionStyle => "caption_styles",
             AssetKind::Layout => "layouts",
             AssetKind::Template => "templates",
+            AssetKind::TextStyle => "text_styles",
         }
     }
 
@@ -71,6 +76,7 @@ impl AssetKind {
     fn prefix(self) -> &'static str {
         match self {
             AssetKind::CaptionStyle => "style",
+            AssetKind::TextStyle => "text",
             k => k.as_str(),
         }
     }

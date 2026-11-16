@@ -201,3 +201,23 @@ Line-delimited JSON-RPC 2.0 over the worker's stdin/stdout. Start with
     Canny edge density and the 5 %/95 % horizontal extent of the edges (`x_lo`, `x_hi`), on a 320 px-wide frame.
   - Errors: `validation` (missing params, video not found, bad range or flags), `media` (cannot open video,
     cannot load the YuNet model). Progress: `stage: "faces.active"`.
+- `reference.measure {"video_path", "audio_path": null|string, "max_seconds": 180, "faces": true}`
+  -> `{"duration", "truncated", "size": {"w","h"}, "analysis_fps", "cuts": {"count", "per_minute", "times": [..], "shot_length": {count, mean, median, min, max, p25, p75}, "method"}, "shots": [{"start","end","layout","structure","faces"?,"face_center_y"?,"face_height"?}], "layout_distribution": {"<layout>[+<structure>]": n}, "zoom": {"events": [{"start","end","factor","kind": "zoom_in"|"zoom_out"|"punch_in"|"punch_out"}], "per_minute", "coverage", "method"}, "text": {"caption": {"present", "y0","y1","y_center","height","x0","x1","presence","change_rate","words_per_line": {median, mean, max, samples}, "fill_colors": [{"hex","share"}], "outline_or_box_color", "dark_to_fill_pixel_ratio"} | {"present": false}, "hook": {"present", "y0","y1","x0","x1","lines","visible_from","visible_to","coverage_first_3s"} | {"present": false}, "static_overlays": [{y0,y1,x0,x1,presence,change_rate}], "any_text_first_3s", "samples", "method"}, "faces": {"available", "model"?, "note"?}, "music"?: {"available", "music_present", "likelihood", "pause_depth_db", "pulse_strength", "method"}}`
+  - One style-reference video (a low-res proxy is enough; `rustler reference import` makes it). Light only:
+    OpenCV + numpy, plus the YuNet face model when it can be loaded (`faces.available: false` with a `note`
+    otherwise; layout classes are then `unknown` and only the frame structure is reported).
+  - Cuts: consecutive frames are luma-normalised (zero mean, unit variance) and compared, together with a
+    colour-histogram distance; a cut is a local maximum above `max(0.22, 3 x local median)`. A candidate whose
+    two frames still match as the same scene at another scale (ORB + RANSAC similarity transform) is a
+    `punch_in`/`punch_out` (reported under `zoom.events`, not `cuts`). Cuts within 0.3 s of either end are fades.
+  - Zoom: scale between frames 0.4 s apart, measured separately on the left and right frame strips (they must
+    agree within 3 percent, so a moving subject is not a zoom), text regions masked; |change| >= 3.5 percent
+    counts. `coverage` = share of frame pairs with enough texture to measure.
+  - Text: Sobel-x edge-density rows standing out from a rolling-median baseline, sampled every 0.25 s and
+    clustered by vertical position. The caption is the recurring cluster whose content changes within shots,
+    is edge-dense and does not change just because the picture moves; the hook is text up in the first 3 s
+    and gone by 3.5 s; static clusters (logo, watermark) are `static_overlays`.
+  - Music: heuristic on `audio_path` (16 kHz mono wav): pause depth (p90 - p10 frame level) and a rhythmic
+    pulse; `likelihood >= 0.5` = `music_present`.
+  - Errors: `validation` (missing params, video not found), `media` (cannot open, fewer than 3 frames).
+    Progress: `stage: "reference.measure"`.
