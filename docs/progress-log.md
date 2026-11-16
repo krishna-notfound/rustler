@@ -360,3 +360,25 @@ Demo outputs: `%TEMP%\rustler-e2e\exports\jfk-hook.mp4`, `%TEMP%\rustler-stream\
 - **docs/MUSE.md**: how to give Rustler to Muse (token, install.sh, guides, copy-paste prompt). User is
   travelling; Muse will operate Rustler. Running: release v0.1.1 build (Windows + Linux) and the real
   5-clip trial on the Vinh Giang × Raj Shamani podcast → GitHub release `clips-trial-1`.
+
+### 2026-11-16 - Fixes found while making the real 5-clip trial (Vinh Giang x Raj Shamani)
+
+- **Crop paths lost after edits** (`extras.rs` `carry_crop_paths`, called from `edit_cmds::finish` and `edit.refine`):
+  `crop_paths` are keyed by segment id with segment-relative times, but `edit.split` / `remove-pauses` / `remove-words`
+  mint new ids and `trim` / `set-range` / `refine` / history restore move a segment start. The face path stayed on a dead
+  id and the pieces silently rendered the stale static crop (on the trial clip the window was 0.56-0.88 while the face
+  was at 0.5: face out of frame). Now new pieces inherit the parent's path (shifted, cut to the piece, interpolated
+  ends); a moved start shifts the keys (all kept, so undo is lossless); a warning names segments that now reach outside
+  the tracked range. Test: `tests/edit.rs::crop_paths_follow_edits`.
+- **`crop track-face <clip>` failed on mixed layouts**: without `--segment-id` it errored on the first blur-fit segment;
+  it now tracks the center-crop segments and lists the skipped ones as warnings (all non-crop still fails).
+  Test: extended `tests/clip.rs`.
+- **Still crop path broke render/preview**: a path whose x never changes (single key, common for short segments)
+  wrote an empty sendcmd file; ffmpeg rejects it ("No commands were specified"). Now a plain `crop` at that x.
+  Test: `tests/compile.rs::still_crop_path_uses_plain_crop`.
+- **`>>` burned into captions**: YouTube caption speaker-change markers are timed words in captions-based transcripts.
+  `chunk_words` now skips tokens made only of ASCII punctuation (`>>`, `-`). Test: `tests/ass.rs::speaker_markers_are_not_captioned`.
+- Observed, not changed: `crop track-face` centres the face box, so tight close-ups of a profile speaker leave the nose
+  at the crop edge and the smoothed path lags quick leans (worked around with split + static `focus_x`); caption-derived
+  word timings stretch words over pauses, so `edit remove-pauses` finds nothing (re-transcribing with whisper fixed it);
+  hormozi-pop at 0.076 renders ~45 px cap height (used a custom 0.115 style).
