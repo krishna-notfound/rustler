@@ -537,7 +537,7 @@ merge, then templates (Opus), knowledge refresh, clips.auto, `rustler setup run`
   lists every decision with `override_with` commands and `undo_all` (`history restore <clip> --revision 1`).
 - New `crop.track_active` (no diarization; lite install) and `layout.plan {clip, --apply}`; engine `faces.active`
   (YuNet landmarks → mouth box, head motion subtracted, contrast-normalised; positional tracks; luma-normalised
-  frame-accurate cut scan that also sees dark-footage cuts; graphics stats). 136 → +2 registry commands.
+  frame-accurate cut scan that also sees dark-footage cuts; graphics stats). +2 registry commands.
 - Real check (temp copy of `rustler-real1`; `faces.active` from the repo engine): `clip create` on 8-14 s ranges 2-7 s,
   on 94 s of 1080p ~55-70 s (the scan decodes every frame). % of 1-s two-shot samples with the speaker's face in the
   crop — trial (Vinh talking, Raj listening): track-active 14/14, 8/8, 6/6; track-speaker 0/14 (`dominant`, picked
