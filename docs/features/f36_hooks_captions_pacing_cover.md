@@ -1,4 +1,4 @@
-# f33 — Hook presets, keyword/emoji captions, flash/whip transitions, cover frame
+# f36 — Hook presets, keyword/emoji captions, flash/whip transitions, cover frame
 
 **Status:** Built  |  **Depends on:** f09 (overlays), f10/f17 (captions), f18 (transitions), f23 (asset library, sfx assets)  |  **Owner:** hooks agent (v2 wave D, design §5.5 items 3-6)
 

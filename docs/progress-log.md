@@ -599,3 +599,28 @@ merge, then templates (Opus), knowledge refresh, clips.auto, `rustler setup run`
   templated clip; spec fields layout_rules/cutaway_rules/cleanup/keyword_highlight/export/post_defaults (out of scope,
   rejected as unknown fields).
 - Small shared edits: `timeline_cmds::apply` is now `pub`; `ClipCreateIn` gained `template`.
+
+## 2026-11-16 - Hooks, keyword/emoji captions, flash/whip, cover frame (f36, v2 wave D)
+
+- Built: `overlay.hook_styles`; overlay styles `hook-big`, `hook-box-yellow`, `hook-outline`, `hook-pov`, `hook-question` with entry
+  animations (pop, zoom-in, slide, typewriter; `--anim` on any style) and `--sfx` (a normal sfx entry at the hook start, moved/removed with
+  the hook); caption presets `keyword-highlight` and `emoji-karaoke`; `caption.keywords {words|auto}` (colour overrides, never overwrites
+  an agent colour, `--dry-run` previews); transition kinds `flash` (fadewhite, 0.1 s), `flashblack` (0.1 s), `whip` (hblur, 0.2 s);
+  `clip.cover` + export hook (`<name>.cover.jpg`, `post.json` `cover`). Commands: +3 (`overlay.hook_styles`, `caption.keywords`,
+  `clip.cover`). Emoji at render: kept when an emoji font exists (system Segoe UI Emoji counts), else dropped with a warning.
+- Tests: captions (`keyword_presets.rs`, emoji unit tests), media `tests/hooks.rs` (12: ASS output of every style, real renders of all five
+  hooks, flash/flashblack/whip at a cut), commands `tests/hooks_captions.rs` (6: styles + whoosh lifecycle, keywords, keyword colour in a real
+  preview frame, transition defaults, cover + export, export without cover) and unit tests (keyword rules, cover measures). Existing asset
+  tests updated for 9 built-in presets. Passing before and after merging main (timeline v2).
+- Real run (vance two-shot excerpt, real engine): all five hooks looked at (distinct, readable, clear of the captions); hook-big now always
+  breaks into two lines; `keyword-highlight` with `caption keywords --auto` marked "Hello"/"White", "Hello" is drawn yellow and larger, the
+  rest plain white; flash at a cut renders a near-white blend frame; `clip.cover --auto` on a face-tracked clip chose a sharp frame with the
+  speaker's face in the upper third, mid-speech, not on a cut; export wrote `hooktest.cover.jpg` and post.json `cover.file`.
+- Findings/limits: (1) the first cover try on a wide shot with no face was decided by the hook text's edges: the no-face sharpness band is now
+  the middle band (34-56% of the height). (2) Eye contrast and "frontal" need YuNet landmarks (`lm`); the engine copy in `~/.rustler/engine`
+  predates them, so here only sharpness + face size/position were used (run `rustler setup run`); eye-open is a contrast proxy, not a blink
+  detector. (3) The asset library has no whoosh (only Kenney interface clicks): the run used `sfx-kenney-interface-click-1`. (4) libass draws
+  Segoe UI Emoji as one-colour outlines. (5) `edit.cold_open` still adds a white-flash effect item; it can use the `flash` transition now.
+  (6) `-q` hides command warnings in the CLI JSON.
+- Deviations: new files `keyword_cmds.rs` (for `caption.keywords`) and `emoji.rs`; one-line hooks in `render_cmds.rs` (emoji) and `qc_cmds.rs`
+  (export cover); the cover record is extras key `cover` (post JSON already read it), not `meta.cover`.
