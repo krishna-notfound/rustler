@@ -290,7 +290,7 @@ async fn punch_in_zooms_and_progress_bar_grows() {
     let (id, sources) = sources_for(&t, &src);
     let clip = make_clip(&id, &[(0.0, 3.0)], false);
     let x = CompileExtras {
-        effects: vec![Effect { id: "fx_1".into(), kind: EffectKind::PunchIn, start: 1.0, end: 2.0, amount: Some(2.0) }],
+        effects: vec![Effect { id: "fx_1".into(), kind: EffectKind::PunchIn, start: 1.0, end: 2.0, amount: Some(2.0), focus_x: None, focus_y: None, extra: Default::default() }],
         progress_bar: Some(ProgressBar::default()),
         ..Default::default()
     };
@@ -328,9 +328,9 @@ async fn zoom_slow_shake_and_flash_render() {
     let clip = make_clip(&id, &[(0.0, 3.0)], false);
     let x = CompileExtras {
         effects: vec![
-            Effect { id: "fx_1".into(), kind: EffectKind::ZoomSlow, start: 0.0, end: 2.0, amount: Some(2.0) },
-            Effect { id: "fx_2".into(), kind: EffectKind::Flash, start: 2.2, end: 2.4, amount: None },
-            Effect { id: "fx_3".into(), kind: EffectKind::Shake, start: 2.5, end: 2.9, amount: Some(0.03) },
+            Effect { id: "fx_1".into(), kind: EffectKind::ZoomSlow, start: 0.0, end: 2.0, amount: Some(2.0), focus_x: None, focus_y: None, extra: Default::default() },
+            Effect { id: "fx_2".into(), kind: EffectKind::Flash, start: 2.2, end: 2.4, amount: None, focus_x: None, focus_y: None, extra: Default::default() },
+            Effect { id: "fx_3".into(), kind: EffectKind::Shake, start: 2.5, end: 2.9, amount: Some(0.03), focus_x: None, focus_y: None, extra: Default::default() },
         ],
         ..Default::default()
     };

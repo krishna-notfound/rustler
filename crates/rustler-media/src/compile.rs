@@ -652,11 +652,29 @@ pub struct Effect {
     /// Zoom factor (punch-in, zoom-slow) or shake amplitude; default by kind.
     #[serde(default)]
     pub amount: Option<f64>,
+    /// Zoom centre for punch-in / zoom-slow as a canvas fraction (0..1, e.g. the face); the
+    /// frame centre when absent. Pulled in so the zoomed window never leaves the frame.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focus_x: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focus_y: Option<f64>,
+    /// Other stored fields (e.g. `by_template`, `template_role`), kept on read-modify-write.
+    #[serde(flatten, default)]
+    #[schemars(skip)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl Effect {
     pub fn amount_or_default(&self) -> f64 {
         self.amount.unwrap_or_else(|| self.kind.default_amount())
+    }
+
+    /// Source-quad offset (ox, oy) that centres a zoom of `z` on the focus point, clamped so the
+    /// window stays inside the frame.
+    pub fn focus_offset(&self, z: f64) -> (f64, f64) {
+        let lim = (0.5 - 0.5 / z.max(1.0)).max(0.0);
+        let off = |f: Option<f64>| f.filter(|v| v.is_finite()).map_or(0.0, |v| (v - 0.5).clamp(-lim, lim));
+        (off(self.focus_x), off(self.focus_y))
     }
 }
 
@@ -942,12 +960,17 @@ fn effect_filter(e: &Effect, f0: u64, f1: u64, fps: f64) -> String {
     let enable = format!("enable='between(n,{f0},{last})'");
     match e.kind {
         EffectKind::PunchIn => {
-            format!("perspective={}:interpolation=linear:{enable}", quad(&num6(a), "0", "0"))
+            let (ox, oy) = e.focus_offset(a);
+            format!("perspective={}:interpolation=linear:{enable}", quad(&num6(a), &off_expr(ox), &off_expr(oy)))
         }
         EffectKind::ZoomSlow => {
             let span = (f1 - f0).max(1);
-            let z = format!("1+{}*clip((in-1-{f0})/{span},0,1)", num6(a - 1.0));
-            format!("perspective={}:interpolation=linear:eval=frame:{enable}", quad(&z, "0", "0"))
+            let p = format!("clip((in-1-{f0})/{span},0,1)");
+            let z = format!("1+{}*{p}", num6(a - 1.0));
+            // The centre drifts towards the focus as the zoom grows (always inside the frame).
+            let (ox, oy) = e.focus_offset(a);
+            let off = |o: f64| if o == 0.0 { "0".to_string() } else { format!("{}*{p}", off_expr(o)) };
+            format!("perspective={}:interpolation=linear:eval=frame:{enable}", quad(&z, &off(ox), &off(oy)))
         }
         EffectKind::Shake => {
             // Zoom in just enough that the offsets never show the frame edge.
@@ -968,6 +991,11 @@ fn effect_filter(e: &Effect, f0: u64, f1: u64, fps: f64) -> String {
             )
         }
     }
+}
+
+/// A quad offset as an expression term (`0`, or a parenthesised signed number).
+fn off_expr(o: f64) -> String {
+    if o == 0.0 { "0".to_string() } else { format!("({})", num6(o)) }
 }
 
 /// Six-decimal number with trailing zeros trimmed (filter arguments that must be frame-exact).

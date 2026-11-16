@@ -1382,6 +1382,440 @@ pub fn item_ids(t: &Timeline) -> Vec<(&'static str, String)> {
     v
 }
 
+// ---------------------------------------------------------------------------------------------
+// Layers after an edit that re-cuts the clip (edit.* save path), and pruning to the duration
+// ---------------------------------------------------------------------------------------------
+
+/// Drops time-based items that start at or after the end of the edit timeline and clamps the
+/// ones that run past it (effects, text, images, masks, cutaways, sfx, freezes). Word-anchored
+/// ends are left to the anchors. Returns one warning per changed item.
+pub fn prune_to_duration(t: &mut Timeline) -> Vec<String> {
+    const MIN_LEN: f64 = 0.05;
+    let dur = t.edit_duration();
+    let mut w = Vec::new();
+    let tr = &mut t.tracks;
+    let span = |what: &str, id: &str, s: &mut f64, e: &mut f64, w: &mut Vec<String>| -> bool {
+        if *s >= dur - MIN_LEN {
+            w.push(format!("{what} {id} removed: {s:.2}..{e:.2}s is past the end of the clip ({dur:.2}s)"));
+            return false;
+        }
+        if *e > dur + 1e-9 {
+            w.push(format!("{what} {id} shortened: ended at {e:.2}s, the clip now ends at {dur:.2}s"));
+            *e = dur;
+        }
+        true
+    };
+    tr.effects.retain_mut(|x| span("effect", &x.id.clone(), &mut x.start, &mut x.end, &mut w));
+    tr.text.retain_mut(|x| span("text", &x.id.clone(), &mut x.start, &mut x.end, &mut w));
+    let timing = |what: &str, id: &str, tm: &mut ItemTiming, w: &mut Vec<String>| -> bool {
+        if tm.start_word.is_none()
+            && let Some(s) = tm.out_start
+            && s >= dur - MIN_LEN
+        {
+            w.push(format!("{what} {id} removed: starts at {s:.2}s, past the end of the clip ({dur:.2}s)"));
+            return false;
+        }
+        if tm.end_word.is_none()
+            && let Some(e) = tm.out_end
+            && e > dur + 1e-9
+        {
+            w.push(format!("{what} {id} shortened: ended at {e:.2}s, the clip now ends at {dur:.2}s"));
+            tm.out_end = Some(dur);
+        }
+        true
+    };
+    tr.images.retain_mut(|x| timing("image", &x.id.clone(), &mut x.timing, &mut w));
+    tr.masks.retain_mut(|x| timing("mask", &x.id.clone(), &mut x.timing, &mut w));
+    tr.cutaways.retain_mut(|x| timing("cutaway", &x.id.clone(), &mut x.timing, &mut w));
+    tr.audio.sfx.retain(|x| match x.at {
+        Some(at) if x.at_word.is_none() && at >= dur => {
+            w.push(format!("sfx {} removed: plays at {at:.2}s, past the end of the clip ({dur:.2}s)", x.id));
+            false
+        }
+        _ => true,
+    });
+    tr.freezes.retain(|x| {
+        if x.out_t > dur + 1e-9 {
+            w.push(format!("freeze {} removed: at {:.2}s, past the end of the clip ({dur:.2}s)", x.id, x.out_t));
+            false
+        } else {
+            true
+        }
+    });
+    w
+}
+
+/// Pieces of `new` with their provenance in `old` (same source, overlapping source range).
+fn provenance(old: &[Segment], new: &[Segment]) -> Vec<Piece> {
+    new.iter()
+        .map(|n| {
+            let origins = old
+                .iter()
+                .filter(|o| o.source_id == n.source_id)
+                .filter_map(|o| {
+                    let (a, b) = (o.start.max(n.start), o.end.min(n.end));
+                    (b - a > 1e-6).then(|| (o.id.clone(), a, b))
+                })
+                .collect();
+            let seg = VideoSeg {
+                id: n.id.clone(),
+                source_id: n.source_id.clone(),
+                src_in: n.start,
+                src_out: n.end,
+                layout: n.layout.clone(),
+                crop_path: None,
+                speed: None,
+            };
+            Piece { seg, origins }
+        })
+        .collect()
+}
+
+/// The time-based layers (`extras.json`) after a segment edit turned `old` into `new`: items
+/// follow their content like a cold open does ([`Remap`], as in [`rebuild`]), items whose content
+/// was cut out are dropped and items that now run past the end are clamped. Works on the stored
+/// JSON, so every field an item carries (`by_template`, styles this build's document model does
+/// not know, ...) is kept. Returns the new extras map when anything changed, plus warnings naming
+/// each dropped / clamped item. Word-anchored times follow their words already and are left alone;
+/// transitions, crop paths, speeds and volumes are left to their own handling.
+pub fn follow_recut(old: &Clip, new: &Clip, map: &Map<String, Value>) -> Result<(Option<Map<String, Value>>, Vec<String>)> {
+    const MIN_LEN: f64 = 0.05;
+    let old_video: Vec<VideoSeg> = provenance(&old.segments, &old.segments).into_iter().map(|p| p.seg).collect();
+    let r = Remap::new(&old_video, &provenance(&old.segments, &new.segments));
+    let dur: f64 = new.segments.iter().map(|s| (s.end - s.start).max(0.0)).sum();
+    let mut warnings = Vec::new();
+    let mut out = map.clone();
+    let mut changed = false;
+    let num = |o: &Map<String, Value>, k: &str| o.get(k).and_then(Value::as_f64);
+    let anchored = |o: &Map<String, Value>, k: &str| o.get(k).is_some_and(|v| !v.is_null());
+    let r2 = |x: f64| (x * 1000.0).round() / 1000.0;
+    // Only a time that actually moved is rewritten (rounded to the millisecond).
+    let set = |o: &mut Map<String, Value>, k: &str, v: f64| {
+        if o.get(k).and_then(Value::as_f64).is_none_or(|cur| (cur - v).abs() > 1e-6) {
+            o.insert(k.to_string(), serde_json::json!(r2(v)));
+        }
+    };
+    // (key, what, start key, end key, start anchor, end anchor)
+    let spans: [(&str, &str, &str, &str, &str, &str); 5] = [
+        (EFFECTS_KEY, "effect", "start", "end", "", ""),
+        (OVERLAYS_KEY, "text", "start", "end", "", ""),
+        (IMAGES_KEY, "image", "out_start", "out_end", "start_word", "end_word"),
+        (MASKS_KEY, "mask", "out_start", "out_end", "start_word", "end_word"),
+        (CUTAWAYS_KEY, "cutaway", "out_start", "out_end", "start_word", "end_word"),
+    ];
+    for (key, what, ks, ke, aws, awe) in spans {
+        let Some(Value::Array(items)) = map.get(key) else { continue };
+        let mut kept = Vec::with_capacity(items.len());
+        for it in items {
+            let Value::Object(o) = it else {
+                kept.push(it.clone());
+                continue;
+            };
+            let mut o = o.clone();
+            let id = o.get("id").and_then(Value::as_str).unwrap_or("?").to_string();
+            let (sa, ea) = (!aws.is_empty() && anchored(&o, aws), !awe.is_empty() && anchored(&o, awe));
+            let (s, e) = (num(&o, ks), num(&o, ke));
+            // Follow the content.
+            let keep = match (s.filter(|_| !sa), e.filter(|_| !ea)) {
+                (Some(s), Some(e)) => match r.interval(s, e) {
+                    Some((a, b)) => {
+                        set(&mut o, ks, a);
+                        set(&mut o, ke, b);
+                        true
+                    }
+                    None => sa || ea,
+                },
+                (Some(s), None) => match r.time(s, false) {
+                    Some(a) => {
+                        set(&mut o, ks, a);
+                        true
+                    }
+                    None => ea,
+                },
+                (None, Some(e)) => match r.time(e, true) {
+                    Some(b) => {
+                        set(&mut o, ke, b);
+                        true
+                    }
+                    None => sa,
+                },
+                (None, None) => true,
+            };
+            if !keep {
+                warnings.push(format!("{what} {id} removed: its part of the clip was cut out"));
+                continue;
+            }
+            // Past the new end: drop, or clamp what straddles it.
+            if !sa && num(&o, ks).is_some_and(|s| s >= dur - MIN_LEN) {
+                warnings.push(format!("{what} {id} removed: it starts after the clip's new end ({dur:.2}s)"));
+                continue;
+            }
+            if !ea && let Some(e) = num(&o, ke).filter(|e| *e > dur + 1e-9) {
+                warnings.push(format!("{what} {id} shortened: ended at {e:.2}s, the clip now ends at {dur:.2}s"));
+                set(&mut o, ke, dur);
+            }
+            kept.push(Value::Object(o));
+        }
+        if &kept != items {
+            changed = true;
+            if kept.is_empty() {
+                out.remove(key);
+            } else {
+                out.insert(key.to_string(), Value::Array(kept));
+            }
+        }
+    }
+    // Points: sfx (`at`, unless on a word) and freezes (`out_t`).
+    for (key, what, k, aw) in [(SFX_KEY, "sfx", "at", "at_word"), (FREEZES_KEY, "freeze", "out_t", "")] {
+        let Some(Value::Array(items)) = map.get(key) else { continue };
+        let mut kept = Vec::with_capacity(items.len());
+        for it in items {
+            let Value::Object(o) = it else {
+                kept.push(it.clone());
+                continue;
+            };
+            let mut o = o.clone();
+            let id = o.get("id").and_then(Value::as_str).unwrap_or("?").to_string();
+            if let Some(t) = num(&o, k).filter(|_| aw.is_empty() || !anchored(&o, aw)) {
+                match r.time(t, false).or_else(|| if key == FREEZES_KEY { r.time(t, true) } else { None }) {
+                    Some(a) if a < dur || (key == FREEZES_KEY && a <= dur + 1e-9) => set(&mut o, k, a),
+                    _ => {
+                        warnings.push(format!("{what} {id} removed: its part of the clip was cut out"));
+                        continue;
+                    }
+                }
+            }
+            kept.push(Value::Object(o));
+        }
+        if &kept != items {
+            changed = true;
+            if kept.is_empty() {
+                out.remove(key);
+            } else {
+                out.insert(key.to_string(), Value::Array(kept));
+            }
+        }
+    }
+    Ok((changed.then_some(out), warnings))
+}
+
+// ---------------------------------------------------------------------------------------------
+// Punch-in planner input (template.apply and the clip.retention punch_in fix share it)
+// ---------------------------------------------------------------------------------------------
+
+/// A segment the planner must not punch into: graphics shown whole (blur-fit / any contain
+/// region / a preset named *fit*) or a segment smart defaults classified as graphics.
+fn no_punch_segments(t: &Timeline) -> BTreeSet<String> {
+    let mut ids: BTreeSet<String> = t
+        .tracks
+        .video
+        .iter()
+        .filter(|v| {
+            v.layout.preset.as_deref().is_some_and(|p| p.contains("fit"))
+                || v.layout.regions.iter().any(|r| r.fit == rustler_core::Fit::Contain)
+        })
+        .map(|v| v.id.as_str().to_string())
+        .collect();
+    if let Some(decisions) = t.tracks.extra.get("smart_defaults").and_then(|v| v.get("decisions")).and_then(Value::as_array) {
+        for d in decisions {
+            let why = d.get("why").and_then(Value::as_str).unwrap_or("");
+            if why.starts_with("graphics") || why.contains(" graphics") {
+                for id in d.get("segment_ids").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
+                    ids.insert(id.to_string());
+                }
+            }
+        }
+    }
+    ids
+}
+
+/// Crop x (source fraction of the crop window's left edge) at segment time `t`.
+fn crop_x_at(keys: &[CropPoint], t: f64) -> Option<f64> {
+    let first = keys.first()?;
+    if t <= first.t {
+        return Some(first.x);
+    }
+    let k = keys.partition_point(|k| k.t <= t);
+    if k >= keys.len() {
+        return keys.last().map(|k| k.x);
+    }
+    let (a, b) = (keys[k - 1], keys[k]);
+    let span = b.t - a.t;
+    Some(if span <= 0.0 { b.x } else { a.x + (b.x - a.x) * (t - a.t) / span })
+}
+
+/// Face positions on the canvas from `analysis/<source>/faces.json` (`analyze faces`), through
+/// each segment's layout and crop path. Empty when no source has faces.json.
+fn face_focus(store: &ProjectStore, t: &Timeline, blocked: &BTreeSet<String>) -> Vec<rustler_media::punchin::FocusSpan> {
+    let mut cache: HashMap<SourceId, Option<Value>> = HashMap::new();
+    let mut out = Vec::new();
+    let mut o = 0.0;
+    for v in &t.tracks.video {
+        let len = (v.src_out - v.src_in).max(0.0);
+        let out_start = o;
+        o += len;
+        if blocked.contains(v.id.as_str()) || v.layout.regions.is_empty() {
+            continue;
+        }
+        let faces = cache
+            .entry(v.source_id.clone())
+            .or_insert_with(|| {
+                let rel = Path::new("analysis").join(v.source_id.as_str()).join("faces.json");
+                store.resolve(&rel).is_file().then(|| store.read_json::<Value>(&rel).ok()).flatten()
+            })
+            .as_ref();
+        let Some(samples) = faces.and_then(|f| f.get("samples")).and_then(Value::as_array) else { continue };
+        let mut order: Vec<&rustler_core::Region> = v.layout.regions.iter().collect();
+        order.sort_by_key(|r| std::cmp::Reverse(r.z));
+        for s in samples {
+            let Some(st) = s.get("t").and_then(Value::as_f64) else { continue };
+            if st < v.src_in || st >= v.src_out {
+                continue;
+            }
+            let num = |f: &Value, k: &str| f.get(k).and_then(Value::as_f64).unwrap_or(0.0);
+            let Some(face) = s
+                .get("faces")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .max_by(|a, b| (num(a, "w") * num(a, "h")).total_cmp(&(num(b, "w") * num(b, "h"))))
+            else {
+                continue;
+            };
+            let (fx, fy) = (num(face, "x") + num(face, "w") / 2.0, num(face, "y") + num(face, "h") / 2.0);
+            let seg_t = st - v.src_in;
+            let main_id = v.layout.regions.first().map(|r| r.id.clone());
+            let hit = order.iter().find_map(|r| {
+                let mut src = r.src;
+                if Some(&r.id) == main_id.as_ref()
+                    && let Some(x) = v.crop_path.as_deref().and_then(|k| crop_x_at(k, seg_t))
+                {
+                    src.x = x;
+                }
+                let inside = fx >= src.x && fx <= src.x + src.w && fy >= src.y && fy <= src.y + src.h && src.w > 0.0 && src.h > 0.0;
+                inside.then(|| (r.dst.x + (fx - src.x) / src.w * r.dst.w, r.dst.y + (fy - src.y) / src.h * r.dst.h))
+            });
+            if let Some((x, y)) = hit {
+                let at = out_start + seg_t;
+                out.push(rustler_media::punchin::FocusSpan { start: at - 0.5, end: at + 0.5, x: x.clamp(0.0, 1.0), y: y.clamp(0.0, 1.0) });
+            }
+        }
+    }
+    out
+}
+
+/// Planner input for a stored clip. Extras keys this build's document model cannot read (e.g.
+/// overlays with a newer hook style) are left out of the document, and their items' start / end
+/// times still count as visual changes.
+pub fn punch_input_for(store: &ProjectStore, clip: &Clip) -> Result<(rustler_media::punchin::PunchInput, Vec<String>)> {
+    let mut map = extras::load(store, &clip.id)?;
+    let mut skipped: Vec<(String, Value)> = Vec::new();
+    let t = loop {
+        match assemble_from(clip, &map) {
+            Ok((t, _)) => break t,
+            Err(e) => {
+                let key = e.message.split("key '").nth(1).and_then(|r| r.split('\'').next()).map(str::to_string);
+                match key.and_then(|k| map.remove(&k).map(|v| (k, v))) {
+                    Some(kv) if skipped.len() < KNOWN_KEYS.len() => skipped.push(kv),
+                    _ => return Err(e),
+                }
+            }
+        }
+    };
+    let (mut input, mut warnings) = punch_input(store, &t);
+    for (k, v) in &skipped {
+        for it in v.as_array().into_iter().flatten() {
+            for f in ["start", "end", "out_start", "out_end", "at"] {
+                input.changes.extend(it.get(f).and_then(Value::as_f64));
+            }
+        }
+        warnings.push(format!("extras key '{k}' is not readable as a timeline document here; its times count as visual changes only"));
+    }
+    Ok((input, warnings))
+}
+
+/// Everything the punch-in planner needs about `t` (edit-timeline seconds): words, cuts,
+/// spans it must not punch into, existing zooms, other visual changes and face focus.
+pub fn punch_input(store: &ProjectStore, t: &Timeline) -> (rustler_media::punchin::PunchInput, Vec<String>) {
+    use rustler_core::timeline::EffectKind;
+    use rustler_media::punchin::{PunchInput, PunchWord};
+    let mut warnings = Vec::new();
+    let tr = &t.tracks;
+    let blocked_ids = no_punch_segments(t);
+    let mut cuts = Vec::new();
+    let mut blocked = Vec::new();
+    let mut o = 0.0;
+    for (k, v) in tr.video.iter().enumerate() {
+        let len = (v.src_out - v.src_in).max(0.0);
+        if k > 0 {
+            let p = &tr.video[k - 1];
+            let transition = tr.transitions.iter().find(|x| x.after_segment_id == p.id);
+            if p.source_id != v.source_id || p.layout != v.layout || (v.src_in - p.src_out).abs() > 0.05 || transition.is_some() {
+                cuts.push(o);
+            }
+            if let Some(x) = transition {
+                blocked.push((o - x.duration, o + x.duration));
+            }
+        }
+        if blocked_ids.contains(v.id.as_str()) {
+            blocked.push((o, o + len));
+        }
+        o += len;
+    }
+    let mut changes = Vec::new();
+    for x in &tr.text {
+        changes.push(x.start);
+        changes.push(x.end);
+    }
+    for tm in tr.images.iter().map(|x| &x.timing) {
+        changes.extend(tm.out_start);
+    }
+    for tm in tr.cutaways.iter().map(|x| &x.timing) {
+        if let (Some(s), Some(e)) = (tm.out_start, tm.out_end) {
+            blocked.push((s, e));
+            changes.push(s);
+            changes.push(e);
+        }
+    }
+    changes.extend(tr.freezes.iter().map(|f| f.out_t));
+    let mut existing = Vec::new();
+    for e in &tr.effects {
+        match e.kind {
+            EffectKind::Flash => changes.push(e.start),
+            _ => existing.push((e.start, e.end)),
+        }
+    }
+    let clip = Clip {
+        schema: "rustler.clip@1".to_string(),
+        id: t.id.clone(),
+        name: t.name.clone(),
+        revision: t.revision,
+        canvas: t.canvas,
+        segments: tr
+            .video
+            .iter()
+            .map(|v| Segment { id: v.id.clone(), source_id: v.source_id.clone(), start: v.src_in, end: v.src_out, layout: v.layout.clone() })
+            .collect(),
+        captions: tr.captions.settings.clone(),
+        audio: tr.audio.master,
+        renders: Vec::new(),
+        created_at: Utc::now(),
+    };
+    let words = match crate::clip_cmds::caption_words_for_clip(store, &clip) {
+        Ok((w, warn)) => {
+            warnings.extend(warn);
+            w.into_iter().map(|w| PunchWord { text: w.text, start: w.out_start, end: w.out_end }).collect()
+        }
+        Err(e) => {
+            warnings.push(format!("punch-ins not snapped to words: {}", e.message));
+            Vec::new()
+        }
+    };
+    let focus = face_focus(store, t, &blocked_ids);
+    let input = PunchInput { duration: t.edit_duration(), words, cuts, blocked, existing, changes, window: None, focus };
+    (input, warnings)
+}
+
 // Keep the per-type imports referenced (used by tests and other modules through this path).
 #[allow(dead_code)]
 fn _types(_: &FreezeItem, _: &CutawayItem, _: &ImageItem, _: &MaskItem, _: &TextItem, _: &EffectItem, _: &WordOverride) {}

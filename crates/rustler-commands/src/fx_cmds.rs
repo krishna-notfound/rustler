@@ -316,6 +316,10 @@ pub struct EffectAddIn {
     pub words: Option<Vec<String>>,
     /// With `words`: only look in segments from this source.
     pub source_id: Option<SourceId>,
+    /// Zoom centre for punch-in / zoom-slow as a canvas fraction 0..1 (e.g. where the face is);
+    /// the frame centre when omitted. Kept inside the frame at render time.
+    pub focus_x: Option<f64>,
+    pub focus_y: Option<f64>,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -366,6 +370,11 @@ pub fn check_effect(stage: &str, e: &Effect, duration: f64) -> Result<()> {
         && !(a.is_finite() && (lo..=hi).contains(&a))
     {
         return Err(validation(stage, format!("amount for {:?} must be between {lo} and {hi}", e.kind)));
+    }
+    for (n, f) in [("focus_x", e.focus_x), ("focus_y", e.focus_y)] {
+        if f.is_some_and(|v| !(v.is_finite() && (0.0..=1.0).contains(&v))) {
+            return Err(validation(stage, format!("{n} must be between 0 and 1 (a fraction of the canvas)")));
+        }
     }
     Ok(())
 }
@@ -470,7 +479,16 @@ async fn effect_add(ctx: Ctx, i: EffectAddIn) -> Result<EffectOut> {
     let by_words = i.words.is_some();
     let mut effects: Vec<Effect> = Vec::new();
     for &(s, e) in &windows {
-        let eff = Effect { id: String::new(), kind: i.kind, start: s, end: e.min(duration), amount: i.amount };
+        let eff = Effect {
+            id: String::new(),
+            kind: i.kind,
+            start: s,
+            end: e.min(duration),
+            amount: i.amount,
+            focus_x: i.focus_x,
+            focus_y: i.focus_y,
+            extra: Default::default(),
+        };
         check_effect(STAGE, &Effect { end: e, ..eff.clone() }, duration)?;
         effects.push(eff);
     }
@@ -724,7 +742,16 @@ mod tests {
 
     #[test]
     fn effect_checks() {
-        let e = |kind, s, en, a| Effect { id: "fx_1".into(), kind, start: s, end: en, amount: a };
+        let e = |kind, s, en, a| Effect {
+            id: "fx_1".into(),
+            kind,
+            start: s,
+            end: en,
+            amount: a,
+            focus_x: None,
+            focus_y: None,
+            extra: Default::default(),
+        };
         assert!(check_effect("t", &e(EffectKind::PunchIn, 1.0, 2.0, None), 10.0).is_ok());
         assert!(check_effect("t", &e(EffectKind::Shake, 1.0, 10.04, Some(0.05)), 10.0).is_ok());
         for bad in [

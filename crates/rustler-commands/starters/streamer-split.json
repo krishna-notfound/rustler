@@ -2,7 +2,7 @@
   "schema": "rustler.template@1",
   "name": "streamer-split",
   "version": 1,
-  "description": "Streamer clip: facecam on top, gameplay below (split-vertical), hook title on the seam (<= 7 words, 3 s), hormozi-pop captions, a punch-in every 6 s, light denoise, progress bar, -14 LUFS.",
+  "description": "Streamer clip: facecam on top, gameplay below (split-vertical), hook title on the seam (<= 7 words, 3 s), hormozi-pop captions, planned punch-ins on stressed words (at most 4 visual changes per 10 s, 1.08-1.15), light denoise, progress bar, -14 LUFS.",
   "created_by": "built-in",
   "based_on": { "trial": "streamer clip: detect-webcam (facecam top-right) -> split-vertical -> hook -> sfx -> denoise -> progress bar -> punch-in, QC pass" },
   "notes": [
@@ -24,6 +24,6 @@
   "progress_bar": { "enabled": true, "color": "#FFE000", "height": 8, "position": "top" },
   "audio": { "loudnorm": true, "target_lufs": -14.0, "true_peak": -2.0, "denoise": "light" },
   "effects": [
-    { "kind": "punch-in", "at": "every", "every_s": 6.0, "duration": 1.0, "amount": 1.1 }
+    { "kind": "punch-in", "at": "emphasis", "duration": 1.6, "amount": 1.08, "amount_max": 1.15, "per_10s": 4.0 }
   ]
 }

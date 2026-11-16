@@ -298,7 +298,24 @@ fn finish(
     let base = old.revision;
     // Layers (extras.json) of the superseded revision, so history undo/restore covers them too.
     crate::timeline_doc::snapshot_extras(store, &old.id, base)?;
+    // Time-based layers follow their content through the re-cut; items whose content was cut
+    // out are dropped, items past the new end clamped (history undo/restore puts the snapshot
+    // back instead).
+    let mut relayered: Option<serde_json::Map<String, serde_json::Value>> = None;
+    if !kind.starts_with("history.") {
+        let map = crate::extras::load(store, &old.id)?;
+        match crate::timeline_doc::follow_recut(old, &new, &map) {
+            Ok((m, w)) => {
+                relayered = m;
+                extras.warnings.extend(w);
+            }
+            Err(e) => extras.warnings.push(format!("layers were not re-timed to the edit: {}", e.message)),
+        }
+    }
     store.save_clip(&mut new, base)?;
+    if let Some(m) = &relayered {
+        crate::extras::save(store, &old.id, m)?;
+    }
     // Face-tracked crop paths are keyed by segment id; move them onto the re-cut segments.
     extras.warnings.extend(crate::extras::carry_crop_paths(store, old, &new)?);
     store.append_event(&Event {

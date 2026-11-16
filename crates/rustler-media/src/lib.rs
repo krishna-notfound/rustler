@@ -14,6 +14,7 @@ pub mod probe;
 mod proc;
 mod proc_render;
 pub mod proxy;
+pub mod punchin;
 pub mod qc;
 pub mod render;
 pub mod retention;

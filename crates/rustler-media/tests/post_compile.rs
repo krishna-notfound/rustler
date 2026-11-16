@@ -185,7 +185,7 @@ fn overlays_and_effects_follow_the_transition_map() {
     let x = CompileExtras {
         transitions: vec![tr(&fx, 0, TransitionKind::Dissolve, 0.4)],
         overlays: vec![TextOverlay::new("ovl_1", "Later", 3.0, 4.0, OverlayStyle::HookTop)],
-        effects: vec![Effect { id: "fx_1".into(), kind: EffectKind::PunchIn, start: 3.0, end: 4.0, amount: None }],
+        effects: vec![Effect { id: "fx_1".into(), kind: EffectKind::PunchIn, start: 3.0, end: 4.0, amount: None, focus_x: None, focus_y: None, extra: Default::default() }],
         ..Default::default()
     };
     let plan = build_graph(&fx.clip, &fx.sources, false, &x).unwrap();
@@ -200,10 +200,10 @@ fn overlays_and_effects_follow_the_transition_map() {
 fn effects_compile_to_perspective_and_fade_before_captions() {
     let fx = fixture(&[(0.0, 6.0)]);
     let fxs = vec![
-        Effect { id: "fx_1".into(), kind: EffectKind::PunchIn, start: 0.5, end: 1.5, amount: Some(2.0) },
-        Effect { id: "fx_2".into(), kind: EffectKind::ZoomSlow, start: 2.0, end: 4.0, amount: None },
-        Effect { id: "fx_3".into(), kind: EffectKind::Shake, start: 4.0, end: 4.5, amount: None },
-        Effect { id: "fx_4".into(), kind: EffectKind::Flash, start: 5.0, end: 5.2, amount: None },
+        Effect { id: "fx_1".into(), kind: EffectKind::PunchIn, start: 0.5, end: 1.5, amount: Some(2.0), focus_x: None, focus_y: None, extra: Default::default() },
+        Effect { id: "fx_2".into(), kind: EffectKind::ZoomSlow, start: 2.0, end: 4.0, amount: None, focus_x: None, focus_y: None, extra: Default::default() },
+        Effect { id: "fx_3".into(), kind: EffectKind::Shake, start: 4.0, end: 4.5, amount: None, focus_x: None, focus_y: None, extra: Default::default() },
+        Effect { id: "fx_4".into(), kind: EffectKind::Flash, start: 5.0, end: 5.2, amount: None, focus_x: None, focus_y: None, extra: Default::default() },
     ];
     let x = CompileExtras { effects: fxs, ..Default::default() };
     let g = build_graph(&fx.clip, &fx.sources, true, &x).unwrap().graph;
@@ -226,7 +226,7 @@ fn effects_compile_to_perspective_and_fade_before_captions() {
 
     // Invalid amount.
     let bad = CompileExtras {
-        effects: vec![Effect { id: "fx_9".into(), kind: EffectKind::PunchIn, start: 0.0, end: 1.0, amount: Some(5.0) }],
+        effects: vec![Effect { id: "fx_9".into(), kind: EffectKind::PunchIn, start: 0.0, end: 1.0, amount: Some(5.0), focus_x: None, focus_y: None, extra: Default::default() }],
         ..Default::default()
     };
     assert_eq!(build_graph(&fx.clip, &fx.sources, false, &bad).unwrap_err().code, ErrorCode::Validation);

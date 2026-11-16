@@ -23,6 +23,7 @@ use rustler_core::{
     SourceId, TimeMap,
 };
 use rustler_media::compile::TransitionMap;
+use rustler_media::punchin::{self, PunchConfig, PunchInput, PunchWord};
 use rustler_media::retention::{
     self, DeadKind, DeadZone, Ending, Factor, HookCheck, Pacing, RetentionInput, SecondView, Span, TimedText, VisualChange,
 };
@@ -137,7 +138,7 @@ pub struct RetentionIn {
 /// One suggested fix for a dead zone.
 #[derive(Serialize, JsonSchema, Clone, Debug)]
 pub struct Fix {
-    /// punch_in | text_pop | cutaway | remove_pauses | trim_head | trim_tail
+    /// punch_in | punch_in_skipped (no command: nothing fits) | text_pop | cutaway | remove_pauses | trim_head | trim_tail
     pub action: String,
     /// Exact command to run (edit-timeline times), when one exists.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -385,7 +386,51 @@ fn longest_word(said: &str) -> Option<String> {
 }
 
 /// Fix suggestions for one dead zone (rendered times in, edit-timeline commands out).
-fn fixes_for(clip: &Clip, z: &DeadZone, word_starts: &[f64], tmap: &TransitionMap, duration: f64, cutaway_cmd: bool) -> Vec<Fix> {
+/// Punch-in commands for one static dead zone from the shared planner (edit-timeline window).
+fn punch_fix(id: &str, punch: &mut PunchInput, (s, e): (f64, f64), len: f64) -> (Fix, Option<f64>) {
+    let input = PunchInput { window: Some((s, e)), ..punch.clone() };
+    let planned = punchin::plan(&input, &PunchConfig::default());
+    if planned.is_empty() {
+        return (
+            Fix {
+                action: "punch_in_skipped".into(),
+                command: None,
+                why: format!(
+                    "{len:.1} s with no visual change, but no punch-in fits here (graphic / blur-fit segment, a cut or transition within 0.5 s, an existing zoom, or already {} changes per 10 s); use a text pop or a cutaway",
+                    PunchConfig::default().max_changes_per_10s
+                ),
+            },
+            None,
+        );
+    }
+    let cmds: Vec<String> = planned
+        .iter()
+        .map(|p| {
+            let focus = match (p.focus_x, p.focus_y) {
+                (Some(x), Some(y)) => format!(" --focus-x {x:.3} --focus-y {y:.3}"),
+                _ => String::new(),
+            };
+            format!("rustler effect add {id} punch-in --start {:.2} --end {:.2} --amount {:.2}{focus}", p.start, p.end, p.amount)
+        })
+        .collect();
+    let words: Vec<String> = planned.iter().filter_map(|p| p.word.clone()).collect();
+    let fix = Fix {
+        action: "punch_in".into(),
+        command: Some(cmds.join(" && ")),
+        why: format!(
+            "{len:.1} s with no visual change; {} punch-in(s) from the punch-in planner{} (>= 0.5 s from cuts, not on graphics, at most {} changes per 10 s, varied zoom{})",
+            planned.len(),
+            if words.is_empty() { String::new() } else { format!(" on stressed words ({})", words.join(", ")) },
+            PunchConfig::default().max_changes_per_10s,
+            if planned.iter().any(|p| p.focus_x.is_some()) { ", centred on the face" } else { "" }
+        ),
+    };
+    // Later dead zones plan around these (pacing counts across zone boundaries).
+    punch.existing.extend(planned.iter().map(|p| (p.start, p.end)));
+    (fix, planned.first().map(|p| p.start))
+}
+
+fn fixes_for(clip: &Clip, z: &DeadZone, punch: &mut PunchInput, tmap: &TransitionMap, duration: f64, cutaway_cmd: bool) -> Vec<Fix> {
     let id = clip.id.as_str();
     let ed = tmap.edit_duration();
     let et = |t: f64| r2(edit_time(tmap, t).min(ed));
@@ -393,45 +438,18 @@ fn fixes_for(clip: &Clip, z: &DeadZone, word_starts: &[f64], tmap: &TransitionMa
     match z.kind {
         DeadKind::Static => {
             let len = z.end - z.start;
-            let mut n = ((len / 2.4).ceil() as usize).saturating_sub(1).max(1);
-            if n % 2 == 1 {
-                n += 1;
-            }
-            let mut pts: Vec<f64> = (1..=n)
-                .map(|i| {
-                    let t = z.start + i as f64 * len / (n + 1) as f64;
-                    word_starts
-                        .iter()
-                        .copied()
-                        .filter(|w| (w - t).abs() <= 0.3 && *w > z.start + 0.3 && *w < z.end - 0.3)
-                        .min_by(|a, b| (a - t).abs().total_cmp(&(b - t).abs()))
-                        .unwrap_or(t)
-                })
-                .collect();
-            pts.dedup_by(|b, a| *b - *a < 0.4);
-            let mut cmds = Vec::new();
-            for p in pts.chunks(2) {
-                let (s, e) = (p[0], p.get(1).copied().unwrap_or((p[0] + 1.2).min(z.end)));
-                cmds.push(format!("rustler effect add {id} punch-in --start {:.2} --end {:.2}", et(s), et(e)));
-            }
-            out.push(Fix {
-                action: "punch_in".into(),
-                command: Some(cmds.join(" && ")),
-                why: format!(
-                    "{:.1} s with no visual change; a punch-in starts and ends a zoom, so the picture changes every ~{:.1} s (snapped to word starts)",
-                    len,
-                    len / (n + 1) as f64
-                ),
-            });
-            let at = pts.first().copied().unwrap_or(z.start + 0.5);
+            let (fix, first) = punch_fix(id, punch, (et(z.start), et(z.end)), len);
+            out.push(fix);
+            // Text pop times are edit times already; keep the rendered-time fallback otherwise.
+            let at_edit = first.unwrap_or_else(|| et(z.start + 0.5));
             let kw = longest_word(&z.said);
             out.push(Fix {
                 action: "text_pop".into(),
                 command: Some(format!(
                     "rustler overlay add-text {id} \"{}\" --style plain --start {:.2} --end {:.2}",
                     kw.clone().unwrap_or_else(|| "KEY WORD".into()),
-                    et(at),
-                    et((at + 1.2).min(duration))
+                    at_edit,
+                    r2((at_edit + 1.2).min(ed))
                 )),
                 why: format!(
                     "a 1-3 word text pop on the key word of the line{} (replace the text with the word that matters)",
@@ -546,6 +564,22 @@ async fn clip_retention(ctx: Ctx, i: RetentionIn) -> Result<RetentionOut> {
     }
     let (cw, w) = caption_words_for_clip(&store, &clip)?;
     warnings.extend(w);
+    // Planner input for punch_in fixes (edit timeline): the whole timeline when it assembles,
+    // otherwise just the words.
+    let mut punch = match crate::timeline_doc::punch_input_for(&store, &clip) {
+        Ok((p, w)) => {
+            warnings.extend(w.into_iter().filter(|w| w.starts_with("extras key")));
+            p
+        }
+        Err(e) => {
+            warnings.push(format!("punch-in fixes see only the words (timeline did not assemble: {})", e.message));
+            PunchInput {
+                duration: tmap.edit_duration(),
+                words: cw.iter().map(|w| PunchWord { text: w.text.clone(), start: w.out_start, end: w.out_end }).collect(),
+                ..Default::default()
+            }
+        }
+    };
     let words: Vec<TimedText> =
         map_caption_words(cw, &tmap).into_iter().map(|w| TimedText { text: w.text, start: w.out_start, end: w.out_end }).collect();
     let (silences, loudness, audio_from) = match &measured {
@@ -573,14 +607,13 @@ async fn clip_retention(ctx: Ctx, i: RetentionIn) -> Result<RetentionOut> {
     let a = retention::analyze(&input);
 
     let cutaway_cmd = registry_has("cutaway.add");
-    let word_starts: Vec<f64> = words.iter().map(|w| w.start).collect();
     let dead_zones: Vec<DeadZoneOut> = a
         .dead_zones
         .iter()
         .map(|z| DeadZoneOut {
             edit_start: r2(edit_time(&tmap, z.start)),
             edit_end: r2(edit_time(&tmap, z.end)),
-            fixes: fixes_for(&clip, z, &word_starts, &tmap, duration, cutaway_cmd),
+            fixes: fixes_for(&clip, z, &mut punch, &tmap, duration, cutaway_cmd),
             zone: z.clone(),
         })
         .collect();
