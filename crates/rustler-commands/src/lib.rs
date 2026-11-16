@@ -29,6 +29,7 @@ pub mod see_cmds;
 pub mod setup_cmds;
 pub mod source_cmds;
 pub mod speaker_cmds;
+pub mod template_cmds;
 pub mod timeline_cmds;
 pub mod timeline_doc;
 pub mod timeline_edit_cmds;
@@ -74,4 +75,5 @@ pub fn register_all(reg: &mut Registry) {
     card_cmds::register(reg);
     timeline_cmds::register(reg);
     timeline_edit_cmds::register(reg);
+    template_cmds::register(reg);
 }

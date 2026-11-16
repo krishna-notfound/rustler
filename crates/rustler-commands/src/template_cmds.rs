@@ -1,0 +1,2451 @@
+//! Commands: template.create, template.show, template.list, template.update, template.delete,
+//! template.apply, template.diff, template.export, template.import (plan Task 1.5, design Â§5.3).
+//!
+//! A template (`rustler.template@1`) is a clip's whole look without its content: caption style /
+//! position / words per line, layout, hook title look, text looks, brand images, progress bar,
+//! loudness / denoise / music / sound-effect patterns, effect patterns (punch-in every N s, at
+//! cuts, at the start), transitions and canvas. Text content is captured only when asked
+//! (`include_text`). A section that is absent leaves that part of the clip alone.
+//!
+//! Storage: `templates/<name>@<version>.json` in the project, or `<home>/templates/` (global).
+//! Built-in starters (`podcast-viral`, `streamer-split`) are embedded. `template.apply` turns the
+//! template into RFC 6902 JSON-Patch ops on the clip's timeline v2 document and goes through
+//! `timeline.apply` (one revision per clip, validated, undoable with `history undo`). Items a
+//! template adds carry `by_template: "<name>@<version>"`, so re-applying replaces them instead of
+//! stacking. `template.export` bundles the template with the assets and files it references
+//! (zip); `template.import` puts them back into a library.
+
+use crate::asset_cmds::{self, Scope};
+use crate::clip_cmds::log_event;
+use crate::timeline_cmds;
+use crate::timeline_doc;
+use rustler_core::layout::{self as core_layout, LayoutParams, LayoutPresetFile};
+use rustler_core::timeline::{
+    Anim, BarPosition, DenoiseLevel, EffectItem, EffectKind, ImageItem, ItemTiming, MusicItem, ProgressBarItem, SfxItem,
+    SpeakerColors, TemplateRef, TextItem, TextStyle, TransitionItem, TransitionKind,
+};
+use rustler_core::{Background, Canvas, CaptionScript, ClipId, ErrorCode, Fit, Layout, ProjectStore, Rect, Region, RustlerError, Timeline};
+use rustler_registry::{Annotations, Ctx, Example, Registry, typed};
+use rustler_tools::assets::{AssetEntry, AssetKind, assets_root, project_assets_root, update_manifest, upsert};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value, json};
+use std::collections::{BTreeMap, HashMap};
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+
+type Result<T> = rustler_core::Result<T>;
+
+/// Schema id of a template file.
+pub const TEMPLATE_SCHEMA: &str = "rustler.template@1";
+const BUNDLE_SCHEMA: &str = "rustler.template-bundle@1";
+/// Field set on items a template adds (value `<name>@<version>`).
+pub const BY_TEMPLATE: &str = "by_template";
+const ROLE: &str = "template_role";
+
+const STARTERS: &[(&str, &str)] = &[
+    ("podcast-viral", include_str!("../starters/podcast-viral.json")),
+    ("streamer-split", include_str!("../starters/streamer-split.json")),
+];
+
+fn verr(stage: &str, msg: impl Into<String>) -> RustlerError {
+    RustlerError::new(ErrorCode::Validation, stage, msg)
+}
+
+fn nf(stage: &str, msg: impl Into<String>) -> RustlerError {
+    RustlerError::new(ErrorCode::NotFound, stage, msg)
+}
+
+fn io_err(stage: &str, what: &str, p: &Path, e: impl std::fmt::Display) -> RustlerError {
+    RustlerError::new(ErrorCode::Internal, stage, format!("cannot {what} {}: {e}", p.display()))
+}
+
+fn with_stage(mut e: RustlerError, stage: &str) -> RustlerError {
+    e.stage = stage.into();
+    e
+}
+
+// ---------------------------------------------------------------------------------------------
+// The template document
+// ---------------------------------------------------------------------------------------------
+
+fn schema_id() -> String {
+    TEMPLATE_SCHEMA.into()
+}
+fn one_u32() -> u32 {
+    1
+}
+
+/// A reusable look (`templates/<name>@<version>.json`). Absent sections leave that part of a clip alone.
+#[derive(Serialize, Deserialize, JsonSchema, Clone, PartialEq, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct Template {
+    /// Always `rustler.template@1`.
+    #[serde(default = "schema_id")]
+    pub schema: String,
+    /// Lowercase letters, digits, `-` and `_`.
+    pub name: String,
+    #[serde(default = "one_u32")]
+    pub version: u32,
+    #[serde(default)]
+    pub description: String,
+    /// agent | user | built-in.
+    #[serde(default)]
+    pub created_by: String,
+    /// Where the look came from, e.g. {"clip": "clp_x"} or {"reference_set": "my-style"}.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub based_on: Option<Value>,
+    /// Advice for the agent applying it (not applied).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canvas: Option<Canvas>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<TplLayout>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub captions: Option<TplCaptions>,
+    /// Look of the hook title (text items with style hook-top).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hook: Option<TplHook>,
+    /// Looks of the other text items by style (`lower-third`, `plain`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub text_styles: BTreeMap<String, TextLook>,
+    /// Fixed text items (only when captured with include_text, or written by hand).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub texts: Option<Vec<TplText>>,
+    /// Brand images (logo, watermark, badge).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub images: Option<Vec<TplImage>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress_bar: Option<TplBar>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio: Option<TplAudio>,
+    /// Effect patterns (punch-in at the start, at every cut, every N seconds ...).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effects: Option<Vec<TplEffect>>,
+    /// One transition for every seam between segments (kind cut removes them).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transitions: Option<TplTransition>,
+    /// Font asset ids the look needs (custom caption style fonts); exported with the template.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fonts: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema, Clone, PartialEq, Debug, Default)]
+#[serde(deny_unknown_fields)]
+pub struct TplLayout {
+    /// center-crop | blur-fit | split-vertical | a saved layout preset (`layout save-preset`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<String>,
+    /// Parameters of a built-in preset (focus_x, top, bottom, split).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub params: Option<LayoutParams>,
+    /// Normalized regions (src rect of the source -> dst rect of the canvas), used instead of the preset's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub regions: Option<Vec<Region>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<Background>,
+    /// Also re-lay segments that already use this preset (default false: their framing, crop path or
+    /// detected webcam panes are kept).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub force: bool,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema, Clone, PartialEq, Debug, Default)]
+#[serde(deny_unknown_fields)]
+pub struct TplCaptions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// Caption style (built-in or custom, `caption styles`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position_y: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_words_per_line: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script: Option<CaptionScript>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speaker_colors: Option<SpeakerColors>,
+}
+
+/// Look of a text item.
+#[derive(Serialize, Deserialize, JsonSchema, Clone, PartialEq, Debug, Default)]
+#[serde(deny_unknown_fields)]
+pub struct TextLook {
+    /// Vertical centre 0 (top) .. 1 (bottom).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position_y: Option<f64>,
+    /// Font size as a fraction of the canvas width (0.01..0.2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font_size_factor: Option<f64>,
+    /// Dark box behind the text.
+    #[serde(rename = "box", default, skip_serializing_if = "Option::is_none")]
+    pub boxed: Option<bool>,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema, Clone, PartialEq, Debug, Default)]
+#[serde(deny_unknown_fields)]
+pub struct TplHook {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position_y: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font_size_factor: Option<f64>,
+    #[serde(rename = "box", default, skip_serializing_if = "Option::is_none")]
+    pub boxed: Option<bool>,
+    /// Put the hook on the seam of a stacked layout (webcam over gameplay) when there is one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at_seam: Option<bool>,
+    /// Seconds the hook stays on screen (from its start).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration: Option<f64>,
+    /// Warn when a hook is longer than this many words.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_words: Option<u32>,
+    /// Hook text to add when the clip has no hook title (normally left out: hooks are per clip).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+}
+
+fn plain() -> TextStyle {
+    TextStyle::Plain
+}
+
+#[derive(Serialize, Deserialize, JsonSchema, Clone, PartialEq, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct TplText {
+    pub text: String,
+    /// Edit-timeline seconds (clamped to the clip).
+    pub start: f64,
+    pub end: f64,
+    #[serde(default = "plain")]
+    pub style: TextStyle,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position_y: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font_size_factor: Option<f64>,
+    #[serde(rename = "box", default, skip_serializing_if = "Option::is_none")]
+    pub boxed: Option<bool>,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema, Clone, PartialEq, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct TplImage {
+    /// Library asset id (give this or file).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asset: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<PathBuf>,
+    pub rect: Rect,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opacity: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rotation: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fit: Option<Fit>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anim: Option<Anim>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub z: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub above_captions: Option<bool>,
+    /// Edit-timeline seconds; missing = from the start / to the end of the clip.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end: Option<f64>,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema, Clone, PartialEq, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct TplBar {
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<BarPosition>,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema, Clone, PartialEq, Debug, Default)]
+#[serde(deny_unknown_fields)]
+pub struct TplAudio {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loudnorm: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_lufs: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub true_peak: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lra: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub denoise: Option<DenoiseLevel>,
+    /// Whole-dialogue gain (dB).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volume_db: Option<f64>,
+    /// Music bed; {"none": true} removes the clip's music.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub music: Option<TplMusic>,
+    /// Sound-effect patterns.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sfx: Option<Vec<TplSfx>>,
+}
+
+fn music_db() -> f64 {
+    -18.0
+}
+fn yes() -> bool {
+    true
+}
+fn fade_in() -> f64 {
+    0.5
+}
+fn fade_out() -> f64 {
+    1.0
+}
+
+#[derive(Serialize, Deserialize, JsonSchema, Clone, PartialEq, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct TplMusic {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asset: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<PathBuf>,
+    /// true: remove the clip's music.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub none: bool,
+    #[serde(default = "music_db")]
+    pub volume_db: f64,
+    #[serde(default = "yes")]
+    pub duck: bool,
+    #[serde(default = "fade_in")]
+    pub fade_in: f64,
+    #[serde(default = "fade_out")]
+    pub fade_out: f64,
+}
+
+/// Where a pattern places its items on the edit timeline.
+#[derive(Serialize, Deserialize, JsonSchema, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum PlaceAt {
+    /// At 0 s (the hook).
+    Start,
+    /// At every seam between segments (jump cuts).
+    Cuts,
+    /// Every `every_s` seconds from `every_s` on (not in the last 0.5 s).
+    Every,
+    /// At `t` seconds.
+    Time,
+}
+
+fn sfx_db() -> f64 {
+    -6.0
+}
+
+#[derive(Serialize, Deserialize, JsonSchema, Clone, PartialEq, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct TplSfx {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asset: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<PathBuf>,
+    pub at: PlaceAt,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub every_s: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub t: Option<f64>,
+    #[serde(default = "sfx_db")]
+    pub volume_db: f64,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema, Clone, PartialEq, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct TplEffect {
+    /// punch-in | zoom-slow | shake | flash.
+    pub kind: EffectKind,
+    pub at: PlaceAt,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub every_s: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub t: Option<f64>,
+    /// Seconds each effect lasts.
+    pub duration: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amount: Option<f64>,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema, Clone, PartialEq, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct TplTransition {
+    /// cut (removes transitions) | fade | dissolve | wipeleft | wiperight | slideup | zoomin.
+    pub kind: TransitionKind,
+    #[serde(default = "tr_dur")]
+    pub duration: f64,
+}
+
+fn tr_dur() -> f64 {
+    0.3
+}
+
+/// One file the template needs: a library asset or a plain file.
+#[derive(Serialize, JsonSchema, Clone, Debug, PartialEq)]
+pub struct TplRef {
+    /// font | caption_style | image | music | sfx.
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asset: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<PathBuf>,
+    /// JSON path inside the template.
+    pub at: String,
+}
+
+impl Template {
+    /// Every asset / file the template references (built-in caption styles are not listed).
+    pub fn refs(&self) -> Vec<TplRef> {
+        let mut v = Vec::new();
+        let r = |kind: &str, asset: &Option<String>, file: &Option<PathBuf>, at: String| TplRef {
+            kind: kind.into(),
+            asset: asset.clone(),
+            file: if asset.is_some() { None } else { file.clone() },
+            at,
+        };
+        if let Some(p) = self.captions.as_ref().and_then(|c| c.preset.as_ref())
+            && rustler_captions::presets::find_preset(p).is_none()
+        {
+            v.push(TplRef { kind: "caption_style".into(), asset: Some(format!("style-{p}")), file: None, at: "/captions/preset".into() });
+        }
+        for (k, f) in self.fonts.iter().enumerate() {
+            v.push(TplRef { kind: "font".into(), asset: Some(f.clone()), file: None, at: format!("/fonts/{k}") });
+        }
+        for (k, im) in self.images.iter().flatten().enumerate() {
+            v.push(r("image", &im.asset, &im.file, format!("/images/{k}")));
+        }
+        if let Some(a) = &self.audio {
+            if let Some(m) = a.music.as_ref().filter(|m| !m.none) {
+                v.push(r("music", &m.asset, &m.file, "/audio/music".into()));
+            }
+            for (k, s) in a.sfx.iter().flatten().enumerate() {
+                v.push(r("sfx", &s.asset, &s.file, format!("/audio/sfx/{k}")));
+            }
+        }
+        v
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Validation
+// ---------------------------------------------------------------------------------------------
+
+fn valid_name(n: &str) -> bool {
+    !n.is_empty()
+        && n.len() <= 64
+        && n.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+        && n.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
+}
+
+fn hex_ok(c: &str) -> bool {
+    rustler_media::compile::ffmpeg_color(c).is_some()
+}
+
+fn rect_ok(r: &Rect) -> bool {
+    [r.x, r.y, r.w, r.h].iter().all(|v| v.is_finite())
+        && r.x >= 0.0
+        && r.y >= 0.0
+        && r.w > 0.02
+        && r.h > 0.02
+        && r.x + r.w <= 1.0 + 1e-9
+        && r.y + r.h <= 1.0 + 1e-9
+}
+
+/// Checks a template's fields (ranges, names, exactly one of asset/file). Errors list JSON paths.
+pub fn validate_template(t: &Template) -> Result<()> {
+    const STAGE: &str = "template";
+    let mut e: Vec<String> = Vec::new();
+    if t.schema != TEMPLATE_SCHEMA {
+        e.push(format!("/schema: must be \"{TEMPLATE_SCHEMA}\""));
+    }
+    if !valid_name(&t.name) {
+        e.push(format!("/name: '{}' must be 1-64 lowercase letters, digits, '-' or '_'", t.name));
+    }
+    if t.version == 0 {
+        e.push("/version: must be >= 1".into());
+    }
+    if let Some(c) = &t.canvas
+        && (c.width < 2 || c.height < 2 || !(c.fps.is_finite() && c.fps > 0.0 && c.fps <= 120.0))
+    {
+        e.push(format!("/canvas: invalid {}x{} @ {} fps", c.width, c.height, c.fps));
+    }
+    if let Some(l) = &t.layout {
+        if l.preset.as_deref().is_some_and(|p| p.trim().is_empty()) {
+            e.push("/layout/preset: must not be empty".into());
+        }
+        if let Some(rs) = &l.regions {
+            if rs.is_empty() {
+                e.push("/layout/regions: give at least one region".into());
+            }
+            for (k, r) in rs.iter().enumerate() {
+                for (n, rect) in [("src", &r.src), ("dst", &r.dst)] {
+                    if !rect_ok(rect) {
+                        e.push(format!("/layout/regions/{k}/{n}: rect must lie in 0..1 with w, h > 0.02"));
+                    }
+                }
+            }
+        }
+        if l.preset.as_deref() == Some("split-vertical") && l.regions.is_none() {
+            let p = l.params.unwrap_or_default();
+            if p.top.is_none() || p.bottom.is_none() {
+                e.push("/layout/params: split-vertical needs top and bottom source rects".into());
+            }
+        }
+    }
+    if let Some(c) = &t.captions {
+        if let Some(y) = c.position_y
+            && !(0.0..=1.0).contains(&y)
+        {
+            e.push("/captions/position_y: must be between 0 and 1".into());
+        }
+        if let Some(n) = c.max_words_per_line
+            && !(1..=12).contains(&n)
+        {
+            e.push("/captions/max_words_per_line: must be 1..12".into());
+        }
+        if c.preset.as_deref().is_some_and(|p| p.trim().is_empty()) {
+            e.push("/captions/preset: must not be empty".into());
+        }
+    }
+    let look = |p: &str, y: Option<f64>, f: Option<f64>, e: &mut Vec<String>| {
+        if let Some(y) = y
+            && !(0.0..=1.0).contains(&y)
+        {
+            e.push(format!("{p}/position_y: must be between 0 and 1"));
+        }
+        if let Some(f) = f
+            && !(f.is_finite() && (0.01..=0.2).contains(&f))
+        {
+            e.push(format!("{p}/font_size_factor: must be between 0.01 and 0.2"));
+        }
+    };
+    if let Some(h) = &t.hook {
+        look("/hook", h.position_y, h.font_size_factor, &mut e);
+        if let Some(d) = h.duration
+            && !(d.is_finite() && d > 0.2 && d <= 30.0)
+        {
+            e.push("/hook/duration: must be between 0.2 and 30 s".into());
+        }
+        if h.max_words == Some(0) {
+            e.push("/hook/max_words: must be >= 1".into());
+        }
+        if let Some(tx) = &h.text
+            && let Err(x) = crate::overlay_cmds::check_text(STAGE, tx)
+        {
+            e.push(format!("/hook/text: {}", x.message));
+        }
+    }
+    for (k, l) in &t.text_styles {
+        if !matches!(k.as_str(), "lower-third" | "plain") {
+            e.push(format!("/text_styles/{k}: style must be lower-third or plain (the hook-top look is /hook)"));
+        }
+        look(&format!("/text_styles/{k}"), l.position_y, l.font_size_factor, &mut e);
+    }
+    for (k, x) in t.texts.iter().flatten().enumerate() {
+        let p = format!("/texts/{k}");
+        if let Err(m) = crate::overlay_cmds::check_text(STAGE, &x.text) {
+            e.push(format!("{p}/text: {}", m.message));
+        }
+        if !(x.start.is_finite() && x.end.is_finite() && x.start >= 0.0 && x.end > x.start) {
+            e.push(format!("{p}: needs 0 <= start < end"));
+        }
+        look(&p, x.position_y, x.font_size_factor, &mut e);
+    }
+    let one_of = |p: &str, asset: &Option<String>, file: &Option<PathBuf>, e: &mut Vec<String>| match (asset, file) {
+        (Some(a), _) if a.trim().is_empty() => e.push(format!("{p}/asset: must not be empty")),
+        (None, None) => e.push(format!("{p}: give asset (library id) or file")),
+        _ => {}
+    };
+    for (k, im) in t.images.iter().flatten().enumerate() {
+        let p = format!("/images/{k}");
+        one_of(&p, &im.asset, &im.file, &mut e);
+        if !rect_ok(&im.rect) {
+            e.push(format!("{p}/rect: must lie in 0..1 with w, h > 0.02"));
+        }
+        if let Some(o) = im.opacity
+            && !(0.0..=1.0).contains(&o)
+        {
+            e.push(format!("{p}/opacity: must be 0..1"));
+        }
+        if let Some(s) = im.scale
+            && !(s.is_finite() && s > 0.0 && s <= 4.0)
+        {
+            e.push(format!("{p}/scale: must be > 0 and <= 4"));
+        }
+        if let (Some(a), Some(b)) = (im.start, im.end)
+            && b <= a
+        {
+            e.push(format!("{p}: end must be after start"));
+        }
+        if im.start.is_some_and(|s| !(s.is_finite() && s >= 0.0)) {
+            e.push(format!("{p}/start: must be >= 0"));
+        }
+    }
+    if let Some(b) = &t.progress_bar {
+        if b.color.as_deref().is_some_and(|c| !hex_ok(c)) {
+            e.push("/progress_bar/color: must be #RRGGBB".into());
+        }
+        if b.height.is_some_and(|h| !(2..=200).contains(&h)) {
+            e.push("/progress_bar/height: must be 2..200".into());
+        }
+    }
+    let place = |p: &str, at: PlaceAt, every: Option<f64>, tt: Option<f64>, e: &mut Vec<String>| match at {
+        PlaceAt::Every if !every.is_some_and(|s| s.is_finite() && s >= 1.0) => e.push(format!("{p}/every_s: at=every needs every_s >= 1")),
+        PlaceAt::Time if !tt.is_some_and(|s| s.is_finite() && s >= 0.0) => e.push(format!("{p}/t: at=time needs t >= 0")),
+        _ => {}
+    };
+    if let Some(a) = &t.audio {
+        for (n, v) in [("target_lufs", a.target_lufs), ("true_peak", a.true_peak), ("lra", a.lra)] {
+            if v.is_some_and(|v| !v.is_finite()) {
+                e.push(format!("/audio/{n}: must be a number"));
+            }
+        }
+        if a.volume_db.is_some_and(|v| !(v.is_finite() && (-60.0..=24.0).contains(&v))) {
+            e.push("/audio/volume_db: must be between -60 and 24".into());
+        }
+        if let Some(m) = &a.music {
+            if !m.none {
+                one_of("/audio/music", &m.asset, &m.file, &mut e);
+            }
+            if !(m.volume_db.is_finite() && (-60.0..=6.0).contains(&m.volume_db)) {
+                e.push("/audio/music/volume_db: must be between -60 and 6".into());
+            }
+            if !((0.0..=30.0).contains(&m.fade_in) && (0.0..=30.0).contains(&m.fade_out)) {
+                e.push("/audio/music: fades must be 0..30 s".into());
+            }
+        }
+        for (k, s) in a.sfx.iter().flatten().enumerate() {
+            let p = format!("/audio/sfx/{k}");
+            one_of(&p, &s.asset, &s.file, &mut e);
+            place(&p, s.at, s.every_s, s.t, &mut e);
+            if !(s.volume_db.is_finite() && (-60.0..=12.0).contains(&s.volume_db)) {
+                e.push(format!("{p}/volume_db: must be between -60 and 12"));
+            }
+        }
+    }
+    for (k, x) in t.effects.iter().flatten().enumerate() {
+        let p = format!("/effects/{k}");
+        place(&p, x.at, x.every_s, x.t, &mut e);
+        if !(x.duration.is_finite() && x.duration >= 0.1 && x.duration <= 30.0) {
+            e.push(format!("{p}/duration: must be 0.1..30 s"));
+        }
+        let (lo, hi) = x.kind.amount_range();
+        if let Some(a) = x.amount
+            && !(a.is_finite() && (lo..=hi).contains(&a))
+        {
+            e.push(format!("{p}/amount: must be between {lo} and {hi} for {:?}", x.kind));
+        }
+    }
+    if let Some(tr) = &t.transitions
+        && tr.kind != TransitionKind::Cut
+        && !(tr.duration.is_finite() && tr.duration > 0.0 && tr.duration <= 2.0)
+    {
+        e.push("/transitions/duration: must be > 0 and <= 2 s".into());
+    }
+    for (k, f) in t.fonts.iter().enumerate() {
+        if f.trim().is_empty() {
+            e.push(format!("/fonts/{k}: must not be empty"));
+        }
+    }
+    if e.is_empty() {
+        Ok(())
+    } else {
+        Err(verr(STAGE, format!("template '{}' is invalid: {}", t.name, e.join("; "))).hint("`rustler template show podcast-viral` shows a valid template"))
+    }
+}
+
+/// Effect kinds share the media crate's amount ranges.
+trait AmountRange {
+    fn amount_range(&self) -> (f64, f64);
+}
+impl AmountRange for EffectKind {
+    fn amount_range(&self) -> (f64, f64) {
+        match self {
+            EffectKind::PunchIn | EffectKind::ZoomSlow => (1.01, 2.0),
+            EffectKind::Shake => (0.002, 0.08),
+            EffectKind::Flash => (0.0, 1.0),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Storage
+// ---------------------------------------------------------------------------------------------
+
+/// A stored or built-in template.
+#[derive(Serialize, JsonSchema, Clone, Debug)]
+pub struct Stored {
+    pub name: String,
+    pub version: u32,
+    /// project | global | built-in.
+    pub scope: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<PathBuf>,
+    #[serde(skip)]
+    pub template: Option<Template>,
+}
+
+fn dir_of(ctx: &Ctx, scope: Scope) -> Result<PathBuf> {
+    match scope {
+        Scope::Global => Ok(ctx.home.join("templates")),
+        Scope::Project => ctx
+            .project_dir
+            .as_ref()
+            .map(|p| p.join("templates"))
+            .ok_or_else(|| nf("template", "no project is open for scope \"project\"").hint("pass --scope global, or --project <dir>")),
+    }
+}
+
+fn scope_label(s: Scope) -> &'static str {
+    match s {
+        Scope::Project => "project",
+        Scope::Global => "global",
+    }
+}
+
+fn default_scope(ctx: &Ctx) -> Scope {
+    if ctx.project_dir.is_some() { Scope::Project } else { Scope::Global }
+}
+
+/// Built-in starter templates.
+pub fn builtin_templates() -> Vec<Template> {
+    STARTERS
+        .iter()
+        .map(|(n, body)| serde_json::from_str::<Template>(body).unwrap_or_else(|e| panic!("built-in template {n} does not parse: {e}")))
+        .collect()
+}
+
+/// `(name, version)` from `<name>@<version>.json`.
+fn parse_file_name(p: &Path) -> Option<(String, u32)> {
+    if p.extension().and_then(|x| x.to_str()) != Some("json") {
+        return None;
+    }
+    let stem = p.file_stem()?.to_str()?;
+    let (n, v) = stem.rsplit_once('@')?;
+    Some((n.to_string(), v.parse().ok()?))
+}
+
+fn scan(dir: &Path, scope: &str) -> Vec<Stored> {
+    let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut out: Vec<Stored> = rd
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_file())
+        .filter_map(|p| {
+            let (name, version) = parse_file_name(&p)?;
+            Some(Stored { name, version, scope: scope.into(), file: Some(p), template: None })
+        })
+        .collect();
+    out.sort_by(|a, b| a.name.cmp(&b.name).then(a.version.cmp(&b.version)));
+    out
+}
+
+/// Every template: project, then global, then built-in (each sorted by name, version).
+fn all_stored(ctx: &Ctx) -> Vec<Stored> {
+    let mut out = Vec::new();
+    if let Ok(d) = dir_of(ctx, Scope::Project) {
+        out.extend(scan(&d, "project"));
+    }
+    out.extend(scan(&ctx.home.join("templates"), "global"));
+    for t in builtin_templates() {
+        out.push(Stored { name: t.name.clone(), version: t.version, scope: "built-in".into(), file: None, template: Some(t) });
+    }
+    out
+}
+
+fn read_template(stage: &str, p: &Path) -> Result<Template> {
+    let bytes = std::fs::read(p).map_err(|e| io_err(stage, "read", p, e))?;
+    serde_json::from_slice(&bytes).map_err(|e| verr(stage, format!("{} is not a valid template: {e}", p.display())).hint("fix or delete the file"))
+}
+
+fn load(stage: &str, s: &Stored) -> Result<Template> {
+    match (&s.template, &s.file) {
+        (Some(t), _) => Ok(t.clone()),
+        (None, Some(f)) => read_template(stage, f),
+        (None, None) => Err(RustlerError::new(ErrorCode::Internal, stage, "template without file")),
+    }
+}
+
+/// `name` or `name@version`.
+fn split_spec(stage: &str, spec: &str) -> Result<(String, Option<u32>)> {
+    let spec = spec.trim();
+    match spec.rsplit_once('@') {
+        Some((n, v)) => {
+            let v: u32 = v.parse().map_err(|_| verr(stage, format!("'{spec}': version after @ must be a number")).hint("e.g. podcast-viral@2"))?;
+            Ok((n.to_string(), Some(v)))
+        }
+        None => Ok((spec.to_string(), None)),
+    }
+}
+
+/// Resolves `name[@ver]`: the first scope (project, global, built-in) that has the name wins; its
+/// highest version unless one is given (an explicit version is looked up in every scope).
+pub fn resolve(ctx: &Ctx, stage: &str, spec: &str) -> Result<(Stored, Template)> {
+    let (name, ver) = split_spec(stage, spec)?;
+    let all = all_stored(ctx);
+    let same: Vec<&Stored> = all.iter().filter(|s| s.name == name).collect();
+    let pick = match ver {
+        Some(v) => same.iter().find(|s| s.version == v).copied(),
+        None => {
+            let first_scope = same.first().map(|s| s.scope.clone());
+            same.iter().filter(|s| Some(&s.scope) == first_scope.as_ref()).max_by_key(|s| s.version).copied()
+        }
+    };
+    let Some(s) = pick else {
+        let mut names: Vec<String> = all.iter().map(|s| s.name.clone()).collect();
+        names.dedup();
+        let msg = match (ver, same.is_empty()) {
+            (Some(v), false) => format!("template '{name}' has no version {v} (versions: {})", same.iter().map(|s| s.version.to_string()).collect::<Vec<_>>().join(", ")),
+            _ => format!("no template called '{name}'"),
+        };
+        return Err(nf(stage, msg).hint(format!("templates: {} (`rustler template list`)", names.join(", "))));
+    };
+    let t = load(stage, s)?;
+    Ok((s.clone(), t))
+}
+
+fn write_template(stage: &str, dir: &Path, t: &Template) -> Result<PathBuf> {
+    std::fs::create_dir_all(dir).map_err(|e| io_err(stage, "create", dir, e))?;
+    let path = dir.join(format!("{}@{}.json", t.name, t.version));
+    let tmp = dir.join(format!(".{}@{}.json.tmp{}", t.name, t.version, std::process::id()));
+    let body = serde_json::to_vec_pretty(t).map_err(|e| RustlerError::new(ErrorCode::Internal, stage, e.to_string()))?;
+    std::fs::write(&tmp, body).map_err(|e| io_err(stage, "write", &tmp, e))?;
+    std::fs::rename(&tmp, &path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        io_err(stage, "write", &path, e)
+    })?;
+    Ok(path)
+}
+
+fn latest_in(ctx: &Ctx, name: &str) -> Option<Stored> {
+    let all = all_stored(ctx);
+    let first_scope = all.iter().find(|s| s.name == name).map(|s| s.scope.clone())?;
+    all.into_iter().filter(|s| s.name == name && s.scope == first_scope).max_by_key(|s| s.version)
+}
+
+fn parse_template_value(stage: &str, v: Value) -> Result<Template> {
+    serde_json::from_value(v).map_err(|e| {
+        verr(stage, format!("template JSON does not match rustler.template@1: {e}"))
+            .hint("`rustler template show podcast-viral` shows the shape; unknown fields are rejected")
+    })
+}
+
+// ---------------------------------------------------------------------------------------------
+// Capturing a clip's look
+// ---------------------------------------------------------------------------------------------
+
+const NEAR: f64 = 0.06;
+
+fn cut_times(t: &Timeline) -> Vec<f64> {
+    let mut acc = 0.0;
+    let mut out = Vec::new();
+    let n = t.tracks.video.len();
+    for (k, s) in t.tracks.video.iter().enumerate() {
+        acc += (s.src_out - s.src_in).max(0.0);
+        if k + 1 < n {
+            out.push(acc);
+        }
+    }
+    out
+}
+
+fn norm(s: &str) -> String {
+    s.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_lowercase()
+}
+
+/// Library rows of `kind` whose file is `path` (so a template stores the asset id, not the path).
+fn asset_id_for(rows: &[asset_cmds::AssetRow], kind: AssetKind, path: &Path) -> Option<String> {
+    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let want = canon(path);
+    rows.iter().find(|r| r.entry.kind == kind && r.file.as_ref().is_some_and(|f| canon(f) == want)).map(|r| r.entry.id.clone())
+}
+
+/// The look of a clip as a template (text content only with `include_text`). Returns notes on
+/// what was not captured.
+pub fn capture(ctx: &Ctx, store: &ProjectStore, doc: &Timeline, name: &str, include_text: bool) -> Result<(Template, Vec<String>)> {
+    let rows = asset_cmds::load_rows(&ctx.home, Some(&store.root));
+    let tr = &doc.tracks;
+    let dur = doc.edit_duration();
+    let cuts = cut_times(doc);
+    let mut notes: Vec<String> = Vec::new();
+
+    // Layout: the first segment's; center-crop / blur-fit framing is per source, so only the preset.
+    let layout = tr.video.first().map(|s| {
+        let preset = s.layout.preset.clone();
+        let per_source = matches!(preset.as_deref(), Some("center-crop" | "blur-fit"));
+        if tr.video.iter().any(|v| v.layout.preset != preset) {
+            notes.push(format!("segments use different layouts; captured the first segment's ({})", preset.as_deref().unwrap_or("custom regions")));
+        }
+        TplLayout {
+            preset: preset.clone(),
+            params: None,
+            regions: if per_source { None } else { Some(s.layout.regions.clone()) },
+            background: Some(s.layout.background),
+            force: false,
+        }
+    });
+
+    let cs = &tr.captions.settings;
+    let captions = TplCaptions {
+        enabled: Some(cs.enabled),
+        preset: Some(cs.preset.clone()),
+        position_y: Some(cs.position_y),
+        max_words_per_line: Some(cs.max_words_per_line),
+        script: None,
+        speaker_colors: tr.captions.speaker_colors.clone(),
+    };
+    if !tr.captions.word_overrides.is_empty() {
+        notes.push(format!("{} caption word overrides are content, not captured", tr.captions.word_overrides.len()));
+    }
+    // Fonts of a custom caption style that live in the asset library.
+    let mut fonts: Vec<String> = Vec::new();
+    if rustler_captions::presets::find_preset(&cs.preset).is_none() {
+        let custom = asset_cmds::custom_presets(&ctx.home, Some(&store.root));
+        if let Some(p) = custom.iter().find(|p| p.name == cs.preset) {
+            let fam = norm(p.font_family);
+            for r in rows.iter().filter(|r| r.entry.kind == AssetKind::Font && r.exists) {
+                let stem = r.file.as_ref().and_then(|f| f.file_stem()).map(|s| norm(&s.to_string_lossy())).unwrap_or_default();
+                if !fam.is_empty() && (stem.contains(&fam) || norm(&r.entry.name).contains(&fam)) && !fonts.contains(&r.entry.id) {
+                    fonts.push(r.entry.id.clone());
+                }
+            }
+        }
+    }
+
+    // Hook: the first hook-top text item.
+    let hook_item = tr.text.iter().find(|x| x.style == TextStyle::HookTop);
+    let hook = hook_item.map(|h| TplHook {
+        position_y: Some(h.position_y),
+        font_size_factor: Some(h.font_size_factor),
+        boxed: Some(h.boxed),
+        at_seam: None,
+        duration: Some(((h.end - h.start) * 100.0).round() / 100.0),
+        max_words: Some(7),
+        text: include_text.then(|| h.text.clone()),
+    });
+    let mut text_styles = BTreeMap::new();
+    let mut texts = Vec::new();
+    for x in tr.text.iter().filter(|x| Some(*x) != hook_item) {
+        let key = match x.style {
+            TextStyle::LowerThird => "lower-third",
+            TextStyle::Plain => "plain",
+            TextStyle::HookTop => "hook-top",
+        };
+        if key != "hook-top" && !text_styles.contains_key(key) {
+            text_styles.insert(key.to_string(), TextLook { position_y: Some(x.position_y), font_size_factor: Some(x.font_size_factor), boxed: Some(x.boxed) });
+        }
+        if include_text {
+            texts.push(TplText {
+                text: x.text.clone(),
+                start: x.start,
+                end: x.end,
+                style: x.style,
+                position_y: Some(x.position_y),
+                font_size_factor: Some(x.font_size_factor),
+                boxed: Some(x.boxed),
+            });
+        }
+    }
+    let other_text = tr.text.iter().filter(|x| Some(*x) != hook_item).count();
+    if !include_text && (other_text > 0 || hook_item.is_some()) {
+        notes.push("text content (hook and labels) not captured; pass include_text to keep it".into());
+    }
+
+    // Brand images (time-anchored ones only; word-anchored images belong to the content).
+    let mut images = Vec::new();
+    for im in &tr.images {
+        if im.timing.has_anchor() {
+            notes.push(format!("image {} is word-anchored (content), not captured", im.id));
+            continue;
+        }
+        let asset = im.asset.clone().or_else(|| asset_id_for(&rows, AssetKind::Image, &im.file));
+        images.push(TplImage {
+            file: if asset.is_some() { None } else { Some(im.file.clone()) },
+            asset,
+            rect: im.rect,
+            scale: Some(im.scale),
+            opacity: Some(im.opacity),
+            rotation: (im.rotation != 0.0).then_some(im.rotation),
+            fit: Some(im.fit),
+            anim: (im.anim != Anim::default()).then_some(im.anim),
+            z: (im.z != 0).then_some(im.z),
+            above_captions: im.above_captions.then_some(true),
+            start: im.timing.out_start.filter(|s| *s > NEAR),
+            end: im.timing.out_end.filter(|e| *e < dur - NEAR),
+        });
+    }
+    for (n, k) in [("masks", tr.masks.len()), ("cutaways", tr.cutaways.len()), ("freezes", tr.freezes.len())] {
+        if k > 0 {
+            notes.push(format!("{k} {n} are content, not captured"));
+        }
+    }
+
+    let progress_bar = Some(match &tr.progress_bar {
+        Some(b) => TplBar { enabled: true, color: Some(b.color.clone()), height: Some(b.height), position: Some(b.position) },
+        None => TplBar { enabled: false, color: None, height: None, position: None },
+    });
+
+    // Patterns: at the start, at cuts, otherwise content-specific.
+    let place_of = |s: f64| -> Option<PlaceAt> {
+        if s < NEAR {
+            Some(PlaceAt::Start)
+        } else if cuts.iter().any(|c| (c - s).abs() < NEAR) {
+            Some(PlaceAt::Cuts)
+        } else {
+            None
+        }
+    };
+    let mut effects: Vec<TplEffect> = Vec::new();
+    let mut loose_fx = 0;
+    for x in &tr.effects {
+        match place_of(x.start) {
+            Some(at) => {
+                if !effects.iter().any(|e| e.kind == x.kind && e.at == at) {
+                    effects.push(TplEffect { kind: x.kind, at, every_s: None, t: None, duration: ((x.end - x.start) * 100.0).round() / 100.0, amount: x.amount });
+                }
+            }
+            None => loose_fx += 1,
+        }
+    }
+    if loose_fx > 0 {
+        notes.push(format!("{loose_fx} effects at content times (not at the start or a cut) not captured; add an at=every pattern by hand if they were regular"));
+    }
+    let a = &tr.audio;
+    let music = a.music.as_ref().map(|m| {
+        let asset = asset_id_for(&rows, AssetKind::Music, &m.path);
+        TplMusic {
+            file: if asset.is_some() { None } else { Some(m.path.clone()) },
+            asset,
+            none: false,
+            volume_db: m.volume_db,
+            duck: m.duck,
+            fade_in: m.fade_in,
+            fade_out: m.fade_out,
+        }
+    });
+    let mut sfx: Vec<TplSfx> = Vec::new();
+    let mut loose_sfx = 0;
+    for s in &a.sfx {
+        let at = match (s.at, &s.at_word) {
+            (Some(t), None) => place_of(t),
+            _ => None,
+        };
+        let Some(at) = at else {
+            loose_sfx += 1;
+            continue;
+        };
+        let asset = asset_id_for(&rows, AssetKind::Sfx, &s.file);
+        let item = TplSfx { file: if asset.is_some() { None } else { Some(s.file.clone()) }, asset, at, every_s: None, t: None, volume_db: s.volume_db };
+        if !sfx.iter().any(|x| x.at == item.at && x.asset == item.asset && x.file == item.file) {
+            sfx.push(item);
+        }
+    }
+    if loose_sfx > 0 {
+        notes.push(format!("{loose_sfx} sound effects at content times or words not captured"));
+    }
+    let audio = TplAudio {
+        loudnorm: Some(a.master.loudnorm),
+        target_lufs: Some(a.master.target_lufs),
+        true_peak: Some(a.master.true_peak),
+        lra: Some(a.master.lra),
+        denoise: Some(a.denoise),
+        volume_db: (a.volume_db != 0.0).then_some(a.volume_db),
+        music,
+        sfx: Some(sfx),
+    };
+    let transitions = {
+        let kinds: Vec<(TransitionKind, f64)> = tr.transitions.iter().map(|x| (x.kind, x.duration)).collect();
+        match kinds.first() {
+            Some(&(k, d)) => {
+                if kinds.iter().any(|x| x.0 != k) {
+                    notes.push("transitions differ between seams; captured the first one".into());
+                }
+                Some(TplTransition { kind: k, duration: d })
+            }
+            None => None,
+        }
+    };
+    let t = Template {
+        schema: TEMPLATE_SCHEMA.into(),
+        name: name.into(),
+        version: 1,
+        description: String::new(),
+        created_by: "agent".into(),
+        based_on: Some(json!({"clip": doc.id})),
+        notes: Vec::new(),
+        canvas: Some(doc.canvas),
+        layout,
+        captions: Some(captions),
+        hook,
+        text_styles,
+        texts: include_text.then_some(texts),
+        images: Some(images),
+        progress_bar,
+        audio: Some(audio),
+        effects: Some(effects),
+        transitions,
+        fonts,
+    };
+    Ok((t, notes))
+}
+
+// ---------------------------------------------------------------------------------------------
+// Applying a template to a document
+// ---------------------------------------------------------------------------------------------
+
+/// Library paths of every asset / file the template references; `not_found` naming the first
+/// missing one.
+pub fn check_refs(ctx: &Ctx, stage: &str, t: &Template) -> Result<HashMap<String, PathBuf>> {
+    let project = ctx.project_dir.as_deref();
+    let mut out = HashMap::new();
+    let hint = "import the template bundle (`rustler template import <file.zip>`) or add the file with `rustler asset add <file> --kind <kind>`";
+    let rows = asset_cmds::load_rows(&ctx.home, project);
+    for r in t.refs() {
+        match (&r.asset, &r.file) {
+            (Some(id), _) if r.kind == "caption_style" => {
+                let name = id.trim_start_matches("style-");
+                let custom = asset_cmds::custom_presets(&ctx.home, project);
+                if rustler_captions::find_preset_in(name, &custom).is_none() {
+                    return Err(nf(stage, format!("template '{}' needs caption style '{name}' (asset {id}), which is not in the project or global library ({})", t.name, r.at)).hint(hint));
+                }
+            }
+            (Some(id), _) if r.kind == "font" => {
+                let ok = rows.iter().any(|x| &x.entry.id == id && x.entry.kind == AssetKind::Font && x.exists);
+                if !ok {
+                    return Err(nf(stage, format!("template '{}' needs font asset '{id}', which is not in the project or global library ({})", t.name, r.at)).hint(hint));
+                }
+            }
+            (Some(id), _) => {
+                let p = asset_cmds::resolve_asset_path_in(project, &ctx.home, &format!("asset:{id}")).map_err(|e| {
+                    nf(stage, format!("template '{}' needs {} asset '{id}' ({}): {}", t.name, r.kind, r.at, e.message)).hint(hint)
+                })?;
+                out.insert(format!("asset:{id}"), p);
+            }
+            (None, Some(f)) => {
+                if !f.is_file() {
+                    return Err(nf(stage, format!("template '{}' needs {} file '{}' ({}), which does not exist", t.name, r.kind, f.display(), r.at)).hint(hint));
+                }
+                out.insert(f.to_string_lossy().into_owned(), f.clone());
+            }
+            (None, None) => {}
+        }
+    }
+    Ok(out)
+}
+
+fn path_of(paths: &HashMap<String, PathBuf>, asset: &Option<String>, file: &Option<PathBuf>) -> Option<PathBuf> {
+    match (asset, file) {
+        (Some(a), _) => paths.get(&format!("asset:{a}")).cloned(),
+        (None, Some(f)) => Some(std::path::absolute(f).unwrap_or_else(|_| f.clone())),
+        _ => None,
+    }
+}
+
+fn instances(at: PlaceAt, every: Option<f64>, t: Option<f64>, cuts: &[f64], dur: f64) -> Vec<f64> {
+    match at {
+        PlaceAt::Start => vec![0.0],
+        PlaceAt::Cuts => cuts.to_vec(),
+        PlaceAt::Time => t.filter(|t| *t < dur).into_iter().collect(),
+        PlaceAt::Every => {
+            let step = every.unwrap_or(5.0).max(1.0);
+            let mut v = Vec::new();
+            let mut s = step;
+            while s < dur - 0.5 {
+                v.push(s);
+                s += step;
+            }
+            v
+        }
+    }
+}
+
+fn tagged(x: &Map<String, Value>, role: &str) -> bool {
+    x.contains_key(BY_TEMPLATE) && x.get(ROLE).and_then(Value::as_str).unwrap_or("") == role
+}
+
+fn tag_map(tag: &str, role: &str) -> Map<String, Value> {
+    let mut m = Map::new();
+    m.insert(BY_TEMPLATE.into(), json!(tag));
+    m.insert(ROLE.into(), json!(role));
+    m
+}
+
+/// Seam of a stacked layout (a panel that starts well below the top and spans most of the width).
+fn seam_of(l: &Layout) -> Option<f64> {
+    if l.regions.len() < 2 {
+        return None;
+    }
+    l.regions.iter().filter(|r| r.dst.y > 0.2 && r.dst.y < 0.8 && r.dst.w > 0.8).map(|r| r.dst.y).min_by(|a, b| a.total_cmp(b))
+}
+
+/// The document with the template applied, plus warnings. Nothing is written.
+pub fn build(ctx: &Ctx, store: &ProjectStore, tpl: &Template, paths: &HashMap<String, PathBuf>, old: &Timeline) -> Result<(Timeline, Vec<String>)> {
+    const STAGE: &str = "template.apply";
+    let mut t = old.clone();
+    let mut w: Vec<String> = Vec::new();
+    let tag = format!("{}@{}", tpl.name, tpl.version);
+    let _ = ctx;
+
+    if let Some(c) = tpl.canvas {
+        t.canvas = c;
+    }
+    if let Some(l) = &tpl.layout {
+        let mut sources = HashMap::new();
+        let canvas = t.canvas;
+        let mut kept = 0;
+        for seg in t.tracks.video.iter_mut() {
+            if !l.force && l.preset.is_some() && seg.layout.preset == l.preset {
+                kept += 1;
+                if let Some(bg) = l.background
+                    && l.preset.as_deref() != Some("center-crop")
+                {
+                    seg.layout.background = bg;
+                }
+                continue;
+            }
+            let mut layout = if let Some(rs) = &l.regions {
+                Layout { preset: l.preset.clone(), regions: rs.clone(), background: l.background.unwrap_or(Background::Black) }
+            } else if let Some(p) = &l.preset {
+                if core_layout::PRESETS.contains(&p.as_str()) {
+                    if !sources.contains_key(&seg.source_id) {
+                        sources.insert(seg.source_id.clone(), store.load_source(&seg.source_id)?);
+                    }
+                    let src = &sources[&seg.source_id];
+                    core_layout::preset(p, src.probe.width, src.probe.height, &canvas, &l.params.unwrap_or_default()).map_err(|e| with_stage(e, STAGE))?
+                } else {
+                    let rel = core_layout::preset_rel(p);
+                    if !store.resolve(&rel).is_file() {
+                        return Err(nf(STAGE, format!("template '{}' needs layout preset '{p}', which is not saved in this project", tpl.name))
+                            .hint("save it with `rustler layout save-preset`, or give the template layout.regions"));
+                    }
+                    let f: LayoutPresetFile = store.read_json(&rel)?;
+                    Layout { preset: Some(p.clone()), regions: f.regions, background: f.background }
+                }
+            } else {
+                seg.layout.clone()
+            };
+            if let Some(bg) = l.background {
+                layout.background = bg;
+            }
+            if layout != seg.layout {
+                if layout.preset.as_deref() != Some("center-crop") {
+                    seg.crop_path = None;
+                }
+                seg.layout = layout;
+            }
+        }
+        if kept > 0 {
+            w.push(format!("{kept} segment(s) already use layout {} and keep their framing (layout.force re-lays them)", l.preset.as_deref().unwrap_or("")));
+        }
+    }
+    if let Some(c) = &tpl.captions {
+        let s = &mut t.tracks.captions.settings;
+        if let Some(v) = c.enabled {
+            s.enabled = v;
+        }
+        if let Some(v) = &c.preset {
+            s.preset = v.clone();
+        }
+        if let Some(v) = c.position_y {
+            s.position_y = v;
+        }
+        if let Some(v) = c.max_words_per_line {
+            s.max_words_per_line = v;
+        }
+        if let Some(v) = c.script {
+            s.script = v;
+        }
+        if let Some(v) = &c.speaker_colors {
+            t.tracks.captions.speaker_colors = Some(v.clone());
+        }
+    }
+
+    let dur = t.edit_duration();
+    let cuts = cut_times(&t);
+    let seam = t.tracks.video.first().and_then(|s| seam_of(&s.layout));
+
+    if let Some(h) = &tpl.hook {
+        t.tracks.text.retain(|x| !tagged(&x.extra, "hook"));
+        let restyle = |x: &mut TextItem| {
+            let at_seam = h.at_seam.unwrap_or(false);
+            match (at_seam, seam) {
+                (true, Some(y)) => x.position_y = y,
+                _ => {
+                    if let Some(y) = h.position_y {
+                        x.position_y = y;
+                    }
+                }
+            }
+            if let Some(f) = h.font_size_factor {
+                x.font_size_factor = f;
+            }
+            if let Some(b) = h.boxed {
+                x.boxed = b;
+            }
+            if let Some(d) = h.duration {
+                x.end = (x.start + d).min(dur);
+            }
+        };
+        let mut n = 0;
+        for x in t.tracks.text.iter_mut().filter(|x| x.style == TextStyle::HookTop) {
+            restyle(x);
+            n += 1;
+            if let Some(m) = h.max_words {
+                let words = x.text.split_whitespace().count();
+                if words > m as usize {
+                    w.push(format!("hook {} has {words} words; this template wants <= {m} (`rustler overlay edit {} {} --text \"...\"`)", x.id, t.id, x.id));
+                }
+            }
+        }
+        if n == 0 {
+            match &h.text {
+                Some(text) => {
+                    let id = timeline_doc::next_item_id("ovl", t.tracks.text.iter().map(|x| x.id.as_str()));
+                    let mut x = TextItem {
+                        id,
+                        text: text.clone(),
+                        start: 0.0,
+                        end: h.duration.unwrap_or(3.0).min(dur),
+                        style: TextStyle::HookTop,
+                        position_y: 0.12,
+                        font_size_factor: 0.085,
+                        boxed: true,
+                        extra: tag_map(&tag, "hook"),
+                    };
+                    restyle(&mut x);
+                    t.tracks.text.push(x);
+                }
+                None => w.push(format!(
+                    "clip {} has no hook title; add one (<= {} words) with `rustler overlay add-text {} \"...\"` and apply the template again",
+                    t.id,
+                    h.max_words.unwrap_or(7),
+                    t.id
+                )),
+            }
+        }
+    }
+    for (k, look) in &tpl.text_styles {
+        let style = if k == "lower-third" { TextStyle::LowerThird } else { TextStyle::Plain };
+        for x in t.tracks.text.iter_mut().filter(|x| x.style == style && !x.extra.contains_key(BY_TEMPLATE)) {
+            if let Some(y) = look.position_y {
+                x.position_y = y;
+            }
+            if let Some(f) = look.font_size_factor {
+                x.font_size_factor = f;
+            }
+            if let Some(b) = look.boxed {
+                x.boxed = b;
+            }
+        }
+    }
+    if let Some(texts) = &tpl.texts {
+        t.tracks.text.retain(|x| !tagged(&x.extra, "text"));
+        for x in texts {
+            if x.start >= dur {
+                w.push(format!("text \"{}\" starts at {:.2}s, after the clip ends ({dur:.2}s); skipped", x.text, x.start));
+                continue;
+            }
+            let id = timeline_doc::next_item_id("ovl", t.tracks.text.iter().map(|x| x.id.as_str()));
+            t.tracks.text.push(TextItem {
+                id,
+                text: x.text.clone(),
+                start: x.start,
+                end: x.end.min(dur),
+                style: x.style,
+                position_y: x.position_y.unwrap_or(match x.style {
+                    TextStyle::HookTop => 0.12,
+                    TextStyle::LowerThird => 0.80,
+                    TextStyle::Plain => 0.50,
+                }),
+                font_size_factor: x.font_size_factor.unwrap_or(0.065),
+                boxed: x.boxed.unwrap_or(x.style != TextStyle::Plain),
+                extra: tag_map(&tag, "text"),
+            });
+        }
+    }
+    if let Some(images) = &tpl.images {
+        t.tracks.images.retain(|x| !x.extra.contains_key(BY_TEMPLATE));
+        for im in images {
+            let Some(file) = path_of(paths, &im.asset, &im.file) else { continue };
+            let start = im.start.filter(|s| *s > 0.0);
+            if start.is_some_and(|s| s >= dur) {
+                w.push(format!("image {} starts after the clip ends; skipped", im.asset.clone().unwrap_or_else(|| file.display().to_string())));
+                continue;
+            }
+            let id = timeline_doc::next_item_id("img", t.tracks.images.iter().map(|x| x.id.as_str()));
+            t.tracks.images.push(ImageItem {
+                id,
+                timing: ItemTiming { out_start: start, out_end: im.end.map(|e| e.min(dur)), start_word: None, end_word: None },
+                asset: im.asset.clone(),
+                file,
+                rect: im.rect,
+                scale: im.scale.unwrap_or(1.0),
+                opacity: im.opacity.unwrap_or(1.0),
+                rotation: im.rotation.unwrap_or(0.0),
+                fit: im.fit.unwrap_or(Fit::Contain),
+                anim: im.anim.unwrap_or_default(),
+                z: im.z.unwrap_or(0),
+                above_captions: im.above_captions.unwrap_or(false),
+                extra: tag_map(&tag, "image"),
+            });
+        }
+    }
+    if let Some(b) = &tpl.progress_bar {
+        t.tracks.progress_bar = if b.enabled {
+            let mut item = t.tracks.progress_bar.clone().unwrap_or(ProgressBarItem {
+                color: "#FFE000".into(),
+                height: 8,
+                position: BarPosition::Top,
+                extra: Map::new(),
+            });
+            if let Some(c) = &b.color {
+                item.color = c.clone();
+            }
+            if let Some(h) = b.height {
+                item.height = h;
+            }
+            if let Some(p) = b.position {
+                item.position = p;
+            }
+            Some(item)
+        } else {
+            None
+        };
+    }
+    if let Some(a) = &tpl.audio {
+        let au = &mut t.tracks.audio;
+        if let Some(v) = a.loudnorm {
+            au.master.loudnorm = v;
+        }
+        if let Some(v) = a.target_lufs {
+            au.master.target_lufs = v;
+        }
+        if let Some(v) = a.true_peak {
+            au.master.true_peak = v;
+        }
+        if let Some(v) = a.lra {
+            au.master.lra = v;
+        }
+        if let Some(v) = a.denoise {
+            au.denoise = v;
+        }
+        if let Some(v) = a.volume_db {
+            au.volume_db = v;
+        }
+        if let Some(m) = &a.music {
+            au.music = if m.none {
+                None
+            } else {
+                path_of(paths, &m.asset, &m.file).map(|path| MusicItem {
+                    path,
+                    volume_db: m.volume_db,
+                    duck: m.duck,
+                    fade_in: m.fade_in,
+                    fade_out: m.fade_out,
+                    extra: Map::new(),
+                })
+            };
+        }
+        if let Some(list) = &a.sfx {
+            au.sfx.retain(|x| !x.extra.contains_key(BY_TEMPLATE));
+            for s in list {
+                let Some(file) = path_of(paths, &s.asset, &s.file) else { continue };
+                for at in instances(s.at, s.every_s, s.t, &cuts, dur) {
+                    if at >= dur {
+                        continue;
+                    }
+                    let id = timeline_doc::next_item_id("sfx", au.sfx.iter().map(|x| x.id.as_str()));
+                    au.sfx.push(SfxItem { id, file: file.clone(), at: Some(at), at_word: None, volume_db: s.volume_db, extra: tag_map(&tag, "sfx") });
+                }
+            }
+        }
+    }
+    if let Some(list) = &tpl.effects {
+        t.tracks.effects.retain(|x| !x.extra.contains_key(BY_TEMPLATE));
+        for e in list {
+            for s in instances(e.at, e.every_s, e.t, &cuts, dur) {
+                let end = (s + e.duration).min(dur);
+                if end - s < 0.1 {
+                    continue;
+                }
+                let id = timeline_doc::next_item_id("fx", t.tracks.effects.iter().map(|x| x.id.as_str()));
+                t.tracks.effects.push(EffectItem { id, kind: e.kind, start: s, end, amount: e.amount, extra: tag_map(&tag, "effect") });
+            }
+        }
+    }
+    if let Some(tr) = &tpl.transitions {
+        t.tracks.transitions.clear();
+        if tr.kind != TransitionKind::Cut {
+            let v = &t.tracks.video;
+            for k in 0..v.len().saturating_sub(1) {
+                let (a, b) = (v[k].src_out - v[k].src_in, v[k + 1].src_out - v[k + 1].src_in);
+                if a < 2.0 * tr.duration + 0.1 || b < 2.0 * tr.duration + 0.1 {
+                    w.push(format!("no {:?} after segment {}: a neighbouring segment is too short for a {:.2}s overlap", tr.kind, v[k].id, tr.duration));
+                    continue;
+                }
+                t.tracks.transitions.push(TransitionItem { after_segment_id: v[k].id.clone(), kind: tr.kind, duration: tr.duration, extra: Map::new() });
+            }
+        }
+    }
+    t.template_ref = Some(TemplateRef { id: tpl.name.clone(), version: Some(tpl.version), extra: Map::new() });
+    Ok((t, w))
+}
+
+/// Result of applying a template to one clip.
+#[derive(Serialize, JsonSchema, Clone, Debug)]
+pub struct ClipResult {
+    pub clip_id: ClipId,
+    /// Revision before.
+    pub from_revision: u64,
+    /// Revision after (same as before on a dry run or when nothing changed).
+    pub revision: u64,
+    /// JSON-Patch operations sent to timeline.apply.
+    pub ops: usize,
+    pub changes: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+    /// The JSON-Patch (dry run only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub patch: Option<Value>,
+}
+
+/// Applies `tpl` to `clips` through `timeline.apply`: every clip is validated first (dry run), then
+/// saved, one revision each.
+pub async fn apply_to(ctx: &Ctx, tpl: &Template, clips: &[ClipId], dry: bool) -> Result<Vec<ClipResult>> {
+    const STAGE: &str = "template.apply";
+    let store = ctx.store()?;
+    let paths = check_refs(ctx, STAGE, tpl)?;
+    let mut planned: Vec<(ClipId, u64, Vec<Value>, Vec<String>, Vec<String>)> = Vec::new();
+    for id in clips {
+        let (old, _) = timeline_doc::assemble(&store, id)?;
+        let (new, warnings) = build(ctx, &store, tpl, &paths, &old)?;
+        let a = serde_json::to_value(&old).map_err(|e| RustlerError::new(ErrorCode::Internal, STAGE, e.to_string()))?;
+        let b = serde_json::to_value(&new).map_err(|e| RustlerError::new(ErrorCode::Internal, STAGE, e.to_string()))?;
+        let patch = json_patch::diff(&a, &b);
+        let ops: Vec<Value> = serde_json::to_value(&patch).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
+        // Validate through the same path (dry run) before anything is written.
+        let check = timeline_cmds::apply(
+            ctx.clone(),
+            timeline_cmds::ApplyIn { clip_id: id.clone(), base_revision: old.revision, patch: Some(ops.clone()), document: None, dry_run: Some(true) },
+        )
+        .await
+        .map_err(|e| {
+            let mut e = with_stage(e, STAGE);
+            e.message = format!("clip {id}: {}", e.message);
+            e
+        })?;
+        planned.push((id.clone(), old.revision, ops, warnings, check.changes));
+    }
+    let mut out = Vec::new();
+    for (id, rev, ops, mut warnings, changes) in planned {
+        if dry || ops.is_empty() {
+            if ops.is_empty() {
+                warnings.push("already matches the template; nothing to change".into());
+            }
+            let n = ops.len();
+            out.push(ClipResult { clip_id: id, from_revision: rev, revision: rev, ops: n, changes, warnings, patch: dry.then(|| Value::Array(ops)) });
+            continue;
+        }
+        let n = ops.len();
+        let r = timeline_cmds::apply(
+            ctx.clone(),
+            timeline_cmds::ApplyIn { clip_id: id.clone(), base_revision: rev, patch: Some(ops), document: None, dry_run: Some(false) },
+        )
+        .await
+        .map_err(|e| with_stage(e, STAGE))?;
+        warnings.extend(r.warnings);
+        out.push(ClipResult { clip_id: id, from_revision: rev, revision: r.revision, ops: n, changes: r.changes, warnings, patch: None });
+    }
+    if !dry {
+        log_event(ctx, &store, STAGE, json!({"template": format!("{}@{}", tpl.name, tpl.version), "clips": out.iter().map(|r| &r.clip_id).collect::<Vec<_>>()}))?;
+    }
+    Ok(out)
+}
+
+/// Resolves `spec`, merges `overrides` (RFC 7386 merge patch) and checks the result is complete
+/// (fields valid, every referenced asset present). Used by template.apply and clip.create.
+pub fn prepare(ctx: &Ctx, stage: &str, spec: &str, overrides: Option<&Value>) -> Result<Template> {
+    let (_, t) = resolve(ctx, stage, spec)?;
+    let t = match overrides {
+        Some(o) if !o.is_null() => {
+            let mut v = serde_json::to_value(&t).map_err(|e| RustlerError::new(ErrorCode::Internal, stage, e.to_string()))?;
+            json_patch::merge(&mut v, o);
+            let mut n = parse_template_value(stage, v).map_err(|e| verr(stage, format!("overrides: {}", e.message)))?;
+            n.name = t.name.clone();
+            n.version = t.version;
+            n
+        }
+        _ => t,
+    };
+    validate_template(&t).map_err(|e| with_stage(e, stage))?;
+    check_refs(ctx, stage, &t)?;
+    Ok(t)
+}
+
+// ---------------------------------------------------------------------------------------------
+// template.create / template.update
+// ---------------------------------------------------------------------------------------------
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CreateIn {
+    /// Lowercase letters, digits, `-` and `_`.
+    pub name: String,
+    /// Capture the look of this clip.
+    #[serde(default)]
+    pub from_clip: Option<ClipId>,
+    /// A whole template document (instead of from_clip); name and version are set for you.
+    #[serde(default)]
+    pub template: Option<Value>,
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Also keep the hook / label texts (default false: a template is a look, not content).
+    #[serde(default)]
+    pub include_text: Option<bool>,
+    /// project (default when a project is open) | global.
+    #[serde(default)]
+    pub scope: Option<Scope>,
+}
+
+#[derive(Serialize, JsonSchema)]
+pub struct SavedOut {
+    pub name: String,
+    pub version: u32,
+    pub scope: String,
+    pub file: PathBuf,
+    pub template: Template,
+    /// Files and assets the template needs (exported with it).
+    pub refs: Vec<TplRef>,
+    /// What was not captured from the clip and why.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dry_run: Option<bool>,
+    pub next: Vec<String>,
+}
+
+fn source_template(ctx: &Ctx, stage: &str, name: &str, from_clip: Option<&ClipId>, template: Option<Value>, include_text: bool) -> Result<(Template, Vec<String>)> {
+    match (from_clip, template) {
+        (Some(_), Some(_)) => Err(verr(stage, "give from_clip or template, not both")),
+        (None, None) => Err(verr(stage, "nothing to save: give from_clip (capture a clip's look) or template (JSON)")
+            .hint("e.g. `rustler template create my-look --from-clip clp_x`")),
+        (Some(c), None) => {
+            let store = ctx.store()?;
+            let (doc, _) = timeline_doc::assemble(&store, c)?;
+            capture(ctx, &store, &doc, name, include_text)
+        }
+        (None, Some(v)) => {
+            let mut v = v;
+            if let Some(o) = v.as_object_mut() {
+                o.entry("name").or_insert(json!(name));
+                o.entry("schema").or_insert(json!(TEMPLATE_SCHEMA));
+            }
+            let mut t = parse_template_value(stage, v)?;
+            t.name = name.to_string();
+            if t.created_by.is_empty() {
+                t.created_by = "agent".into();
+            }
+            Ok((t, Vec::new()))
+        }
+    }
+}
+
+fn saved(t: Template, scope: &str, file: PathBuf, notes: Vec<String>, dry: bool) -> SavedOut {
+    let spec = format!("{}@{}", t.name, t.version);
+    SavedOut {
+        name: t.name.clone(),
+        version: t.version,
+        scope: scope.into(),
+        file,
+        refs: t.refs(),
+        template: t,
+        notes,
+        dry_run: dry.then_some(true),
+        next: vec![
+            format!("rustler template apply {spec} --clip-ids <clip_id> --dry-run"),
+            format!("rustler template show {spec}"),
+            format!("rustler template export {spec} --out <file.zip>"),
+        ],
+    }
+}
+
+async fn create(ctx: Ctx, i: CreateIn) -> Result<SavedOut> {
+    const STAGE: &str = "template.create";
+    let name = i.name.trim().to_string();
+    if !valid_name(&name) {
+        return Err(verr(STAGE, format!("name '{name}' must be 1-64 lowercase letters, digits, '-' or '_'")).hint("e.g. my-podcast-look"));
+    }
+    if let Some(s) = latest_in(&ctx, &name) {
+        return Err(verr(STAGE, format!("template '{name}' already exists ({} v{})", s.scope, s.version))
+            .hint(format!("save a new version with `rustler template update {name} ...`, or pick another name")));
+    }
+    let (mut t, notes) = source_template(&ctx, STAGE, &name, i.from_clip.as_ref(), i.template, i.include_text.unwrap_or(false))?;
+    t.version = 1;
+    if let Some(d) = i.description.filter(|d| !d.trim().is_empty()) {
+        t.description = d;
+    }
+    validate_template(&t).map_err(|e| with_stage(e, STAGE))?;
+    let scope = i.scope.unwrap_or_else(|| default_scope(&ctx));
+    let dir = dir_of(&ctx, scope)?;
+    let file = dir.join(format!("{name}@1.json"));
+    if ctx.dry_run {
+        return Ok(saved(t, scope_label(scope), file, notes, true));
+    }
+    let file = write_template(STAGE, &dir, &t)?;
+    if let Ok(store) = ctx.store() {
+        log_event(&ctx, &store, STAGE, json!({"template": name, "version": 1, "scope": scope_label(scope)}))?;
+    }
+    Ok(saved(t, scope_label(scope), file, notes, false))
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateIn {
+    pub name: String,
+    /// Re-capture from this clip.
+    #[serde(default)]
+    pub from_clip: Option<ClipId>,
+    /// A whole new template document.
+    #[serde(default)]
+    pub template: Option<Value>,
+    /// RFC 7386 merge patch onto the latest version, e.g. {"captions": {"position_y": 0.65}} (null removes a field).
+    #[serde(default)]
+    pub patch: Option<Value>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub include_text: Option<bool>,
+}
+
+async fn update(ctx: Ctx, i: UpdateIn) -> Result<SavedOut> {
+    const STAGE: &str = "template.update";
+    let name = i.name.trim().to_string();
+    let Some(latest) = latest_in(&ctx, &name) else {
+        return Err(nf(STAGE, format!("no template called '{name}'")).hint("create it with `rustler template create`"));
+    };
+    let base = load(STAGE, &latest)?;
+    let given = [i.from_clip.is_some(), i.template.is_some(), i.patch.is_some()].iter().filter(|b| **b).count();
+    if given > 1 {
+        return Err(verr(STAGE, "give one of from_clip, template or patch"));
+    }
+    let (mut t, notes) = if let Some(p) = &i.patch {
+        let mut v = serde_json::to_value(&base).map_err(|e| RustlerError::new(ErrorCode::Internal, STAGE, e.to_string()))?;
+        json_patch::merge(&mut v, p);
+        (parse_template_value(STAGE, v)?, Vec::new())
+    } else if given == 0 {
+        if i.description.is_none() {
+            return Err(verr(STAGE, "nothing to change: give from_clip, template, patch or description"));
+        }
+        (base.clone(), Vec::new())
+    } else {
+        source_template(&ctx, STAGE, &name, i.from_clip.as_ref(), i.template, i.include_text.unwrap_or(false))?
+    };
+    t.name = name.clone();
+    t.schema = TEMPLATE_SCHEMA.into();
+    if let Some(d) = i.description.filter(|d| !d.trim().is_empty()) {
+        t.description = d;
+    } else if t.description.is_empty() {
+        t.description = base.description.clone();
+    }
+    if latest.scope == "built-in" {
+        t.created_by = "agent".into();
+    }
+    // The next free version across every scope, so name@N stays unambiguous.
+    t.version = all_stored(&ctx).iter().filter(|s| s.name == name).map(|s| s.version).max().unwrap_or(0) + 1;
+    validate_template(&t).map_err(|e| with_stage(e, STAGE))?;
+    let scope = match latest.scope.as_str() {
+        "global" => Scope::Global,
+        "project" => Scope::Project,
+        _ => default_scope(&ctx),
+    };
+    let dir = dir_of(&ctx, scope)?;
+    let file = dir.join(format!("{name}@{}.json", t.version));
+    if ctx.dry_run {
+        return Ok(saved(t, scope_label(scope), file, notes, true));
+    }
+    let file = write_template(STAGE, &dir, &t)?;
+    if let Ok(store) = ctx.store() {
+        log_event(&ctx, &store, STAGE, json!({"template": name, "version": t.version, "scope": scope_label(scope)}))?;
+    }
+    Ok(saved(t, scope_label(scope), file, notes, false))
+}
+
+// ---------------------------------------------------------------------------------------------
+// template.show / template.list / template.delete
+// ---------------------------------------------------------------------------------------------
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NameIn {
+    /// `name` (latest) or `name@version`.
+    pub name: String,
+}
+
+#[derive(Serialize, JsonSchema)]
+pub struct ShowOut {
+    pub name: String,
+    pub version: u32,
+    pub scope: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<PathBuf>,
+    /// Every version of this name in this scope.
+    pub versions: Vec<u32>,
+    pub template: Template,
+    pub refs: Vec<TplRef>,
+    /// Referenced assets/files that are missing here (apply would fail with not_found).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub missing: Vec<String>,
+    pub next: Vec<String>,
+}
+
+async fn show(ctx: Ctx, i: NameIn) -> Result<ShowOut> {
+    const STAGE: &str = "template.show";
+    let (s, t) = resolve(&ctx, STAGE, &i.name)?;
+    let versions = all_stored(&ctx).into_iter().filter(|x| x.name == s.name && x.scope == s.scope).map(|x| x.version).collect();
+    let missing = match check_refs(&ctx, STAGE, &t) {
+        Ok(_) => Vec::new(),
+        Err(e) => vec![e.message],
+    };
+    let spec = format!("{}@{}", s.name, s.version);
+    Ok(ShowOut {
+        name: s.name.clone(),
+        version: s.version,
+        scope: s.scope.clone(),
+        file: s.file.clone(),
+        versions,
+        refs: t.refs(),
+        template: t,
+        missing,
+        next: vec![format!("rustler template apply {spec} --clip-ids <clip_id> --dry-run"), format!("rustler template diff {spec} <other>")],
+    })
+}
+
+#[derive(Deserialize, JsonSchema, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ListIn {}
+
+#[derive(Serialize, JsonSchema)]
+pub struct ListRow {
+    pub name: String,
+    /// Latest version in this scope.
+    pub version: u32,
+    pub versions: Vec<u32>,
+    /// project | global | built-in (project wins over global over built-in for a bare name).
+    pub scope: String,
+    pub description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Serialize, JsonSchema)]
+pub struct ListOut {
+    pub count: usize,
+    pub templates: Vec<ListRow>,
+    pub next: Vec<String>,
+}
+
+async fn list(ctx: Ctx, _i: ListIn) -> Result<ListOut> {
+    let all = all_stored(&ctx);
+    let mut rows: Vec<ListRow> = Vec::new();
+    for s in &all {
+        if let Some(r) = rows.iter_mut().find(|r| r.name == s.name && r.scope == s.scope) {
+            r.versions.push(s.version);
+            continue;
+        }
+        let same: Vec<&Stored> = all.iter().filter(|x| x.name == s.name && x.scope == s.scope).collect();
+        let latest = same.iter().max_by_key(|x| x.version).copied().unwrap_or(s);
+        let (description, error) = match load("template.list", latest) {
+            Ok(t) => (t.description, None),
+            Err(e) => (String::new(), Some(e.message)),
+        };
+        rows.push(ListRow { name: s.name.clone(), version: latest.version, versions: vec![s.version], scope: s.scope.clone(), description, file: latest.file.clone(), error });
+    }
+    Ok(ListOut {
+        count: rows.len(),
+        templates: rows,
+        next: vec!["rustler template show <name>".into(), "rustler template apply <name> --clip-ids <clip_id> --dry-run".into()],
+    })
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DeleteIn {
+    /// `name` (every version in its scope) or `name@version`.
+    pub name: String,
+}
+
+#[derive(Serialize, JsonSchema)]
+pub struct DeleteOut {
+    pub deleted: Vec<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dry_run: Option<bool>,
+}
+
+async fn delete(ctx: Ctx, i: DeleteIn) -> Result<DeleteOut> {
+    const STAGE: &str = "template.delete";
+    let (name, ver) = split_spec(STAGE, &i.name)?;
+    let (s, _) = resolve(&ctx, STAGE, &i.name)?;
+    if s.scope == "built-in" {
+        return Err(verr(STAGE, format!("'{name}' is a built-in template and cannot be deleted")).hint("make your own with `rustler template update` (a new version shadows it) or `template create`"));
+    }
+    let files: Vec<PathBuf> = all_stored(&ctx)
+        .into_iter()
+        .filter(|x| x.name == name && x.scope == s.scope && ver.is_none_or(|v| v == x.version))
+        .filter_map(|x| x.file)
+        .collect();
+    if ctx.dry_run {
+        return Ok(DeleteOut { deleted: files, dry_run: Some(true) });
+    }
+    for f in &files {
+        std::fs::remove_file(f).map_err(|e| io_err(STAGE, "delete", f, e))?;
+    }
+    if let Ok(store) = ctx.store() {
+        log_event(&ctx, &store, STAGE, json!({"template": i.name, "files": files.len()}))?;
+    }
+    Ok(DeleteOut { deleted: files, dry_run: None })
+}
+
+// ---------------------------------------------------------------------------------------------
+// template.apply
+// ---------------------------------------------------------------------------------------------
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ApplyIn {
+    /// `name` (latest) or `name@version`.
+    pub name: String,
+    /// Clips to style.
+    #[serde(default)]
+    pub clip_ids: Option<Vec<ClipId>>,
+    /// Every clip of the project.
+    #[serde(default)]
+    pub all: Option<bool>,
+    /// RFC 7386 merge patch onto the template for this run only, e.g. {"hook": {"text": "He quit"}}.
+    #[serde(default)]
+    pub overrides: Option<Value>,
+    /// Validate and show the patch per clip without saving (same as --dry-run).
+    #[serde(default)]
+    pub dry_run: Option<bool>,
+}
+
+#[derive(Serialize, JsonSchema)]
+pub struct ApplyOut {
+    pub template: String,
+    pub version: u32,
+    pub clips: Vec<ClipResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dry_run: Option<bool>,
+    pub next: Vec<String>,
+}
+
+async fn apply(ctx: Ctx, i: ApplyIn) -> Result<ApplyOut> {
+    const STAGE: &str = "template.apply";
+    let dry = ctx.dry_run || i.dry_run.unwrap_or(false);
+    let store = ctx.store()?;
+    let clips: Vec<ClipId> = match (i.clip_ids, i.all.unwrap_or(false)) {
+        (Some(c), false) if !c.is_empty() => c,
+        (None, true) => store.load_project()?.clips,
+        (Some(c), true) if c.is_empty() => store.load_project()?.clips,
+        (Some(_), true) => return Err(verr(STAGE, "give clip_ids or all, not both")),
+        _ => return Err(verr(STAGE, "which clips? give clip_ids or all").hint("e.g. `rustler template apply podcast-viral --clip-ids clp_x`")),
+    };
+    if clips.is_empty() {
+        return Err(nf(STAGE, "the project has no clips"));
+    }
+    let tpl = prepare(&ctx, STAGE, &i.name, i.overrides.as_ref())?;
+    let results = apply_to(&ctx, &tpl, &clips, dry).await?;
+    let next = match results.first() {
+        Some(r) if dry => vec![format!("rustler template apply {}@{} --clip-ids {} (without --dry-run)", tpl.name, tpl.version, r.clip_id)],
+        Some(r) => vec![format!("rustler render preview-frame {} --out-t 1", r.clip_id), format!("rustler history undo {}", r.clip_id)],
+        None => Vec::new(),
+    };
+    Ok(ApplyOut { template: tpl.name.clone(), version: tpl.version, clips: results, dry_run: dry.then_some(true), next })
+}
+
+// ---------------------------------------------------------------------------------------------
+// template.diff
+// ---------------------------------------------------------------------------------------------
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DiffIn {
+    /// `name[@version]`.
+    pub a: String,
+    /// `name[@version]`.
+    pub b: String,
+}
+
+#[derive(Serialize, JsonSchema)]
+pub struct DiffRow {
+    /// JSON pointer.
+    pub path: String,
+    /// add | remove | replace.
+    pub op: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub a: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub b: Option<Value>,
+}
+
+#[derive(Serialize, JsonSchema)]
+pub struct DiffOut {
+    pub a: String,
+    pub b: String,
+    pub same: bool,
+    pub changes: Vec<DiffRow>,
+}
+
+async fn diff(ctx: Ctx, i: DiffIn) -> Result<DiffOut> {
+    const STAGE: &str = "template.diff";
+    let (sa, ta) = resolve(&ctx, STAGE, &i.a)?;
+    let (sb, tb) = resolve(&ctx, STAGE, &i.b)?;
+    let va = serde_json::to_value(&ta).unwrap_or(Value::Null);
+    let vb = serde_json::to_value(&tb).unwrap_or(Value::Null);
+    let patch = serde_json::to_value(json_patch::diff(&va, &vb)).unwrap_or(Value::Null);
+    let changes: Vec<DiffRow> = patch
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|op| {
+            let path = op.get("path")?.as_str()?.to_string();
+            if path == "/version" {
+                return None;
+            }
+            Some(DiffRow {
+                op: op.get("op")?.as_str()?.to_string(),
+                a: va.pointer(&path).cloned(),
+                b: vb.pointer(&path).cloned(),
+                path,
+            })
+        })
+        .collect();
+    Ok(DiffOut { a: format!("{}@{} ({})", sa.name, sa.version, sa.scope), b: format!("{}@{} ({})", sb.name, sb.version, sb.scope), same: changes.is_empty(), changes })
+}
+
+// ---------------------------------------------------------------------------------------------
+// template.export / template.import
+// ---------------------------------------------------------------------------------------------
+
+#[derive(Serialize, Deserialize, JsonSchema, Clone, Debug)]
+pub struct BundleAsset {
+    pub entry: AssetEntry,
+    /// Path of the file inside the zip.
+    pub zip_path: String,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema, Clone, Debug)]
+pub struct BundleFile {
+    /// The path the template refers to.
+    pub original: PathBuf,
+    pub zip_path: String,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema, Clone, Debug)]
+pub struct Bundle {
+    pub schema: String,
+    pub template: String,
+    #[serde(default)]
+    pub assets: Vec<BundleAsset>,
+    #[serde(default)]
+    pub files: Vec<BundleFile>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ExportIn {
+    /// `name[@version]`.
+    pub name: String,
+    /// The zip to write.
+    pub out: PathBuf,
+}
+
+#[derive(Serialize, JsonSchema)]
+pub struct ExportOut {
+    pub out: PathBuf,
+    pub template: String,
+    /// Asset ids bundled.
+    pub assets: Vec<String>,
+    /// Plain files bundled.
+    pub files: Vec<PathBuf>,
+    pub bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dry_run: Option<bool>,
+    pub next: Vec<String>,
+}
+
+fn file_name_of(p: &Path) -> String {
+    p.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_else(|| "file".into())
+}
+
+async fn export(ctx: Ctx, i: ExportIn) -> Result<ExportOut> {
+    const STAGE: &str = "template.export";
+    let (s, t) = resolve(&ctx, STAGE, &i.name)?;
+    check_refs(&ctx, STAGE, &t)?;
+    let project = ctx.project_dir.as_deref();
+    let rows = asset_cmds::load_rows(&ctx.home, project);
+    let mut bundle = Bundle { schema: BUNDLE_SCHEMA.into(), template: format!("{}@{}", t.name, t.version), assets: Vec::new(), files: Vec::new() };
+    let mut payload: Vec<(String, PathBuf)> = Vec::new();
+    for r in t.refs() {
+        match (&r.asset, &r.file) {
+            (Some(id), _) => {
+                if bundle.assets.iter().any(|a| &a.entry.id == id) {
+                    continue;
+                }
+                let Some(row) = rows.iter().find(|x| &x.entry.id == id) else { continue };
+                let Some(file) = row.file.clone().filter(|f| f.is_file()) else { continue };
+                let zip_path = format!("assets/{}/{}", row.entry.kind.dir(), file_name_of(&file));
+                payload.push((zip_path.clone(), file));
+                bundle.assets.push(BundleAsset { entry: row.entry.clone(), zip_path });
+            }
+            (None, Some(f)) => {
+                if bundle.files.iter().any(|x| &x.original == f) {
+                    continue;
+                }
+                let zip_path = format!("files/{}-{}", bundle.files.len() + 1, file_name_of(f));
+                payload.push((zip_path.clone(), f.clone()));
+                bundle.files.push(BundleFile { original: f.clone(), zip_path });
+            }
+            _ => {}
+        }
+    }
+    let spec = format!("{}@{}", s.name, s.version);
+    let out = std::path::absolute(&i.out).unwrap_or(i.out.clone());
+    let assets: Vec<String> = bundle.assets.iter().map(|a| a.entry.id.clone()).collect();
+    let files: Vec<PathBuf> = bundle.files.iter().map(|f| f.original.clone()).collect();
+    let next = vec![format!("rustler template import {}", out.display())];
+    if ctx.dry_run {
+        return Ok(ExportOut { out, template: spec, assets, files, bytes: 0, dry_run: Some(true), next });
+    }
+    let tjson = serde_json::to_vec_pretty(&t).map_err(|e| RustlerError::new(ErrorCode::Internal, STAGE, e.to_string()))?;
+    let bjson = serde_json::to_vec_pretty(&bundle).map_err(|e| RustlerError::new(ErrorCode::Internal, STAGE, e.to_string()))?;
+    let out2 = out.clone();
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        if let Some(parent) = out2.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| io_err(STAGE, "create", parent, e))?;
+        }
+        let tmp = out2.with_extension(format!("zip.tmp{}", std::process::id()));
+        let zerr = |e: &dyn std::fmt::Display| RustlerError::new(ErrorCode::Internal, STAGE, format!("zip: {e}"));
+        let f = std::fs::File::create(&tmp).map_err(|e| io_err(STAGE, "create", &tmp, e))?;
+        let mut z = zip::ZipWriter::new(std::io::BufWriter::new(f));
+        let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        z.start_file("template.json", opts).map_err(|e| zerr(&e))?;
+        z.write_all(&tjson).map_err(|e| zerr(&e))?;
+        z.start_file("bundle.json", opts).map_err(|e| zerr(&e))?;
+        z.write_all(&bjson).map_err(|e| zerr(&e))?;
+        for (name, path) in &payload {
+            z.start_file(name.as_str(), opts).map_err(|e| zerr(&e))?;
+            let mut r = std::fs::File::open(path).map_err(|e| io_err(STAGE, "read", path, e))?;
+            std::io::copy(&mut r, &mut z).map_err(|e| zerr(&e))?;
+        }
+        let mut w = z.finish().map_err(|e| zerr(&e))?;
+        w.flush().map_err(|e| zerr(&e))?;
+        drop(w);
+        std::fs::rename(&tmp, &out2).map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
+            io_err(STAGE, "write", &out2, e)
+        })
+    })
+    .await
+    .map_err(|e| RustlerError::new(ErrorCode::Internal, STAGE, format!("export task failed: {e}")))??;
+    let bytes = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
+    if let Ok(store) = ctx.store() {
+        log_event(&ctx, &store, STAGE, json!({"template": spec, "out": out, "assets": assets.len(), "files": files.len()}))?;
+    }
+    Ok(ExportOut { out, template: spec, assets, files, bytes, dry_run: None, next })
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ImportIn {
+    /// A zip written by template.export.
+    pub file: PathBuf,
+    /// project (default when a project is open) | global: where the template and its assets go.
+    #[serde(default)]
+    pub scope: Option<Scope>,
+}
+
+#[derive(Serialize, JsonSchema)]
+pub struct ImportOut {
+    pub name: String,
+    pub version: u32,
+    pub scope: String,
+    pub file: PathBuf,
+    /// Assets added to the library.
+    pub assets_added: Vec<String>,
+    /// Assets already in the library (kept).
+    pub assets_present: Vec<String>,
+    /// Plain files unpacked (the template now points at these).
+    pub files: Vec<PathBuf>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dry_run: Option<bool>,
+    pub next: Vec<String>,
+}
+
+fn read_entry(z: &mut zip::ZipArchive<std::fs::File>, name: &str, archive: &Path) -> Result<Vec<u8>> {
+    const STAGE: &str = "template.import";
+    let mut f = z.by_name(name).map_err(|e| verr(STAGE, format!("{} has no {name}: {e}", archive.display())).hint("pass a zip written by `rustler template export`"))?;
+    let mut buf = Vec::new();
+    f.read_to_end(&mut buf).map_err(|e| io_err(STAGE, "read", archive, e))?;
+    Ok(buf)
+}
+
+async fn import(ctx: Ctx, i: ImportIn) -> Result<ImportOut> {
+    const STAGE: &str = "template.import";
+    let archive = i.file.clone();
+    if !archive.is_file() {
+        return Err(nf(STAGE, format!("no such file: {}", archive.display())));
+    }
+    let f = std::fs::File::open(&archive).map_err(|e| io_err(STAGE, "open", &archive, e))?;
+    let mut z = zip::ZipArchive::new(f).map_err(|e| verr(STAGE, format!("{} is not a zip: {e}", archive.display())))?;
+    let mut t: Template = serde_json::from_slice(&read_entry(&mut z, "template.json", &archive)?)
+        .map_err(|e| verr(STAGE, format!("template.json is not a valid template: {e}")))?;
+    let bundle: Bundle = serde_json::from_slice(&read_entry(&mut z, "bundle.json", &archive)?).map_err(|e| verr(STAGE, format!("bundle.json is invalid: {e}")))?;
+    validate_template(&t).map_err(|e| with_stage(e, STAGE))?;
+    let scope = i.scope.unwrap_or_else(|| default_scope(&ctx));
+    let tdir = dir_of(&ctx, scope)?;
+    let aroot = match scope {
+        Scope::Global => assets_root(&ctx.home),
+        Scope::Project => project_assets_root(ctx.project_dir.as_deref().unwrap_or(Path::new("."))),
+    };
+    let project = ctx.project_dir.as_deref();
+    let rows = asset_cmds::load_rows(&ctx.home, project);
+    let dry = ctx.dry_run;
+    let mut warnings = Vec::new();
+    let (mut added, mut present) = (Vec::new(), Vec::new());
+
+    // Plain files are unpacked to templates/files/<name>@<version>/ and the template points there.
+    let fdir_of = |t: &Template| tdir.join("files").join(format!("{}@{}", t.name, t.version));
+    let remapped = |t: &Template| -> Template {
+        let fdir = fdir_of(t);
+        let remap: HashMap<&PathBuf, PathBuf> = bundle.files.iter().map(|f| (&f.original, fdir.join(f.zip_path.rsplit('/').next().unwrap_or("file")))).collect();
+        let mut t = t.clone();
+        let fix = |p: &mut Option<PathBuf>| {
+            if let Some(n) = p.as_ref().and_then(|x| remap.get(x)) {
+                *p = Some(n.clone());
+            }
+        };
+        for im in t.images.iter_mut().flatten() {
+            fix(&mut im.file);
+        }
+        if let Some(a) = t.audio.as_mut() {
+            if let Some(m) = a.music.as_mut() {
+                fix(&mut m.file);
+            }
+            for s in a.sfx.iter_mut().flatten() {
+                fix(&mut s.file);
+            }
+        }
+        t
+    };
+    // Version: keep it when free; identical content is "already imported"; else the next free one.
+    let existing: Vec<Stored> = all_stored(&ctx).into_iter().filter(|s| s.name == t.name).collect();
+    let mut identical = false;
+    if let Some(s) = existing.iter().find(|s| s.version == t.version) {
+        if load(STAGE, s).ok().as_ref() == Some(&remapped(&t)) {
+            identical = true;
+        } else {
+            let v = existing.iter().map(|s| s.version).max().unwrap_or(0) + 1;
+            warnings.push(format!("{}@{} already exists with other content; imported as version {v}", t.name, t.version));
+            t.version = v;
+        }
+    }
+
+    for a in &bundle.assets {
+        if rows.iter().any(|r| r.entry.id == a.entry.id && r.exists) {
+            let same = rows.iter().find(|r| r.entry.id == a.entry.id).is_some_and(|r| r.entry.sha256.is_empty() || a.entry.sha256.is_empty() || r.entry.sha256 == a.entry.sha256);
+            if !same {
+                warnings.push(format!("asset '{}' already exists with a different file; kept the existing one", a.entry.id));
+            }
+            present.push(a.entry.id.clone());
+            continue;
+        }
+        added.push(a.entry.id.clone());
+        if dry {
+            continue;
+        }
+        let dir = aroot.join(a.entry.kind.dir());
+        std::fs::create_dir_all(&dir).map_err(|e| io_err(STAGE, "create", &dir, e))?;
+        let fname = a.zip_path.rsplit('/').next().unwrap_or("file").to_string();
+        let mut dest = dir.join(&fname);
+        let mut n = 2;
+        while dest.exists() && a.entry.kind != AssetKind::CaptionStyle {
+            let p = Path::new(&fname);
+            let stem = p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            let ext = p.extension().map(|s| format!(".{}", s.to_string_lossy())).unwrap_or_default();
+            dest = dir.join(format!("{stem}-{n}{ext}"));
+            n += 1;
+        }
+        let bytes = read_entry(&mut z, &a.zip_path, &archive)?;
+        std::fs::write(&dest, &bytes).map_err(|e| io_err(STAGE, "write", &dest, e))?;
+        let mut entry = a.entry.clone();
+        entry.path = format!("{}/{}", a.entry.kind.dir(), file_name_of(&dest));
+        update_manifest(&aroot, |m| {
+            upsert(m, entry.clone());
+            Ok(())
+        })
+        .map_err(|e| RustlerError::new(ErrorCode::Internal, STAGE, e.to_string()))?;
+    }
+
+    let mut files = Vec::new();
+    let fdir = fdir_of(&t);
+    for f in &bundle.files {
+        let dest = fdir.join(f.zip_path.rsplit('/').next().unwrap_or("file"));
+        if !dry && !identical {
+            std::fs::create_dir_all(&fdir).map_err(|e| io_err(STAGE, "create", &fdir, e))?;
+            let bytes = read_entry(&mut z, &f.zip_path, &archive)?;
+            std::fs::write(&dest, &bytes).map_err(|e| io_err(STAGE, "write", &dest, e))?;
+        }
+        files.push(dest);
+    }
+    let t = remapped(&t);
+    let file = tdir.join(format!("{}@{}.json", t.name, t.version));
+    let spec = format!("{}@{}", t.name, t.version);
+    let next = vec![format!("rustler template show {spec}"), format!("rustler template apply {spec} --clip-ids <clip_id> --dry-run")];
+    if dry {
+        return Ok(ImportOut { name: t.name, version: t.version, scope: scope_label(scope).into(), file, assets_added: added, assets_present: present, files, warnings, dry_run: Some(true), next });
+    }
+    let file = if identical {
+        warnings.push(format!("{spec} is already installed with the same content"));
+        existing.iter().find(|s| s.version == t.version).and_then(|s| s.file.clone()).unwrap_or(file)
+    } else {
+        write_template(STAGE, &tdir, &t)?
+    };
+    if let Ok(store) = ctx.store() {
+        log_event(&ctx, &store, STAGE, json!({"template": spec, "assets_added": added, "files": files.len()}))?;
+    }
+    Ok(ImportOut { name: t.name, version: t.version, scope: scope_label(scope).into(), file, assets_added: added, assets_present: present, files, warnings, dry_run: None, next })
+}
+
+// ---------------------------------------------------------------------------------------------
+// Registration
+// ---------------------------------------------------------------------------------------------
+
+pub fn register(reg: &mut Registry) {
+    let write = Annotations { read_only: false, destructive: false, network: false, costs_money: false, long_running: false };
+    let read = Annotations { read_only: true, ..write };
+    reg.register(typed(
+        "template.create",
+        "Save a reusable look as a template (version 1): capture a clip's whole look (--from-clip: caption style/position/words per line, layout, hook title look, text looks, brand images, progress bar, loudness/denoise/music/sfx and effect patterns, transitions, canvas; text content only with --include-text) or write it as JSON (--template). Stored in templates/<name>@1.json (project) or <home>/templates/ (--scope global)",
+        &["name"],
+        write,
+        vec![
+            Example { description: "capture the look of a finished clip", cli: "rustler template create my-look --from-clip clp_x" },
+            Example { description: "write a template by hand (PowerShell-safe)", cli: "rustler template create my-look --input-json @template.json" },
+        ],
+        create,
+    ));
+    reg.register(typed(
+        "template.update",
+        "Save a new version of a template: re-capture --from-clip, a whole --template, or a merge --patch onto the latest version (old versions stay; name@N picks one). Updating a built-in starter saves your own version that shadows it",
+        &["name"],
+        write,
+        vec![Example { description: "move the captions up in a new version", cli: "rustler template update my-look --patch '{\"captions\":{\"position_y\":0.65}}'" }],
+        update,
+    ));
+    reg.register(typed(
+        "template.show",
+        "One template (name = latest, name@N = that version) with its versions, the assets/files it needs and any that are missing here",
+        &["name"],
+        read,
+        vec![Example { description: "see a built-in starter", cli: "rustler template show podcast-viral" }],
+        show,
+    ));
+    reg.register(typed(
+        "template.list",
+        "Every template: project, global (<home>/templates) and the built-in starters (podcast-viral, streamer-split), with versions and descriptions",
+        &[],
+        read,
+        vec![Example { description: "list templates", cli: "rustler template list" }],
+        list,
+    ));
+    reg.register(typed(
+        "template.delete",
+        "Delete a template (every version in its scope) or one version (name@N); built-in starters cannot be deleted",
+        &["name"],
+        Annotations { destructive: true, ..write },
+        vec![Example { description: "delete version 2", cli: "rustler template delete my-look@2" }],
+        delete,
+    ));
+    reg.register(typed(
+        "template.apply",
+        "Style clips with a template: builds JSON-Patch ops for each clip's timeline and applies them through timeline.apply (validated; one revision per clip; history undo reverts it). Items the template adds are tagged by_template and replaced on re-apply; absent sections leave the clip alone. A referenced asset/font/file that is missing fails with not_found naming it. --overrides is a merge patch for this run; --dry-run shows the patch",
+        &["name"],
+        write,
+        vec![
+            Example { description: "preview the changes", cli: "rustler template apply podcast-viral --clip-ids clp_x --dry-run" },
+            Example { description: "style every clip", cli: "rustler template apply my-look@2 --all" },
+        ],
+        apply,
+    ));
+    reg.register(typed(
+        "template.diff",
+        "What differs between two templates or versions (JSON paths with both values)",
+        &["a", "b"],
+        read,
+        vec![Example { description: "compare two versions", cli: "rustler template diff my-look@1 my-look@2" }],
+        diff,
+    ));
+    reg.register(typed(
+        "template.export",
+        "Write a template plus every asset (fonts, caption style, images, music, sfx) and file it references into one zip, for another machine or project",
+        &["name"],
+        write,
+        vec![Example { description: "bundle a template", cli: "rustler template export my-look --out my-look.zip" }],
+        export,
+    ));
+    reg.register(typed(
+        "template.import",
+        "Install a template zip from template.export: its assets go into the library (existing ids are kept), its plain files are unpacked next to the template, and the template is saved (a taken version becomes the next free one)",
+        &["file"],
+        write,
+        vec![Example { description: "install a bundle into this project", cli: "rustler template import my-look.zip" }],
+        import,
+    ));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn starters_parse_and_validate() {
+        let ts = builtin_templates();
+        assert_eq!(ts.len(), 2);
+        for t in &ts {
+            validate_template(t).unwrap();
+            assert!(t.refs().is_empty(), "starters must not need assets: {:?}", t.refs());
+        }
+    }
+
+    #[test]
+    fn instances_cover_patterns() {
+        assert_eq!(instances(PlaceAt::Every, Some(5.0), None, &[], 16.0), vec![5.0, 10.0, 15.0]);
+        assert_eq!(instances(PlaceAt::Every, Some(5.0), None, &[], 15.2), vec![5.0, 10.0]);
+        assert_eq!(instances(PlaceAt::Cuts, None, None, &[1.4, 3.4], 5.0), vec![1.4, 3.4]);
+        assert!(instances(PlaceAt::Time, None, Some(9.0), &[], 5.0).is_empty());
+        assert_eq!(parse_file_name(Path::new("a-b@12.json")), Some(("a-b".into(), 12)));
+        assert_eq!(parse_file_name(Path::new("a-b.json")), None);
+    }
+
+    #[test]
+    fn amount_ranges_match_media() {
+        for k in [EffectKind::PunchIn, EffectKind::ZoomSlow, EffectKind::Shake, EffectKind::Flash] {
+            let m: rustler_media::compile::EffectKind = serde_json::from_value(serde_json::to_value(k).unwrap()).unwrap();
+            assert_eq!(k.amount_range(), m.amount_range());
+        }
+    }
+}

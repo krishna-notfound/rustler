@@ -411,6 +411,8 @@ pub struct ClipCreateIn {
     pub captions: Option<bool>,
     /// Caption style preset name (see caption.list_styles).
     pub caption_style: Option<String>,
+    /// Template (`name` or `name@version`) applied right after creation (default: config `template.default`).
+    pub template: Option<String>,
 }
 
 async fn clip_create(ctx: Ctx, i: ClipCreateIn) -> Result<ClipView> {
@@ -467,7 +469,25 @@ async fn clip_create(ctx: Ctx, i: ClipCreateIn) -> Result<ClipView> {
         created_at: Utc::now(),
     };
     let next = default_next(&clip);
+    // Template: an explicit one must resolve (and its assets exist) before anything is written;
+    // a configured default that does not resolve is only a warning.
+    let template = match i.template.as_deref() {
+        Some(spec) => Some(crate::template_cmds::prepare(&ctx, "clip.create", spec, None)?),
+        None => match crate::config_cmds::setting::<String>(&ctx, "template.default").filter(|s| !s.trim().is_empty()) {
+            Some(spec) => match crate::template_cmds::prepare(&ctx, "clip.create", &spec, None) {
+                Ok(t) => Some(t),
+                Err(e) => {
+                    warnings.push(format!("default template '{spec}' (config template.default) not applied: {}", e.message));
+                    None
+                }
+            },
+            None => None,
+        },
+    };
     if ctx.dry_run {
+        if let Some(t) = &template {
+            warnings.push(format!("template {}@{} would be applied after creation", t.name, t.version));
+        }
         return Ok(view(clip, true, next, warnings));
     }
     store.save_clip(&mut clip, 0)?;
@@ -480,6 +500,15 @@ async fn clip_create(ctx: Ctx, i: ClipCreateIn) -> Result<ClipView> {
         "clip.create",
         serde_json::json!({"clip_id": clip.id, "source_id": source.id, "start": range.start, "end": range.end}),
     )?;
+    if let Some(tpl) = template {
+        match crate::template_cmds::apply_to(&ctx, &tpl, std::slice::from_ref(&clip.id), false).await {
+            Ok(r) => {
+                warnings.extend(r.into_iter().flat_map(|c| c.warnings));
+                clip = store.load_clip(&clip.id)?;
+            }
+            Err(e) => warnings.push(format!("clip created, but template {} was not applied: {}", tpl.name, e.message)),
+        }
+    }
     Ok(view(clip, false, next, warnings))
 }
 
