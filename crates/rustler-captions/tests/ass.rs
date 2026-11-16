@@ -110,7 +110,8 @@ fn caption_position_follows_canvas_and_position_y() {
 fn presets_table_matches_const_and_list() {
     assert_eq!(PRESET_TABLE.iter().map(|p| p.name).collect::<Vec<_>>(), PRESETS.to_vec());
     let l = list_presets();
-    assert_eq!(l.len(), 4);
+    assert_eq!(l.len(), 6);
+    assert!(PRESETS.contains(&"emoji-karaoke") && PRESETS.contains(&"keyword-highlight"));
     assert!(l.iter().all(|p| !p.description.is_empty() && !p.font_family.is_empty()));
     for name in PRESETS {
         write_ass(&six(), &track(name), &Canvas::default(), "").unwrap();
