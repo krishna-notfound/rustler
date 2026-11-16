@@ -747,3 +747,9 @@ directed 77–94; 10 bugs). Four parallel fix branches (Opus x3, Sonnet x1, buil
 - Trial 3: `clips auto` on Raj Shamani x Sam Altman (68 min) -> 3 clips, QC pass, retention 86 / 58 / 57, 119 s total.
   Report and ranked improvements: `docs/research/trial-3-2026-11-17.md` (top: skip the source's intro trailer when
   ranking; burned-in source text/subtitles; hook and cold-open suggestions). Not released yet (latest release v0.2.1).
+- **v0.2.2 released** (2026-11-17): Windows zip + Linux tarball (WSL, 4 jobs), SHA256SUMS, marked latest; `install.sh`
+  verified in WSL with a fresh HOME (`--no-setup`): v0.2.2 (35257d3), 185 commands. MUSE prompt updated (no automatic
+  zooms; optional `grade measure/set/preview`). Trial 3 follow-up: all three contact sheets reviewed and QC audio
+  measured (-14.0 LUFS, peaks -2.0 to -3.4 dBTP); new visible bug logged as improvement 0 (adjacent keyword-highlighted
+  caption words lose their spaces). Not run before release: a full `cargo test --workspace` after the clips.auto and
+  framing merges (each branch passed its own suites; commands/media/knowledge/tools were green after the grade merge).
