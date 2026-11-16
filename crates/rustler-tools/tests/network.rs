@@ -40,6 +40,8 @@ fn classify_tls_error_hint() {
     assert_eq!(issue.kind, "js_runtime");
     assert!(issue.hint.contains("rustler setup run") && !issue.hint.contains("insecure"));
     assert!(ytdlp_install::classify_probe_failure("ERROR: Video unavailable").is_none());
+    // a healthy `-v` header mentions "JS runtimes" without being a problem
+    assert!(ytdlp_install::classify_probe_failure(VERBOSE_DENO).is_none());
 }
 
 #[test]

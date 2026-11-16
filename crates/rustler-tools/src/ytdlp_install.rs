@@ -161,7 +161,16 @@ pub fn classify_probe_failure(stderr: &str) -> Option<ProbeIssue> {
             hint: "this network re-signs TLS with its own CA; run `rustler setup run --insecure-tls` (yt-dlp then skips certificate checks)",
         });
     }
-    let s = stderr.to_ascii_lowercase();
+    // Only WARNING/ERROR lines: the `-v` header itself says "JS runtimes: deno-x" on a healthy install.
+    let s = stderr
+        .lines()
+        .filter(|l| {
+            let l = l.trim_start();
+            l.starts_with("WARNING") || l.starts_with("ERROR")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        .to_ascii_lowercase();
     ["javascript runtime", "js runtime", "challenge solving failed", "n challenge"]
         .iter()
         .any(|p| s.contains(p))
