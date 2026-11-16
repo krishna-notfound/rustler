@@ -318,6 +318,8 @@ fn finish(
     }
     // Face-tracked crop paths are keyed by segment id; move them onto the re-cut segments.
     extras.warnings.extend(crate::extras::carry_crop_paths(store, old, &new)?);
+    // Per-segment colour grades follow their picture onto re-cut segments too.
+    crate::grade_cmds::carry_segment_grades(store, old, &new)?;
     store.append_event(&Event {
         ts: Utc::now(),
         actor: ctx.actor,

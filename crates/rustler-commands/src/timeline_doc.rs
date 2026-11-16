@@ -383,6 +383,8 @@ fn check_owner_types(m: &Map<String, Value>) -> Result<()> {
     chk::<Vec<Effect>>(m, EFFECTS_KEY)?;
     chk::<Vec<Transition>>(m, TRANSITIONS_KEY)?;
     chk::<ProgressBar>(m, PROGRESS_BAR_KEY)?;
+    // `grade` stays in tracks.extra (grade.* commands own it); check its shape all the same.
+    chk::<rustler_media::grade::GradeDoc>(m, crate::grade_cmds::GRADE_KEY)?;
     Ok(())
 }
 

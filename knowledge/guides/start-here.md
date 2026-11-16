@@ -275,5 +275,6 @@ section was trimmed, or a model fell back to CPU. Details: `cli-reference-conven
 - A fast first pass over a whole source in one call, then correcting it → `clips-auto`
 - A job brief, several clips, variants, batch export → `briefs-and-batches`
 - Music, sound effects, fonts, custom caption styles → `assets`, then `audio`
+- Colour grading (only when the footage needs it; never by default), matching shots, LUTs → `color-grading`
 - Hindi/English mix → `hinglish`
 - Something broke → `troubleshooting`

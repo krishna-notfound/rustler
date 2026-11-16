@@ -148,6 +148,9 @@ pub struct Template {
     pub export: Option<TplExport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub post_defaults: Option<TplPost>,
+    /// Clip-wide colour grade (`grade.set` fields). Only what the agent saved; starters have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grade: Option<rustler_media::grade::Grade>,
 }
 
 #[derive(Serialize, Deserialize, JsonSchema, Clone, PartialEq, Debug, Default)]
@@ -619,7 +622,7 @@ pub const POST_DEFAULTS_KEY: &str = "post_defaults";
 /// One file the template needs: a library asset or a plain file.
 #[derive(Serialize, JsonSchema, Clone, Debug, PartialEq)]
 pub struct TplRef {
-    /// font | caption_style | image | music | sfx.
+    /// font | caption_style | image | music | sfx | lut.
     pub kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub asset: Option<String>,
@@ -668,6 +671,13 @@ impl Template {
             for (k, s) in a.sfx.iter().flatten().enumerate() {
                 v.push(r("sfx", &s.asset, &s.file, format!("/audio/sfx/{k}")));
             }
+        }
+        if let Some(l) = self.grade.as_ref().and_then(|g| g.lut_ref()) {
+            let (asset, file) = match l.strip_prefix("asset:") {
+                Some(id) => (Some(id.to_string()), None),
+                None => (None, Some(PathBuf::from(l))),
+            };
+            v.push(r("lut", &asset, &file, "/grade/lut".into()));
         }
         v
     }
@@ -849,6 +859,9 @@ pub fn validate_template(t: &Template) -> Result<()> {
                 e.push(format!("{p}/at: the outro card ends with the clip; give duration instead"));
             }
         }
+    }
+    if let Some(Err(m)) = t.grade.as_ref().map(|g| g.validate()) {
+        e.push(format!("/grade: {m}"));
     }
     if let Some(x) = &t.export {
         if x.fps.is_some_and(|f| !(f.is_finite() && f > 0.0 && f <= 120.0)) {
@@ -1641,6 +1654,13 @@ pub fn capture(ctx: &Ctx, store: &ProjectStore, doc: &Timeline, name: &str, incl
         brand: (brand != TplBrand::default()).then_some(brand),
         export,
         post_defaults,
+        grade: {
+            let g: Option<rustler_media::grade::GradeDoc> = tr.extra.get(crate::grade_cmds::GRADE_KEY).cloned().and_then(|v| serde_json::from_value(v).ok());
+            if g.as_ref().is_some_and(|g| !g.segments.is_empty()) {
+                notes.push("grade: only the clip-wide grade is captured, not per-segment overrides".into());
+            }
+            g.and_then(|g| g.clip)
+        },
     };
     Ok((t, notes))
 }
@@ -2679,7 +2699,14 @@ pub fn build(ctx: &Ctx, store: &ProjectStore, tpl: &Template, paths: &HashMap<St
             }
         }
     }
-    t.template_ref = Some(TemplateRef { id: tpl.name.clone(), version: Some(tpl.version), extra: Map::new() });
+    if let Some(g) = &tpl.grade {
+        // The clip grade only; per-segment overrides the clip already has stay.
+        let key = crate::grade_cmds::GRADE_KEY;
+        let mut doc: rustler_media::grade::GradeDoc = t.tracks.extra.get(key).cloned().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+        doc.clip = Some(g.clone());
+        t.tracks.extra.insert(key.into(), serde_json::to_value(doc).map_err(|e| RustlerError::new(ErrorCode::Internal, STAGE, e.to_string()))?);
+    }
+    t.template_ref =Some(TemplateRef { id: tpl.name.clone(), version: Some(tpl.version), extra: Map::new() });
     Ok((t, w))
 }
 
@@ -3430,6 +3457,11 @@ async fn import(ctx: Ctx, i: ImportIn) -> Result<ImportOut> {
             for s in a.sfx.iter_mut().flatten() {
                 fix(&mut s.file);
             }
+        }
+        if let Some(g) = t.grade.as_mut().filter(|g| g.lut_ref().is_some_and(|l| !l.starts_with("asset:"))) {
+            let mut p = g.lut.clone().map(PathBuf::from);
+            fix(&mut p);
+            g.lut = p.map(|p| p.to_string_lossy().into_owned());
         }
         t
     };
