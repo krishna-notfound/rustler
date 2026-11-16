@@ -62,6 +62,10 @@ pub struct SetupOptions {
     /// of the default setup (not even `--profile full`): the agent adds any music it wants with `asset add`.
     /// Enable with `--music-pack`.
     pub music_pack: bool,
+    /// For networks that re-sign TLS with a private CA (a proxy, a cloud VM) and make every yt-dlp call fail with
+    /// `CERTIFICATE_VERIFY_FAILED`: write `<home>/yt-dlp.conf` with `--no-check-certificates`, which Rustler then passes to
+    /// every yt-dlp call. Delete that file to verify certificates again. Off by default; enable with `--insecure-tls`.
+    pub insecure_tls: bool,
 }
 
 impl Default for SetupOptions {
@@ -75,6 +79,7 @@ impl Default for SetupOptions {
             models: true,
             with: Vec::new(),
             music_pack: false,
+            insecure_tls: false,
         }
     }
 }
@@ -302,6 +307,55 @@ where
     install().await.map(|c| (c, true)).map_err(|e| fail(name, e))
 }
 
+/// What the `js-runtime` step did.
+enum JsStep {
+    Installed(Component),
+    Skipped(Component),
+    /// Nothing to do or nothing possible; the text goes to the report notes when present.
+    Nothing(Option<String>),
+}
+
+/// Step `js-runtime`: yt-dlp needs a JavaScript runtime (Deno) to solve YouTube's player
+/// challenge. Downloads Deno into `<home>/bin` when `yt-dlp -v` reports `JS runtimes: none`
+/// (with `<home>/bin` on `PATH`, as every Rustler yt-dlp call has it). A failure here is a
+/// note, not a failed step: local files and non-YouTube sites do not need it.
+async fn js_runtime_step(
+    paths: &ToolPaths,
+    platform: Platform,
+    manifest: &Manifest,
+    force: bool,
+    progress: &ProgressSink,
+) -> JsStep {
+    use crate::deno_install;
+    let deno = deno_install::deno_path(paths);
+    if !force && deno.is_file() {
+        if let Some(c) = manifest.components.get("deno") {
+            return JsStep::Skipped(c.clone());
+        }
+        if let Some(version) = tool_version(VersionKind::Deno, &deno).await {
+            return JsStep::Skipped(Component { name: "deno".into(), version, path: deno, sha256: None });
+        }
+    }
+    if !paths.ytdlp.is_file() {
+        return JsStep::Nothing(Some("js-runtime skipped: yt-dlp is not installed".into()));
+    }
+    if !force {
+        let header = crate::ytdlp_install::verbose_header(&paths.ytdlp, &paths.home, &paths.bin).await;
+        match header.as_deref().and_then(crate::ytdlp_install::js_runtime_detected) {
+            Some(false) => {}
+            // A runtime is already available (system Deno/Node), or this yt-dlp does not say: nothing to add.
+            _ => return JsStep::Nothing(None),
+        }
+    }
+    match deno_install::install(paths, platform, progress).await {
+        Ok(c) => JsStep::Installed(c),
+        Err(e) => JsStep::Nothing(Some(format!(
+            "js-runtime: could not install Deno ({}); YouTube downloads may miss formats until `rustler setup run` succeeds",
+            e.message
+        ))),
+    }
+}
+
 /// Idempotent install of ffmpeg/ffprobe, yt-dlp, uv, the Python engine (extracted +
 /// `uv sync`) and fonts (steps 1-4 and 6 of the plan).
 ///
@@ -377,6 +431,25 @@ pub async fn setup(
         },
     );
 
+    // yt-dlp must be in place before it can be asked whether it has a JS runtime.
+    let mut js_notes: Vec<String> = Vec::new();
+    let mut js_component: Option<(Component, bool)> = None;
+    emit("checking yt-dlp's JavaScript runtime");
+    match js_runtime_step(paths, platform, &manifest, force, progress).await {
+        JsStep::Installed(c) => js_component = Some((c, true)),
+        JsStep::Skipped(c) => js_component = Some((c, false)),
+        JsStep::Nothing(note) => js_notes.extend(note),
+    }
+    if opts.insecure_tls {
+        match crate::ytdlp_install::write_insecure_tls_conf(&paths.home) {
+            Ok(p) => js_notes.push(format!(
+                "insecure TLS: wrote {} (yt-dlp skips certificate checks); delete the file to verify again",
+                p.display()
+            )),
+            Err(e) => js_notes.push(format!("could not write yt-dlp.conf: {}", e.message)),
+        }
+    }
+
     // The engine needs uv (and nvidia detection for the cuda extra), so it runs afterwards.
     emit(&format!(
         "installing the Python engine (base{})",
@@ -403,7 +476,9 @@ pub async fn setup(
         ..Default::default()
     };
     let engine_ok = engine.is_ok();
-    for r in [ff, yt, uv, engine, fonts] {
+    report.notes.extend(js_notes);
+    let js = js_component.map(Ok);
+    for r in [Some(ff), Some(yt), js, Some(uv), Some(engine), Some(fonts)].into_iter().flatten() {
         match r {
             Ok((c, true)) => {
                 manifest.components.insert(c.name.clone(), c.clone());
