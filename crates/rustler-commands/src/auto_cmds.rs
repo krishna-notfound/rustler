@@ -11,7 +11,9 @@
 //! 3. create — URL: `source.import --sections` per pick (padded), `analyze.quick`; then
 //!    `clip.create` (smart defaults + template), `clip.meta_set` (campaign), `clip.retention`
 //!    (edit timeline) and only the cheap retention fixes that exist as commands
-//!    (trim head/tail silence, remove pauses, punch-ins). Trims never cut into the first/last word
+//!    (trim head/tail silence, remove pauses). Zooms are never added: retention punch-ins stay in
+//!    `fixes_suggested`; the template's own punch-ins are re-checked against the new cuts after the
+//!    silence fixes (re-planned with the template's pattern when one is < 0.5 s from a cut). Trims never cut into the first/last word
 //!    and, like pause cuts, are skipped on approximate (captions-based) word timings; a fix that
 //!    changes nothing is reported `no_change`; a silence fix after which the hook or ending scores
 //!    worse is restored (`rolled_back`). Text pops and cutaways are creative: they are listed in
@@ -48,9 +50,16 @@ const MAX_COUNT: usize = 20;
 const HOOK_WEIGHT: f64 = 20.0;
 /// Seconds of padding around each section downloaded for a URL.
 const DEFAULT_PAD: f64 = 3.0;
-/// Retention fix actions applied automatically (deterministic, non-creative).
+/// URL sections are downloaded at this height unless `download_quality` says otherwise (the
+/// 1080x1920 short is cut from a crop of the 16:9 frame; 720p is plenty and much smaller).
+pub const DEFAULT_DOWNLOAD_QUALITY: &str = "720";
+/// URL sections downloaded at the same time (yt-dlp is network-bound).
+pub const PARALLEL_DOWNLOADS: usize = 2;
+/// Retention fix actions applied automatically (deterministic, non-creative, framing unchanged).
+/// Zooms (`punch_in`) are never applied: the agent decides; they stay in `fixes_suggested`.
 const SILENCE_FIXES: &[&str] = &["trim_head", "trim_tail", "remove_pauses"];
-const VISUAL_FIXES: &[&str] = &["punch_in"];
+/// Action name of the template punch-in check after the silence fixes.
+pub const TEMPLATE_PUNCH_CHECK: &str = "template_punch_ins";
 
 pub const RANK_FORMULA: &str = "rank_score = highlights.candidates score (0-100) + 20 x hook_2s (0..1). \
 hook_2s over the first 2 s of the window: +0.15 speech starts within 0.3 s, +0.30 emphasis word, +0.25 question, \
@@ -91,7 +100,7 @@ pub struct AutoIn {
     pub template: Option<String>,
     /// Render quality: draft | final (default final).
     pub quality: Option<RenderQuality>,
-    /// URL only: download height 480 | 720 | 1080 | best (default: `source.import` default).
+    /// URL only: download height 480 | 720 | 1080 | best (default 720). Sections download 2 at a time.
     pub download_quality: Option<String>,
     /// Attach every clip to this campaign (`clip.meta_set --campaign-id`); its duration and platform are
     /// used when min_len/max_len/platform are not given.
@@ -106,7 +115,7 @@ pub struct AutoIn {
     pub ranges: Option<Vec<RangeIn>>,
     /// Skip the smart defaults at clip.create (default false).
     pub raw: Option<bool>,
-    /// Apply the cheap retention fixes (trim silence, remove pauses, punch-ins) (default true).
+    /// Apply the cheap retention fixes (trim silence, remove pauses; never zooms) (default true).
     pub fixes: Option<bool>,
     /// Pick a cover frame with `clip.cover --auto` before export, best effort (default true).
     pub cover: Option<bool>,
@@ -251,7 +260,7 @@ pub struct AutoClip {
     /// Every cheap fix tried, with its `status` (applied, no_change, skipped, rolled_back, failed).
     pub fixes_applied: Vec<AppliedFix>,
     /// What the latest retention measurement (the render when there is one) still suggests: text
-    /// pops and cutaways (never applied: they need your judgement), more punch-ins, and trims that
+    /// pops, cutaways and punch-ins (never applied: they need your judgement), and trims that
     /// were skipped or rolled back (their `why` says so). Always present; empty means no dead zones.
     pub fixes_suggested: Vec<SuggestedFix>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -283,6 +292,13 @@ pub struct SourceSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     pub duration: f64,
+    /// Where the ranking transcript came from: `captions` (URL captions, no download), `whisper`
+    /// (URL without captions: the audio only was downloaded and transcribed with whisper base),
+    /// `source` (the source's transcript, `analyze quick` when it had none) or `none` (dry run
+    /// of a URL without captions).
+    pub transcript_via: String,
+    /// Seconds spent getting the ranking transcript (fetch, or download + whisper).
+    pub transcript_s: f64,
 }
 
 #[derive(Serialize, JsonSchema, Debug)]
@@ -299,6 +315,9 @@ pub struct Settings {
     pub fixes: bool,
     pub cover: bool,
     pub raw: bool,
+    /// URL only: the height the sections are downloaded at.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub download_quality: Option<String>,
 }
 
 #[derive(Serialize, JsonSchema, Debug)]
@@ -671,6 +690,9 @@ fn dead_zones(v: &Value) -> usize {
 fn suggestions_left(v: &Value, applied: &[AppliedFix]) -> Vec<SuggestedFix> {
     let mut out = retention_fixes(v);
     for f in &mut out {
+        if f.action == "punch_in" {
+            f.why = format!("{} (clips auto never adds zooms: run the command yourself if you want them)", f.why);
+        }
         if let Some(a) = applied.iter().find(|a| a.action == f.action && matches!(a.status.as_str(), "skipped" | "rolled_back")) {
             f.why = format!("{} (clips auto {} it: {})", f.why, a.status.replace('_', " "), a.note.clone().unwrap_or_default());
         }
@@ -766,6 +788,36 @@ pub fn got_worse(before: &Value, after: &Value) -> Option<String> {
         }
     }
     (!why.is_empty()).then(|| why.join(", "))
+}
+
+/// True when `source.fetch_transcript` failed because the video has no captions (or none in the
+/// asked language): the cue for the whisper fallback. Network / tool errors are not this.
+pub fn no_captions(e: &RustlerError) -> bool {
+    let m = e.message.to_ascii_lowercase();
+    (e.code == ErrorCode::Validation && m.contains("no captions")) || (e.code == ErrorCode::Provider && m.contains("wrote no json3 captions"))
+}
+
+/// The whisper fallback for a URL without captions: `source.import <input> --audio-only true`
+/// (the whole audio, no video) and `analyze.quick --transcribe always --model base` on it. Returns
+/// the audio source to rank on and warnings. `input` is the URL in clips auto (a local file in
+/// tests: `source.import` imports it as it is).
+pub async fn transcribe_for_ranking(reg: &Registry, ctx: &Ctx, input: &str, name: &str) -> Result<(String, Vec<String>)> {
+    let q = quiet(ctx);
+    let mut warnings = Vec::new();
+    let out = reg.dispatch("source.import", json!({"input": input, "audio_only": true, "name": name}), q.clone()).await?;
+    let Some(sid) = out.pointer("/sources/0/id").and_then(Value::as_str).map(String::from) else {
+        return Err(RustlerError::new(ErrorCode::Internal, STAGE, "source.import returned no source"));
+    };
+    let a = reg.dispatch("analyze.quick", json!({"source_id": sid, "transcribe": "always", "model": "base"}), q).await?;
+    if a.get("transcript_source").and_then(Value::as_str) != Some("whisper") || a.get("words").and_then(Value::as_u64).unwrap_or(0) == 0 {
+        let why: Vec<String> = a.get("warnings").and_then(Value::as_array).into_iter().flatten().filter_map(|w| w.as_str().map(String::from)).collect();
+        return Err(RustlerError::new(ErrorCode::DependencyMissing, STAGE, format!("whisper gave no transcript for {sid}: {}", why.join("; ")))
+            .hint("`rustler doctor` (engine ready?), then `rustler analyze transcribe <src>`"));
+    }
+    if a.get("complete").and_then(Value::as_bool) == Some(false) {
+        warnings.push(format!("the whisper transcript of {sid} is incomplete; ranking used what is there (`rustler analyze quick {sid}` continues it)"));
+    }
+    Ok((sid, warnings))
 }
 
 /// Words of `source` and whether their timing is approximate (`None`: no transcript).
@@ -923,52 +975,119 @@ async fn apply_silence_fixes(x: &Ctx2<'_>, store: &ProjectStore, cid: &ClipId, f
     (out, current)
 }
 
-/// Applies the fixes whose action is in `actions` (each distinct command once). Returns what ran.
-async fn apply_fixes(reg: &Registry, ctx: &Ctx, fixes: &[SuggestedFix], actions: &[&str]) -> Vec<AppliedFix> {
-    let mut seen: Vec<String> = Vec::new();
+/// Template punch-ins (`(id, start, end)`, edit-timeline seconds) that break the punch-in
+/// planner's rules on the timeline described by `input`: closer than `gap` to a cut (or across
+/// one), or inside a blocked span (graphic / blur-fit / cutaway segment, transition overlap).
+/// Returns `(id, reason)` per broken punch-in. Pure.
+pub fn punch_violations(punches: &[(String, f64, f64)], input: &rustler_media::punchin::PunchInput, gap: f64) -> Vec<(String, String)> {
     let mut out = Vec::new();
-    for fx in fixes.iter().filter(|f| actions.contains(&f.action.as_str())) {
-        let Some(cmd) = &fx.command else { continue };
-        for part in cmd.split("&&").map(str::trim).filter(|p| !p.is_empty()) {
-            if seen.iter().any(|x| x == part) {
-                continue;
-            }
-            seen.push(part.to_string());
-            let Some((name, input)) = parse_cli(reg, part) else {
-                let mut a = AppliedFix::new(&fx.action, part, "failed");
-                a.error = Some("no such command in this build".into());
-                out.push(a);
-                continue;
+    for (id, s, e) in punches {
+        if let Some(c) = input.cuts.iter().copied().find(|&c| c > s - gap && c < e + gap) {
+            let why = if c > *s && c < *e {
+                format!("{id} ({s:.2}-{e:.2} s) runs across the cut at {c:.2} s")
+            } else {
+                format!("{id} ({s:.2}-{e:.2} s) is {:.2} s from the cut at {c:.2} s (needs {gap:.1} s)", (c - s).abs().min((c - e).abs()))
             };
-            let clip = s(&input, "clip_id");
-            let r = reg.dispatch(&name, input, quiet(ctx)).await;
-            let a = match (&r, name.as_str()) {
-                // Effects live outside the clip revisions: undo by id.
-                (Ok(v), "effect.add") => {
-                    let ids: Vec<String> = v.get("effect_ids").and_then(Value::as_array).into_iter().flatten().filter_map(|x| x.as_str().map(|id| format!("rustler effect remove {clip} {id}"))).collect();
-                    if ids.is_empty() {
-                        AppliedFix::new(&fx.action, part, "no_change").note("no effect was added")
-                    } else {
-                        let mut a = AppliedFix::new(&fx.action, part, "applied");
-                        a.undo = Some(ids.join(" && "));
-                        a
-                    }
-                }
-                (Ok(_), _) => {
-                    let mut a = AppliedFix::new(&fx.action, part, "applied");
-                    a.undo = Some(format!("rustler history undo {clip}   # undoes the latest revision; undo later edits first"));
-                    a
-                }
-                (Err(e), _) => {
-                    let mut a = AppliedFix::new(&fx.action, part, "failed");
-                    a.error = Some(e.message.clone());
-                    a
-                }
-            };
-            out.push(a);
+            out.push((id.clone(), why));
+            continue;
+        }
+        if let Some((a, b)) = input.blocked.iter().copied().find(|&(a, b)| a < *e && b > *s) {
+            out.push((id.clone(), format!("{id} ({s:.2}-{e:.2} s) overlaps a span where no punch-in may be ({a:.2}-{b:.2} s: graphic, blur-fit, cutaway or transition)")));
         }
     }
     out
+}
+
+/// [`recheck_template_punch_ins`] for one clip of the open project (the step clips auto runs
+/// after the silence fixes; public for tests).
+pub async fn recheck_template_punch_ins_for(ctx: &Ctx, clip_id: &ClipId) -> Result<Option<AppliedFix>> {
+    let store = ctx.store()?;
+    let reg = inner();
+    let x = Ctx2 { reg: &reg, ctx };
+    Ok(recheck_template_punch_ins(&x, &store, clip_id).await)
+}
+
+/// After the silence fixes re-cut the clip, the template's own punch-ins (tagged `by_template`,
+/// placed by the template's planner pattern before the cuts existed) are checked against the
+/// planner's rules on the new timeline. When one breaks them, all template punch-ins are planned
+/// again with the template's pattern (what applying the template to the cut clip would give) and
+/// saved through `timeline.apply` (one revision; undo with `history restore`). Nothing is added
+/// when the clip has no template punch-in pattern: clips auto never adds zooms itself.
+async fn recheck_template_punch_ins(x: &Ctx2<'_>, store: &ProjectStore, cid: &ClipId) -> Option<AppliedFix> {
+    use rustler_core::timeline::{EffectItem, EffectKind};
+    use crate::template_cmds::{BY_TEMPLATE, PlaceAt};
+    let (old, _) = crate::timeline_doc::assemble(store, cid).ok()?;
+    let is_tpl_punch = |e: &EffectItem| e.kind == EffectKind::PunchIn && e.extra.contains_key(BY_TEMPLATE);
+    let punches: Vec<(String, f64, f64)> = old.tracks.effects.iter().filter(|e| is_tpl_punch(e)).map(|e| (e.id.clone(), e.start, e.end)).collect();
+    if punches.is_empty() {
+        return None;
+    }
+    let tref = old.template_ref.as_ref()?;
+    let spec = match tref.version {
+        Some(v) => format!("{}@{v}", tref.id),
+        None => tref.id.clone(),
+    };
+    let cmd = format!("check the {} template punch-in(s) of {spec} against the cuts", punches.len());
+    let tpl = match crate::template_cmds::prepare(x.ctx, STAGE, &spec, None) {
+        Ok(t) => t,
+        Err(e) => {
+            return Some(AppliedFix::new(TEMPLATE_PUNCH_CHECK, &cmd, "skipped").note(format!("template {spec} could not be loaded ({}); its punch-ins were not re-checked", e.message)));
+        }
+    };
+    let patterns: Vec<_> = tpl.effects.iter().flatten().filter(|e| e.kind == EffectKind::PunchIn && matches!(e.at, PlaceAt::Emphasis | PlaceAt::Every)).collect();
+    // The timeline without the template's punch-ins: cuts, blocked spans, other changes.
+    let mut new = old.clone();
+    let removed: Vec<EffectItem> = new.tracks.effects.iter().filter(|e| is_tpl_punch(e)).cloned().collect();
+    new.tracks.effects.retain(|e| !is_tpl_punch(e));
+    let (input, _) = crate::timeline_doc::punch_input(store, &new);
+    let gap = patterns.first().map(|p| crate::template_cmds::punch_config(p).min_cut_gap_s).unwrap_or(rustler_media::punchin::PunchConfig::default().min_cut_gap_s);
+    let bad = punch_violations(&punches, &input, gap);
+    if bad.is_empty() {
+        return Some(AppliedFix::new(TEMPLATE_PUNCH_CHECK, &cmd, "no_change").note(format!(
+            "{} template punch-in(s) checked on the cut clip: all at least {gap:.1} s from every cut, none across a cut or on a graphic",
+            punches.len()
+        )));
+    }
+    // Re-plan every template punch-in with the template's pattern on the cut timeline.
+    let mut tag: serde_json::Map<String, Value> = removed.first().map(|e| e.extra.clone()).unwrap_or_default();
+    tag.retain(|k, _| k == BY_TEMPLATE || k == "template_role");
+    tag.entry(BY_TEMPLATE.to_string()).or_insert_with(|| json!(format!("{}@{}", tpl.name, tpl.version)));
+    tag.entry("template_role".to_string()).or_insert_with(|| json!("effect"));
+    for p in &patterns {
+        let (input, _) = crate::timeline_doc::punch_input(store, &new);
+        for pl in rustler_media::punchin::plan(&input, &crate::template_cmds::punch_config(p)) {
+            let id = crate::timeline_doc::next_item_id("fx", new.tracks.effects.iter().map(|x| x.id.as_str()));
+            let mut extra = tag.clone();
+            if let (Some(fx), Some(fy)) = (pl.focus_x, pl.focus_y) {
+                extra.insert("focus_x".into(), json!(fx));
+                extra.insert("focus_y".into(), json!(fy));
+            }
+            new.tracks.effects.push(EffectItem { id, kind: EffectKind::PunchIn, start: pl.start, end: pl.end, amount: Some(pl.amount), extra });
+        }
+    }
+    let after: Vec<(String, f64, f64)> = new.tracks.effects.iter().filter(|e| is_tpl_punch(e)).map(|e| (e.id.clone(), e.start, e.end)).collect();
+    let (Ok(a), Ok(b)) = (serde_json::to_value(&old), serde_json::to_value(&new)) else { return None };
+    let ops: Vec<Value> = serde_json::to_value(json_patch::diff(&a, &b)).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
+    let reasons: Vec<String> = bad.iter().map(|(_, r)| r.clone()).collect();
+    let cmd = format!("re-plan the template punch-ins of {spec} on the cut clip ({} -> {})", punches.len(), after.len());
+    match x.call("timeline.apply", json!({"clip_id": cid, "base_revision": old.revision, "patch": ops})).await {
+        Ok(_) => {
+            let mut fx = AppliedFix::new(TEMPLATE_PUNCH_CHECK, &cmd, "applied").note(format!(
+                "{} of {} template punch-in(s) broke the planner rules after the cuts ({}); all re-planned with the template's pattern: {} punch-in(s) now, each at least {gap:.1} s from every cut",
+                bad.len(),
+                punches.len(),
+                reasons.join("; "),
+                after.len()
+            ));
+            fx.undo = Some(format!("rustler history restore {cid} {}   # the clip before the re-plan", old.revision));
+            Some(fx)
+        }
+        Err(e) => {
+            let mut fx = AppliedFix::new(TEMPLATE_PUNCH_CHECK, &cmd, "failed").note(reasons.join("; "));
+            fx.error = Some(e.message);
+            Some(fx)
+        }
+    }
 }
 
 fn qc_summary(v: &Value) -> QcSummary {
@@ -1069,15 +1188,40 @@ async fn clips_auto(ctx: Ctx, i: AutoIn) -> Result<AutoOut> {
             fetch_in["lang"] = json!(l);
         }
         emit(&ctx, "resolve", Some(0.5), "fetching captions (no download)");
-        let fetched = x.call("source.fetch_transcript", fetch_in).await.map_err(|e| {
+        let tt = Instant::now();
+        let manual_hint = |e: RustlerError| {
             let hint = format!(
                 "{} — or import the video yourself (`rustler source import {u} --sections MM:SS-MM:SS`), run `rustler analyze quick <src>` and then `rustler clips auto --source-id <src>`",
                 e.hint.clone().unwrap_or_default()
             );
             e.hint(hint)
-        })?;
-        let pid = fetched.get("pending_id").and_then(Value::as_str).map(String::from).unwrap_or_else(|| pending_id(u));
-        warnings.extend(fetched.get("warnings").and_then(Value::as_array).into_iter().flatten().filter_map(|w| w.as_str().map(String::from)));
+        };
+        let (pid, via) = match x.call("source.fetch_transcript", fetch_in).await {
+            Ok(fetched) => {
+                warnings.extend(fetched.get("warnings").and_then(Value::as_array).into_iter().flatten().filter_map(|w| w.as_str().map(String::from)));
+                (fetched.get("pending_id").and_then(Value::as_str).map(String::from).unwrap_or_else(|| pending_id(u)), "captions")
+            }
+            Err(e) if no_captions(&e) && dry => {
+                warnings.push(format!(
+                    "{}: a real run downloads the audio only (`rustler source import {u} --audio-only true`) and transcribes it with whisper base (`rustler analyze quick <src> --transcribe always --model base`) to rank; nothing is planned in a dry run",
+                    e.message
+                ));
+                (pending_id(u), "none")
+            }
+            Err(e) if no_captions(&e) => {
+                // No captions: rank on a cheap whisper transcript of the audio only, then download
+                // only the chosen sections (as with captions).
+                let name = format!("{} (audio for ranking)", s(&info, "title"));
+                emit(&ctx, "resolve", Some(0.5), format!("{}: downloading the audio only to transcribe with whisper base", e.message));
+                let (sid, w) = transcribe_for_ranking(&reg, &ctx, u, &name).await.map_err(manual_hint)?;
+                warnings.push(format!("{}: ranked on a whisper (base) transcript of the audio ({sid}); the chosen sections are downloaded as video", e.message));
+                warnings.extend(w);
+                (sid, "whisper")
+            }
+            Err(e) => return Err(manual_hint(e)),
+        };
+        let transcript_s = round2(tt.elapsed().as_secs_f64());
+        emit(&ctx, "resolve", Some(1.0), format!("ranking transcript via {via} in {transcript_s:.1} s"));
         // Save the info next to the fetched captions so candidates see the "most replayed" heatmap.
         if let Ok(dir) = analysis_rel(&pid) {
             let rel = dir.join("source_info.json");
@@ -1088,13 +1232,22 @@ async fn clips_auto(ctx: Ctx, i: AutoIn) -> Result<AutoOut> {
             }
         }
         (
-            SourceSummary { kind: "url".into(), url: Some(u.clone()), ranked_on: pid.clone(), title: Some(s(&info, "title")), duration: f(&info, "duration").unwrap_or(0.0) },
+            SourceSummary {
+                kind: "url".into(),
+                url: Some(u.clone()),
+                ranked_on: pid.clone(),
+                title: Some(s(&info, "title")),
+                duration: f(&info, "duration").unwrap_or(0.0),
+                transcript_via: via.into(),
+                transcript_s,
+            },
             pid,
             None,
         )
     } else {
         let sid = i.source_id.clone().unwrap_or_else(SourceId::new);
         let src = load_source_checked(&store, &sid)?;
+        let tt = Instant::now();
         if !has_transcript(&store, sid.as_str()) && ranges.is_empty() {
             if dry {
                 warnings.push(format!(
@@ -1107,7 +1260,15 @@ async fn clips_auto(ctx: Ctx, i: AutoIn) -> Result<AutoOut> {
             }
         }
         (
-            SourceSummary { kind: "source".into(), url: None, ranked_on: sid.to_string(), title: Some(src.name.clone()), duration: src.probe.duration },
+            SourceSummary {
+                kind: "source".into(),
+                url: None,
+                ranked_on: sid.to_string(),
+                title: Some(src.name.clone()),
+                duration: src.probe.duration,
+                transcript_via: "source".into(),
+                transcript_s: round2(tt.elapsed().as_secs_f64()),
+            },
             sid.to_string(),
             Some(sid),
         )
@@ -1188,6 +1349,7 @@ async fn clips_auto(ctx: Ctx, i: AutoIn) -> Result<AutoOut> {
     }
     emit(&ctx, "rank", Some(0.15), format!("{} moments picked", picks.len()));
 
+    let dl_quality = i.download_quality.clone().filter(|q| !q.trim().is_empty()).unwrap_or_else(|| DEFAULT_DOWNLOAD_QUALITY.to_string());
     let settings = Settings {
         count,
         min_len,
@@ -1199,6 +1361,7 @@ async fn clips_auto(ctx: Ctx, i: AutoIn) -> Result<AutoOut> {
         fixes: fixes_on,
         cover: cover_on,
         raw,
+        download_quality: url.as_ref().map(|_| dl_quality.clone()),
     };
 
     // Per-clip skeletons. Names are unique in the project and in exports/ (an export of another
@@ -1273,8 +1436,8 @@ async fn clips_auto(ctx: Ctx, i: AutoIn) -> Result<AutoOut> {
     if dry {
         for (c, p) in clips.iter_mut().zip(&picks) {
             if let (Some(u), Some((a, b))) = (&url, c.section) {
-                c.plan.push(format!("rustler source import {u} --sections {a:.1}-{b:.1}{}", i.download_quality.as_ref().map(|q| format!(" --quality {q}")).unwrap_or_default()));
-                c.plan.push("rustler analyze quick <new src_id>".into());
+                c.plan.push(format!("rustler source import {u} --sections {a:.1}-{b:.1} --quality {dl_quality}   # {PARALLEL_DOWNLOADS} sections at a time"));
+                c.plan.push("rustler analyze quick <new src_id> --transcribe always   # whisper on the section (captions if whisper is missing)".into());
                 c.plan.push(create_cmd(c, p, "<new src_id>", a));
             } else {
                 c.plan.push(create_cmd(c, p, &rank_id, 0.0));
@@ -1284,7 +1447,7 @@ async fn clips_auto(ctx: Ctx, i: AutoIn) -> Result<AutoOut> {
             }
             c.plan.push("rustler clip retention <clip_id> --timeline-only --per-second false".into());
             if fixes_on {
-                c.plan.push("apply the retention fixes trim_head / trim_tail / remove_pauses / punch_in when suggested (trims keep whole words; skipped on approximate word timings; rolled back when the hook or ending gets worse)".into());
+                c.plan.push("apply the retention fixes trim_head / trim_tail / remove_pauses when suggested (trims keep whole words; skipped on approximate word timings; rolled back when the hook or ending gets worse); re-check the template's punch-ins against the new cuts; never add zooms (punch-ins stay in fixes_suggested)".into());
             }
             c.plan.push(format!("rustler render batch --clip-ids <clip_ids> --quality {}", quality_str(quality)));
             c.plan.push("rustler clip retention <clip_id> --per-second false".into());
@@ -1321,25 +1484,73 @@ async fn clips_auto(ctx: Ctx, i: AutoIn) -> Result<AutoOut> {
         });
     }
 
-    // ---- 3. create + retention fixes (sequential: each writes project.json) ----------------
+    // ---- 3a. URL: download the padded sections, PARALLEL_DOWNLOADS at a time --------------
+    // (each import writes only its own source folder and appends one event line).
+    let mut imported: Vec<Option<Result<Value>>> = (0..clips.len()).map(|_| None).collect();
+    if let Some(u) = &url {
+        let jobs: Vec<(usize, Value)> = clips
+            .iter()
+            .enumerate()
+            .filter_map(|(k, c)| c.section.map(|(a, b)| (k, json!({"input": u, "sections": [format!("{a:.2}-{b:.2}")], "name": c.name, "quality": dl_quality}))))
+            .collect();
+        let n = jobs.len();
+        let started = Instant::now();
+        emit(&ctx, "import", Some(0.15), format!("downloading {n} sections at {dl_quality}p, {PARALLEL_DOWNLOADS} at a time"));
+        let mut queue = jobs.into_iter();
+        let mut set = tokio::task::JoinSet::new();
+        let mut done = 0usize;
+        loop {
+            while set.len() < PARALLEL_DOWNLOADS && !ctx.cancel.is_cancelled() {
+                let Some((k, input)) = queue.next() else { break };
+                let cctx = quiet(&ctx);
+                set.spawn(async move {
+                    let reg = inner();
+                    let r = reg.dispatch("source.import", input, cctx).await;
+                    (k, r)
+                });
+            }
+            let Some(res) = set.join_next().await else { break };
+            done += 1;
+            let name = match res {
+                Ok((k, r)) => {
+                    let ok = if r.is_ok() { "downloaded" } else { "failed" };
+                    imported[k] = Some(r);
+                    format!("{} {ok}", clips[k].name)
+                }
+                Err(e) => format!("a download task stopped: {e}"),
+            };
+            // Completions so far set the pace (they already overlap PARALLEL_DOWNLOADS at a time).
+            let el = started.elapsed().as_secs_f32();
+            let eta = el / done as f32 * (n - done) as f32;
+            ctx.progress.emit(ProgressEvent {
+                stage: format!("{STAGE}.import"),
+                pct: Some(0.15 + 0.15 * done as f32 / n.max(1) as f32),
+                message: Some(format!("{done}/{n} sections: {name}")),
+                eta_s: Some(eta),
+            });
+        }
+    }
+
+    // ---- 3b. create + retention fixes (sequential: each writes project.json) ---------------
     let total = clips.len().max(1);
     for (k, (c, p)) in clips.iter_mut().zip(&picks).enumerate() {
         if ctx.cancel.is_cancelled() {
             fail(c, "create", RustlerError::new(ErrorCode::Cancelled, STAGE, "cancelled"));
             continue;
         }
-        let base = 0.15 + 0.45 * (k as f32 / total as f32);
+        let base = if url.is_some() { 0.3 + 0.3 * (k as f32 / total as f32) } else { 0.15 + 0.45 * (k as f32 / total as f32) };
         emit(&ctx, "create", Some(base), format!("{} ({}/{}) {}", c.name, k + 1, total, c.mmss));
-        // URL: import the padded section and analyse it.
-        let (src_id, offset) = if let (Some(u), Some((a, b))) = (&url, c.section) {
-            let mut imp = json!({"input": u, "sections": [format!("{a:.2}-{b:.2}")], "name": c.name});
-            if let Some(q) = &i.download_quality {
-                imp["quality"] = json!(q);
-            }
-            let out = match x.call("source.import", imp).await {
-                Ok(v) => v,
-                Err(e) => {
+        // URL: the downloaded section, analysed.
+        let (src_id, offset) = if let (Some(_), Some((a, _))) = (&url, c.section) {
+            let out = match imported[k].take() {
+                Some(Ok(v)) => v,
+                Some(Err(e)) => {
                     fail(c, "import", e);
+                    continue;
+                }
+                None => {
+                    let why = if ctx.cancel.is_cancelled() { "cancelled" } else { "the download task stopped before it finished" };
+                    fail(c, "import", RustlerError::new(ErrorCode::Internal, STAGE, why));
                     continue;
                 }
             };
@@ -1348,11 +1559,29 @@ async fn clips_auto(ctx: Ctx, i: AutoIn) -> Result<AutoOut> {
                 continue;
             };
             c.warnings.extend(out.get("warnings").and_then(Value::as_array).into_iter().flatten().filter_map(|w| w.as_str().map(String::from)));
-            emit(&ctx, "analyze", Some(base), format!("{}: analyze quick {sid}", c.name));
-            if let Err(e) = x.call("analyze.quick", json!({"source_id": sid})).await {
-                fail(c, "analyze", e);
-                c.source_id = Some(sid);
-                continue;
+            // Whisper on the short section: exact word timings (the silence fixes need them) and no
+            // caption markup ("[ Laughter ]", "-" speaker dashes) in the burned captions. The
+            // fetched captions are the fallback when whisper is not available.
+            emit(&ctx, "analyze", Some(base), format!("{}: analyze quick {sid} --transcribe always", c.name));
+            match x.call("analyze.quick", json!({"source_id": sid, "transcribe": "always"})).await {
+                Ok(v) if v.get("transcript_source").and_then(Value::as_str) == Some("whisper") => {}
+                Ok(v) => {
+                    let why: Vec<String> = v.get("warnings").and_then(Value::as_array).into_iter().flatten().filter_map(|w| w.as_str().map(String::from)).collect();
+                    if let Err(e) = x.call("analyze.quick", json!({"source_id": sid})).await {
+                        fail(c, "analyze", e);
+                        c.source_id = Some(sid);
+                        continue;
+                    }
+                    c.warnings.push(format!(
+                        "whisper did not transcribe {sid} ({}); the fetched captions are used (approximate timings: trims and pause cuts are skipped; captions may show markup like [ Laughter ])",
+                        why.join("; ")
+                    ));
+                }
+                Err(e) => {
+                    fail(c, "analyze", e);
+                    c.source_id = Some(sid);
+                    continue;
+                }
             }
             (sid, a)
         } else {
@@ -1414,15 +1643,18 @@ async fn clips_auto(ctx: Ctx, i: AutoIn) -> Result<AutoOut> {
                 if fixes_on {
                     // Silence fixes one by one (word-safe trims, honest no-ops, roll back what hurts the hook or ending).
                     let (mut applied, r1) = apply_silence_fixes(&x, &store, &cid, &retention_fixes(&r0), r0, &ret_in).await;
-                    // Times may have changed: punch-ins are placed from the latest measurement.
-                    let visual = apply_fixes(&reg, &ctx, &retention_fixes(&r1), VISUAL_FIXES).await;
                     latest = r1;
-                    if visual.iter().any(|a| a.changed) {
-                        if let Ok(r2) = x.call("clip.retention", ret_in.clone()).await {
-                            latest = r2;
+                    // The cuts may have moved: the template's own punch-ins are checked against them
+                    // (and re-planned with the template's pattern when one broke the rules). No zoom
+                    // is ever added by clips auto itself; retention punch-ins stay suggestions.
+                    if let Some(chk) = recheck_template_punch_ins(&x, &store, &cid).await {
+                        if chk.changed {
+                            if let Ok(r2) = x.call("clip.retention", ret_in.clone()).await {
+                                latest = r2;
+                            }
                         }
+                        applied.push(chk);
                     }
-                    applied.extend(visual);
                     summary.score = latest.get("retention_score").and_then(Value::as_u64).map(|v| v as u32);
                     summary.dead_zones_left = dead_zones(&latest);
                     for a in applied.iter().filter(|a| a.changed) {
@@ -1459,7 +1691,8 @@ async fn clips_auto(ctx: Ctx, i: AutoIn) -> Result<AutoOut> {
                 eta_s: eta.or(e.pct.filter(|p| *p >= 1.0).map(|_| 0.0)),
             });
         });
-        match reg.dispatch("render.batch", json!({"clip_ids": to_render, "quality": quality}), rctx).await {
+        // The GPU encoder when one passes the probe (`rustler doctor` lists them); libx264 otherwise.
+        match reg.dispatch("render.batch", json!({"clip_ids": to_render, "quality": quality, "prefer_gpu": true}), rctx).await {
             Ok(b) => {
                 for r in b.get("results").and_then(Value::as_array).into_iter().flatten() {
                     let id = s(r, "clip_id");
@@ -1643,7 +1876,7 @@ fn changes(
 pub fn register(reg: &mut Registry) {
     reg.register(typed(
         "clips.auto",
-        "Optional one-call pipeline over existing commands: resolve a URL (cached info + captions, sections only) or a source, rank moments (highlights.candidates + first-2-s hook), create clips (smart defaults + template), apply cheap retention fixes, render.batch with ETA, qc.run, export.clip (post.json skeleton, copy left to you). Per-clip report with why, retention, QC, export paths and the commands to change each decision; one clip failing never stops the others. --dry-run plans only",
+        "Optional one-call pipeline over existing commands: resolve a URL (cached info + captions, sections only) or a source, rank moments (highlights.candidates + first-2-s hook), create clips (smart defaults + template), apply cheap retention fixes (silence trims and pause cuts only; never zooms: punch-ins are suggested), render.batch with ETA, qc.run, export.clip (post.json skeleton, copy left to you). Per-clip report with why, retention, QC, export paths and the commands to change each decision; one clip failing never stops the others. --dry-run plans only",
         &[],
         Annotations { long_running: true, network: true, ..Annotations::default() },
         vec![

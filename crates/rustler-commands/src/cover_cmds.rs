@@ -6,6 +6,13 @@
 //! and points `<name>.post.json`'s `cover` at it.
 //!
 //! The frame comes from the render, so captions and the hook title are in the picture.
+//!
+//! Speed: `--auto` scores a fixed set of frames spread evenly over the render ([`SAMPLES`]; the
+//! 12 frames of the render's QC contact sheet when `qc run` made one, so no frame is decoded
+//! again), extracted by one ffmpeg call at [`SCORE_WIDTH`], with one engine `faces.track` call
+//! for all of them. Frames where a mask is shown, and frames where a mask, card / image or text
+//! overlay covers the face, are left out when other frames are free; the areas covered by those
+//! layers never count toward the sharpness.
 
 use crate::clip_cmds::log_event;
 use crate::{extras, fx_cmds};
@@ -25,8 +32,14 @@ type Result<T> = rustler_core::Result<T>;
 pub const KEY: &str = "cover";
 /// Width of the frames that are scored (the saved cover keeps the render's size).
 const SCORE_WIDTH: u32 = 540;
-/// Most frames looked at.
-const MAX_CANDIDATES: usize = 40;
+/// Frames scored by `--auto` (evenly spread over the render) when no QC contact sheet is reused.
+pub const SAMPLES: usize = 16;
+/// The QC contact sheet layout (`rustler-media` qc: 12 tiles, 4 columns, 270 px wide).
+const QC_TILES: usize = 12;
+const QC_COLS: u32 = 4;
+const QC_TILE_W: u32 = 270;
+/// A face covered this much (share of its box) by a mask, card or text is not a cover.
+pub const COVERED_FACE: f64 = 0.25;
 /// Frames closer than this to a cut or inside a transition are not used (seconds).
 const CUT_MARGIN: f64 = 0.15;
 
@@ -41,6 +54,12 @@ fn validation(stage: &str, msg: impl Into<String>) -> RustlerError {
 /// Variance of the 3x3 Laplacian of `g` inside `r = (x0, y0, x1, y1)`: high for a sharp picture,
 /// low for a blurred or flat one.
 pub fn laplacian_variance(g: &GrayImage, r: (u32, u32, u32, u32)) -> f64 {
+    laplacian_variance_ex(g, r, &[])
+}
+
+/// [`laplacian_variance`] leaving out the pixels inside `skip` (pixel boxes `(x0, y0, x1, y1)`):
+/// masks blur (low), text and cards are crisp graphics (high); neither is the picture.
+pub fn laplacian_variance_ex(g: &GrayImage, r: (u32, u32, u32, u32), skip: &[(u32, u32, u32, u32)]) -> f64 {
     let (w, h) = g.dimensions();
     let (x0, y0) = (r.0.max(1), r.1.max(1));
     let (x1, y1) = (r.2.min(w.saturating_sub(1)), r.3.min(h.saturating_sub(1)));
@@ -51,11 +70,17 @@ pub fn laplacian_variance(g: &GrayImage, r: (u32, u32, u32, u32)) -> f64 {
     let (mut sum, mut sum2, mut n) = (0.0, 0.0, 0.0);
     for y in y0..y1 {
         for x in x0..x1 {
+            if skip.iter().any(|b| x >= b.0 && x < b.2 && y >= b.1 && y < b.3) {
+                continue;
+            }
             let l = px(x - 1, y) + px(x + 1, y) + px(x, y - 1) + px(x, y + 1) - 4.0 * px(x, y);
             sum += l;
             sum2 += l * l;
             n += 1.0;
         }
+    }
+    if n < 1.0 {
+        return 0.0;
     }
     let mean = sum / n;
     (sum2 / n - mean * mean).max(0.0)
@@ -115,6 +140,8 @@ pub struct Cand {
     pub frontal: Option<f64>,
     /// Final score 0..1 (filled by [`rank`]).
     pub score: f64,
+    /// Layers shown on this frame (`mask`, `image`, `cutaway`, `text`).
+    pub overlays: Vec<String>,
 }
 
 /// 0..1 for a face box: size between 2% and 50% of the frame, centre in the middle half
@@ -131,7 +158,18 @@ pub fn face_fit(f: &Face) -> f64 {
 
 /// Measures a frame (`gray`) given the engine's biggest face (if any).
 pub fn measure(gray: &GrayImage, face: Option<&Face>) -> (f64, f64, Option<f64>, Option<f64>) {
+    measure_ex(gray, face, &[])
+}
+
+/// [`measure`] with the layer boxes `covers` (normalised `(x0, y0, x1, y1)`) left out of the
+/// sharpness.
+pub fn measure_ex(gray: &GrayImage, face: Option<&Face>, covers: &[(f64, f64, f64, f64)]) -> (f64, f64, Option<f64>, Option<f64>) {
     let (w, h) = (f64::from(gray.width()), f64::from(gray.height()));
+    let skip: Vec<(u32, u32, u32, u32)> = covers
+        .iter()
+        .map(|c| ((c.0.clamp(0.0, 1.0) * w) as u32, (c.1.clamp(0.0, 1.0) * h) as u32, (c.2.clamp(0.0, 1.0) * w).ceil() as u32, (c.3.clamp(0.0, 1.0) * h).ceil() as u32))
+        .collect();
+    let laplacian_variance = |g: &GrayImage, r: (u32, u32, u32, u32)| laplacian_variance_ex(g, r, &skip);
     match face {
         Some(f) => {
             let (px, py) = (f.w * 0.2, f.h * 0.2);
@@ -187,20 +225,83 @@ pub fn rank(cands: &mut [Cand], engine: bool) {
     cands.sort_by(|a, b| b.score.total_cmp(&a.score));
 }
 
-/// Edit-timeline times to look at: every `step` seconds from 0.3 s to 0.3 s before the end, at
-/// most [`MAX_CANDIDATES`]; a clip shorter than 0.8 s gives its middle.
-pub fn candidate_times(edit_duration: f64) -> Vec<f64> {
-    if edit_duration < 0.8 {
-        return vec![edit_duration / 2.0];
+/// `n` render-file times spread evenly: the middles of `n` equal slices of `file_dur` (the
+/// QC contact sheet uses the same times for its 12 tiles).
+pub fn sample_times(file_dur: f64, n: usize) -> Vec<f64> {
+    if !(file_dur.is_finite() && file_dur > 0.0) || n == 0 {
+        return Vec::new();
     }
-    let step = (edit_duration / MAX_CANDIDATES as f64).max(0.5);
-    let mut v = Vec::new();
-    let mut t = 0.3;
-    while t <= edit_duration - 0.3 + 1e-9 {
-        v.push(t);
-        t += step;
+    (0..n).map(|i| file_dur * (i as f64 + 0.5) / n as f64).collect()
+}
+
+/// Edit-timeline time whose rendered time is `file_t` (`map` = edit -> rendered, non-decreasing).
+pub fn edit_time_of(map: impl Fn(f64) -> f64, file_t: f64, edit_dur: f64) -> f64 {
+    let (mut lo, mut hi) = (0.0, edit_dur.max(0.0));
+    for _ in 0..50 {
+        let mid = (lo + hi) / 2.0;
+        if map(mid) < file_t { lo = mid } else { hi = mid }
     }
-    v
+    (lo + hi) / 2.0
+}
+
+/// A layer drawn over the picture: normalised box `(x0, y0, x1, y1)` shown during `[start, end)`
+/// (edit-timeline seconds).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Overlay {
+    pub kind: String,
+    pub bbox: (f64, f64, f64, f64),
+    pub start: f64,
+    pub end: f64,
+}
+
+/// Approximate box of a text overlay: centred at `position_y`, the font size a fraction of the
+/// width, wrapped at 90% of the width (average glyph 0.55 em, line 1.25 em, box padding 0.5 em).
+pub fn text_box(text: &str, position_y: f64, font_size_factor: f64, canvas_w: f64, canvas_h: f64) -> (f64, f64, f64, f64) {
+    let fs = font_size_factor.clamp(0.01, 0.3);
+    let chars = text.chars().count().max(1) as f64;
+    let per_line = (0.9 / (0.55 * fs)).max(1.0);
+    let lines = (chars / per_line).ceil().max(1.0);
+    let width = (chars.min(per_line) * 0.55 * fs + fs).min(0.96);
+    let height = (lines * 1.25 * fs + fs) * canvas_w / canvas_h.max(1.0);
+    (0.5 - width / 2.0, position_y - height / 2.0, 0.5 + width / 2.0, position_y + height / 2.0)
+}
+
+/// Share (0..1) of the face box `f` covered by the boxes `covers` (overlaps added, capped at 1).
+pub fn covered_share(f: &Face, covers: &[(f64, f64, f64, f64)]) -> f64 {
+    let area = (f.w * f.h).max(1e-9);
+    let sum: f64 = covers
+        .iter()
+        .map(|c| {
+            let w = (c.2.min(f.x + f.w) - c.0.max(f.x)).max(0.0);
+            let h = (c.3.min(f.y + f.h) - c.1.max(f.y)).max(0.0);
+            w * h
+        })
+        .sum();
+    (sum / area).min(1.0)
+}
+
+/// The 12 tiles of a QC contact sheet (`sheet`, 4 x 3 tiles 270 px wide with a label strip under
+/// each) of a render `render_w` x `render_h`. `None` when the sheet does not have that layout.
+pub fn sheet_tiles(sheet: &GrayImage, render_w: u32, render_h: u32) -> Option<Vec<GrayImage>> {
+    if render_w == 0 || render_h == 0 {
+        return None;
+    }
+    // ffmpeg scale=270:-2: the height rounded to an even number.
+    let tile_h = ((f64::from(QC_TILE_W) * f64::from(render_h) / f64::from(render_w) / 2.0).round() * 2.0) as u32;
+    let rows = (QC_TILES as u32).div_ceil(QC_COLS);
+    let (w, h) = sheet.dimensions();
+    if w != QC_COLS * QC_TILE_W || h % rows != 0 {
+        return None;
+    }
+    let cell_h = h / rows;
+    if cell_h <= tile_h || cell_h - tile_h > 80 {
+        return None;
+    }
+    Some(
+        (0..QC_TILES as u32)
+            .map(|i| image::imageops::crop_imm(sheet, (i % QC_COLS) * QC_TILE_W, (i / QC_COLS) * cell_h, QC_TILE_W, tile_h).to_image())
+            .collect(),
+    )
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -226,6 +327,9 @@ pub struct CandidateView {
     pub eye_contrast: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub frontal: Option<f64>,
+    /// Layers shown on this frame (their areas do not count toward the sharpness).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub overlays: Vec<String>,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -241,6 +345,16 @@ pub struct CoverOut {
     pub method: String,
     /// True when faces were measured (the engine was available).
     pub faces_measured: bool,
+    /// auto: where the scored frames came from: `qc_contact_sheet` (the render's QC sheet, no
+    /// decode) or `render` (one ffmpeg call); frames scored; frames left out (cut, mask, covered face).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frames_from: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frames_scored: Option<usize>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub left_out: Vec<String>,
+    /// Seconds the command took.
+    pub elapsed_s: f64,
     /// Best candidates first (auto only).
     pub candidates: Vec<CandidateView>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -258,6 +372,8 @@ struct TrackOut {
 #[derive(Deserialize)]
 struct TrackSample {
     #[serde(default)]
+    t: f64,
+    #[serde(default)]
     faces: Vec<Face>,
 }
 
@@ -269,6 +385,7 @@ fn view(c: &Cand) -> CandidateView {
         face: c.face_fit > 0.0,
         eye_contrast: c.eyes.map(round2),
         frontal: c.frontal.map(round2),
+        overlays: c.overlays.clone(),
     }
 }
 
@@ -290,6 +407,7 @@ fn boundaries(clip: &rustler_core::Clip, tm: &TimeMap, tmap: &rustler_media::com
 
 async fn clip_cover(ctx: Ctx, i: CoverIn) -> Result<CoverOut> {
     const STAGE: &str = "clip.cover";
+    let t0 = std::time::Instant::now();
     let store = ctx.store()?;
     let clip = store.load_clip(&i.clip_id)?;
     if i.out_t.is_some() && i.auto == Some(true) {
@@ -314,9 +432,83 @@ async fn clip_cover(ctx: Ctx, i: CoverIn) -> Result<CoverOut> {
     let edit_dur = tm.duration();
     let work = store.clip_dir(&clip.id).join("cover_work");
     std::fs::create_dir_all(&work).map_err(|e| RustlerError::new(ErrorCode::Internal, STAGE, format!("cannot create {}: {e}", work.display())))?;
-    let result = run(&ctx, &store, &paths, &clip, &i, &render.id, &video, file_dur, edit_dur, &tm, &tmap, &work).await;
+    let qc_sheet = render.qc.as_ref().map(|q| store.resolve(q).with_extension("jpg")).filter(|p| p.is_file());
+    let src = Frames { video: &video, render_id: &render.id, qc_sheet, size: if probe.width > 0 && probe.height > 0 { (probe.width, probe.height) } else { (clip.canvas.width, clip.canvas.height) } };
+    let result = run(&ctx, &store, &paths, &clip, &i, &src, file_dur, edit_dur, &tm, &tmap, &work).await;
     let _ = std::fs::remove_dir_all(&work);
-    result
+    result.map(|mut o| {
+        o.elapsed_s = round2(t0.elapsed().as_secs_f64());
+        o
+    })
+}
+
+/// Where `--auto` gets its frames.
+struct Frames<'a> {
+    video: &'a Path,
+    render_id: &'a rustler_core::RenderId,
+    /// The render's QC contact sheet, when `qc run` made one.
+    qc_sheet: Option<PathBuf>,
+    /// Render frame size.
+    size: (u32, u32),
+}
+
+/// The layers drawn over the picture (masks, images / cards, picture-in-picture cutaways, text
+/// overlays) with their edit-timeline windows.
+fn overlays(store: &ProjectStore, clip: &rustler_core::Clip) -> Result<Vec<Overlay>> {
+    let (t, _) = crate::timeline_doc::assemble(store, &clip.id)?;
+    let env = crate::timeline_doc::DocEnv::new(store, &t)?;
+    let bx = |r: &rustler_core::Rect| (r.x, r.y, r.x + r.w, r.y + r.h);
+    let mut out = Vec::new();
+    for m in &t.tracks.masks {
+        if let Ok((s, e)) = env.window(&m.timing) {
+            out.push(Overlay { kind: "mask".into(), bbox: bx(&m.rect), start: s, end: e });
+        }
+    }
+    for m in &t.tracks.images {
+        if let Ok((s, e)) = env.window(&m.timing) {
+            out.push(Overlay { kind: "image".into(), bbox: bx(&m.rect), start: s, end: e });
+        }
+    }
+    for m in &t.tracks.cutaways {
+        if let (Some(r), Ok((s, e))) = (&m.rect, env.window(&m.timing)) {
+            out.push(Overlay { kind: "cutaway".into(), bbox: bx(r), start: s, end: e });
+        }
+    }
+    let (cw, ch) = (f64::from(clip.canvas.width), f64::from(clip.canvas.height));
+    for x in &t.tracks.text {
+        out.push(Overlay { kind: "text".into(), bbox: text_box(&x.text, x.position_y, x.font_size_factor, cw, ch), start: x.start, end: x.end });
+    }
+    Ok(out)
+}
+
+/// Grayscale frames at `times` of `video`, `width` wide: one ffmpeg call (`-ss` before each input).
+async fn frames_at(paths: &ToolPaths, video: &Path, times: &[f64], width: u32, work: &Path, cancel: &tokio_util::sync::CancellationToken) -> Result<Vec<GrayImage>> {
+    const STAGE: &str = "clip.cover";
+    let mut cmd = tokio::process::Command::new(&paths.ffmpeg);
+    cmd.args(["-hide_banner", "-loglevel", "error", "-nostdin", "-y"]);
+    for t in times {
+        cmd.arg("-ss").arg(format!("{t:.3}")).arg("-i").arg(video);
+    }
+    let outs: Vec<PathBuf> = (0..times.len()).map(|k| work.join(format!("s{k:02}.jpg"))).collect();
+    for (k, o) in outs.iter().enumerate() {
+        cmd.args(["-map", &format!("{k}:v:0"), "-frames:v", "1", "-vf", &format!("scale={width}:-2"), "-q:v", "3"]).arg(o);
+    }
+    cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped()).kill_on_drop(true);
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000);
+    let child = cmd.spawn().map_err(|e| RustlerError::new(ErrorCode::DependencyMissing, STAGE, format!("cannot start ffmpeg: {e}")))?;
+    let out = tokio::select! {
+        r = child.wait_with_output() => r.map_err(|e| RustlerError::new(ErrorCode::Media, STAGE, format!("ffmpeg: {e}")))?,
+        _ = cancel.cancelled() => return Err(RustlerError::new(ErrorCode::Cancelled, STAGE, "cancelled")),
+    };
+    if !out.status.success() {
+        return Err(RustlerError::new(ErrorCode::Media, STAGE, format!("ffmpeg could not extract the frames: {}", String::from_utf8_lossy(&out.stderr).trim())));
+    }
+    outs.iter()
+        .map(|o| {
+            image::open(o).map(|i| i.to_luma8()).map_err(|e| RustlerError::new(ErrorCode::Media, STAGE, format!("cannot read frame {}: {e}", o.display())))
+        })
+        .collect()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -326,8 +518,7 @@ async fn run(
     paths: &ToolPaths,
     clip: &rustler_core::Clip,
     i: &CoverIn,
-    render_id: &rustler_core::RenderId,
-    video: &Path,
+    src: &Frames<'_>,
     file_dur: f64,
     edit_dur: f64,
     tm: &TimeMap,
@@ -336,6 +527,8 @@ async fn run(
 ) -> Result<CoverOut> {
     const STAGE: &str = "clip.cover";
     let mut warnings = Vec::new();
+    let (video, render_id) = (src.video, src.render_id);
+    let (mut frames_from, mut frames_scored, mut left_out): (Option<String>, Option<usize>, Vec<String>) = (None, None, Vec::new());
     let clamp_file = |t: f64| t.clamp(0.0, (file_dur - 0.1).max(0.0));
     let (chosen, method, candidates, faces_measured) = if let Some(t) = i.out_t {
         if !(t.is_finite() && t >= 0.0 && t <= edit_dur + 0.05) {
@@ -345,51 +538,84 @@ async fn run(
         (Cand { out_t: t, file_t: clamp_file(tmap.map_time(t)), ..Cand::default() }, "manual", Vec::new(), false)
     } else {
         let cuts = boundaries(clip, tm, tmap);
-        let mut times: Vec<Cand> = candidate_times(edit_dur)
-            .into_iter()
-            .map(|t| Cand { out_t: t, file_t: clamp_file(tmap.map_time(t)), ..Cand::default() })
-            .filter(|c| !cuts.iter().any(|(mid, half)| (c.file_t - mid).abs() < half + CUT_MARGIN))
-            .collect();
+        // Frames: the QC contact sheet's 12 tiles when the render has one, else SAMPLES frames
+        // from one ffmpeg call. Same evenly spread render times either way.
+        let sheet = src.qc_sheet.as_ref().and_then(|p| image::open(p).ok()).and_then(|im| sheet_tiles(&im.to_luma8(), src.size.0, src.size.1));
+        let (frames, file_times, from) = match sheet {
+            Some(tiles) => (tiles, sample_times(file_dur, QC_TILES), "qc_contact_sheet"),
+            None => {
+                let ts: Vec<f64> = if edit_dur < 0.8 { vec![clamp_file(file_dur / 2.0)] } else { sample_times(file_dur, SAMPLES) };
+                (frames_at(paths, video, &ts, SCORE_WIDTH, work, &ctx.cancel).await?, ts, "render")
+            }
+        };
+        frames_from = Some(from.to_string());
+        frames_scored = Some(frames.len());
+        let layers = match overlays(store, clip) {
+            Ok(v) => v,
+            Err(e) => {
+                warnings.push(format!("layers not read, masks and overlays not avoided: {}", e.message));
+                Vec::new()
+            }
+        };
+        // Faces: one engine call for all the frames (same times as the frames).
+        let mut faces: Vec<Option<Face>> = vec![None; file_times.len()];
+        let mut engine_ok = false;
+        match crate::analyze_cmds::spawn_engine(paths).await {
+            Ok(e) => {
+                let n = file_times.len() as f64;
+                let fps = n / file_dur.max(0.1);
+                let start = file_times.first().copied().unwrap_or(0.0);
+                let params = json!({"video_path": video, "start": start, "end": start + n / fps, "fps": fps});
+                match e.call::<_, TrackOut>("faces.track", params, &ctx.progress, &ctx.cancel).await {
+                    Ok(r) => {
+                        engine_ok = true;
+                        for smp in r.samples {
+                            if let Some(k) = file_times.iter().position(|t| (t - smp.t).abs() < 0.5 / fps) {
+                                faces[k] = smp.faces.into_iter().max_by(|a, b| (a.w * a.h).total_cmp(&(b.w * b.h)));
+                            }
+                        }
+                    }
+                    Err(err) => warnings.push(format!("faces not measured, the cover is chosen by sharpness only: {}", err.message)),
+                }
+                e.shutdown().await;
+            }
+            Err(e) => warnings.push(format!("faces not measured, the cover is chosen by sharpness only: {}", e.message)),
+        }
+        let mut all: Vec<(Cand, bool, bool)> = Vec::new(); // (cand, mask shown, face covered)
+        for (k, (gray, ft)) in frames.iter().zip(&file_times).enumerate() {
+            let ft = clamp_file(*ft);
+            let out_t = edit_time_of(|t| tmap.map_time(t), ft, edit_dur).clamp(0.0, edit_dur);
+            if cuts.iter().any(|(mid, half)| (ft - mid).abs() < half + CUT_MARGIN) {
+                left_out.push(format!("{out_t:.2} s: next to a cut or inside a transition"));
+                continue;
+            }
+            let shown: Vec<&Overlay> = layers.iter().filter(|o| out_t >= o.start - 0.05 && out_t < o.end + 0.05).collect();
+            let boxes: Vec<(f64, f64, f64, f64)> = shown.iter().map(|o| o.bbox).collect();
+            let masked = shown.iter().any(|o| o.kind == "mask");
+            let face = faces[k].clone();
+            let covered = face.as_ref().is_some_and(|f| covered_share(f, &boxes) >= COVERED_FACE);
+            let (sharp, fit, eyes, frontal) = measure_ex(gray, face.as_ref(), &boxes);
+            let mut kinds: Vec<String> = shown.iter().map(|o| o.kind.clone()).collect();
+            kinds.dedup();
+            all.push((Cand { out_t, file_t: ft, sharp, face_fit: fit, eyes, frontal, score: 0.0, overlays: kinds }, masked, covered));
+        }
+        // Frames with a mask shown, or with the face under a layer, only when nothing else is left.
+        let clean = all.iter().filter(|(_, m, c)| !m && !c).count();
+        let mut times: Vec<Cand> = Vec::new();
+        for (c, masked, covered) in all {
+            if clean > 0 && (masked || covered) {
+                left_out.push(format!("{:.2} s: {}", c.out_t, if masked { "a mask is shown" } else { "the face is under a mask, card or text" }));
+            } else {
+                times.push(c);
+            }
+        }
+        if clean == 0 && !times.is_empty() && times.iter().any(|c| !c.overlays.is_empty()) {
+            warnings.push("every free frame shows a mask or has the face under a layer; the best of them was used: look at the cover".into());
+        }
         if times.is_empty() {
             warnings.push("every sampled frame is next to a cut or inside a transition; using the middle of the clip".into());
             let t = edit_dur / 2.0;
             times.push(Cand { out_t: t, file_t: clamp_file(tmap.map_time(t)), ..Cand::default() });
-        }
-        // The engine is optional: without it only sharpness counts.
-        let engine = match crate::analyze_cmds::spawn_engine(paths).await {
-            Ok(e) => Some(e),
-            Err(e) => {
-                warnings.push(format!("faces not measured, the cover is chosen by sharpness only: {}", e.message));
-                None
-            }
-        };
-        let mut engine_ok = engine.is_some();
-        for (n, c) in times.iter_mut().enumerate() {
-            let jpg = work.join(format!("c{n}.jpg"));
-            rustler_media::frame(paths, video, c.file_t, SCORE_WIDTH, &jpg).await?;
-            let gray = image::open(&jpg)
-                .map_err(|e| RustlerError::new(ErrorCode::Media, STAGE, format!("cannot read frame {}: {e}", jpg.display())))?
-                .to_luma8();
-            let mut face = None;
-            if let (Some(e), true) = (&engine, engine_ok) {
-                let params = json!({"video_path": video, "start": c.file_t, "end": c.file_t + 1.0, "fps": 1.0});
-                match e.call::<_, TrackOut>("faces.track", params, &ctx.progress, &ctx.cancel).await {
-                    Ok(r) => {
-                        face = r.samples.into_iter().next().and_then(|s| {
-                            s.faces.into_iter().max_by(|a, b| (a.w * a.h).total_cmp(&(b.w * b.h)))
-                        })
-                    }
-                    Err(err) => {
-                        engine_ok = false;
-                        warnings.push(format!("faces not measured, the cover is chosen by sharpness only: {}", err.message));
-                    }
-                }
-            }
-            let (sharp, fit, eyes, frontal) = measure(&gray, face.as_ref());
-            *c = Cand { sharp, face_fit: fit, eyes, frontal, ..c.clone() };
-        }
-        if let Some(e) = engine {
-            e.shutdown().await;
         }
         if engine_ok && times.iter().all(|c| c.face_fit == 0.0) {
             warnings.push("no face found in any sampled frame; the cover is chosen by sharpness only".into());
@@ -431,12 +657,16 @@ async fn run(
             method: method.into(),
             faces_measured,
             candidates,
+            frames_from,
+            frames_scored,
+            left_out,
+            elapsed_s: 0.0,
             dry_run: Some(true),
             warnings,
             next: Vec::new(),
         });
     }
-    let image = store.resolve(&rel);
+    let image = store.clip_dir(&clip.id).join("cover.jpg"); // native separators for the caller
     Ok(CoverOut {
         clip_id: clip.id.clone(),
         image,
@@ -445,6 +675,10 @@ async fn run(
         method: method.into(),
         faces_measured,
         candidates,
+        frames_from,
+        frames_scored,
+        left_out,
+        elapsed_s: 0.0,
         dry_run: None,
         warnings,
         next: vec![
@@ -567,6 +801,7 @@ mod tests {
             eyes,
             frontal,
             score: 0.0,
+            overlays: Vec::new(),
         };
         // 0: sharp but no face; 1: face, eyes closed (low contrast); 2: face, eyes open; 3: face, blurred
         let mut c = vec![
@@ -590,14 +825,61 @@ mod tests {
     }
 
     #[test]
-    fn candidate_times_stay_inside_and_are_capped() {
-        let t = candidate_times(30.0);
-        assert!((t[0] - 0.3).abs() < 1e-9 && *t.last().unwrap() <= 29.7 + 1e-9);
-        assert!(t.len() <= MAX_CANDIDATES + 1);
-        assert_eq!(candidate_times(0.5), vec![0.25]);
-        let long = candidate_times(600.0);
-        assert!(long.len() <= MAX_CANDIDATES + 1, "{}", long.len());
-        assert!(candidate_times(3.0).windows(2).all(|w| (w[1] - w[0] - 0.5).abs() < 1e-9));
+    fn sample_times_are_slice_middles_and_map_back_to_edit_time() {
+        assert_eq!(sample_times(12.0, 4), vec![1.5, 4.5, 7.5, 10.5]);
+        assert!(sample_times(0.0, 4).is_empty());
+        // A render 1 s shorter than the edit (a 1 s overlap at 5 s): rendered = t - 1 after 6 s.
+        let map = |t: f64| if t < 5.0 { t } else if t < 6.0 { 5.0 } else { t - 1.0 };
+        assert!((edit_time_of(map, 3.0, 10.0) - 3.0).abs() < 1e-6);
+        assert!((edit_time_of(map, 7.0, 10.0) - 8.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn covered_share_and_text_box() {
+        let f = Face { x: 0.4, y: 0.2, w: 0.2, h: 0.2, score: 0.9, lm: None };
+        assert_eq!(covered_share(&f, &[]), 0.0);
+        assert!((covered_share(&f, &[(0.5, 0.0, 1.0, 1.0)]) - 0.5).abs() < 1e-9);
+        assert_eq!(covered_share(&f, &[(0.0, 0.0, 1.0, 1.0), (0.0, 0.0, 1.0, 1.0)]), 1.0);
+        // A 0.1-wide hook title at 0.12: about 1-2 lines, centred, inside the top quarter.
+        let b = text_box("He quit his job at 25", 0.12, 0.1, 1080.0, 1920.0);
+        assert!(b.0 > 0.0 && b.2 < 1.0 && (b.0 + b.2 - 1.0).abs() < 1e-9, "{b:?}");
+        assert!(b.1 > 0.0 && b.3 < 0.25 && b.1 < 0.12 && b.3 > 0.12, "{b:?}");
+    }
+
+    #[test]
+    fn layer_areas_do_not_count_toward_sharpness() {
+        // Flat picture with a crisp checker (a text box) in the top half.
+        let mut g = GrayImage::from_pixel(100, 100, Luma([100]));
+        for y in 10..40 {
+            for x in 10..90 {
+                g.put_pixel(x, y, Luma(if (x / 2 + y / 2) % 2 == 0 { [0] } else { [255] }));
+            }
+        }
+        let all = laplacian_variance(&g, (0, 0, 100, 100));
+        let without = laplacian_variance_ex(&g, (0, 0, 100, 100), &[(8, 8, 92, 42)]);
+        assert!(all > 1000.0 && without < 1.0, "{all} {without}");
+        assert_eq!(laplacian_variance_ex(&g, (0, 0, 100, 100), &[(0, 0, 100, 100)]), 0.0);
+    }
+
+    #[test]
+    fn qc_sheet_is_cut_into_its_tiles() {
+        // 4 x 3 tiles of 270 x 480 (a 1080x1920 render) with a 36 px label strip.
+        let mut sheet = GrayImage::from_pixel(1080, 3 * (480 + 36), Luma([16]));
+        for i in 0..12u32 {
+            let (x0, y0) = ((i % 4) * 270, (i / 4) * 516);
+            for y in y0..y0 + 480 {
+                for x in x0..x0 + 270 {
+                    sheet.put_pixel(x, y, Luma([(i * 20) as u8]));
+                }
+            }
+        }
+        let tiles = sheet_tiles(&sheet, 1080, 1920).unwrap();
+        assert_eq!(tiles.len(), 12);
+        assert_eq!(tiles[5].dimensions(), (270, 480));
+        assert_eq!(tiles[5].get_pixel(100, 479).0[0], 100);
+        assert_eq!(tiles[11].get_pixel(0, 0).0[0], 220);
+        assert!(sheet_tiles(&sheet, 1920, 1080).is_none(), "another layout is not reused");
+        assert!(sheet_tiles(&GrayImage::new(800, 600), 1080, 1920).is_none());
     }
 
     #[test]
