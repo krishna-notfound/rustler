@@ -87,6 +87,9 @@ fn hook_big_is_two_uppercase_lines_at_ten_percent_with_a_pop() {
     assert!(l.lines.iter().all(|s| s.chars().all(|c| !c.is_lowercase())));
     assert!(l.font_size >= 90 && l.font_size <= 108, "about 0.10 of the width: {}", l.font_size);
     assert_eq!(l.padding, 0, "no box");
+    let short = overlay_layout(&ov("he quit his job", OverlayStyle::HookBig), &canvas());
+    assert_eq!(short.lines, ["HE QUIT", "HIS JOB"], "a short hook still breaks into two lines");
+    assert_eq!(overlay_layout(&ov("wow", OverlayStyle::HookBig), &canvas()).lines.len(), 1);
     let ass = overlays_ass(&[o], &canvas(), 10.0).unwrap();
     let e = event(&ass);
     assert!(e.contains("\\fscx70\\fscy70\\t(0,140,\\fscx112\\fscy112)\\t(140,260,\\fscx100\\fscy100)"), "{e}");

@@ -1708,6 +1708,19 @@ pub fn overlay_layout(ov: &TextOverlay, canvas: &Canvas) -> OverlayLayout {
         }
         (size, l)
     });
+    // hook-big is always two lines (three or more words): split a one-line text where it balances.
+    let lines = if ov.style == OverlayStyle::HookBig && lines.len() == 1 && words.len() >= 3 {
+        let best = (1..words.len())
+            .map(|k| (words[..k].join(" "), words[k..].join(" ")))
+            .min_by(|a, b| {
+                let w = |p: &(String, String)| text_width(&p.0, size).max(text_width(&p.1, size));
+                w(a).total_cmp(&w(b))
+            })
+            .expect("at least two split points");
+        vec![best.0, best.1]
+    } else {
+        lines
+    };
     let pad = pad_of(size);
     let height = lines.len() as f64 * size + 2.0 * pad;
     let half = height / 2.0;

@@ -153,7 +153,9 @@ pub fn measure(gray: &GrayImage, face: Option<&Face>) -> (f64, f64, Option<f64>,
             }
             (sharp, face_fit(f), eyes, frontal)
         }
-        None => (laplacian_variance(gray, ((w * 0.1) as u32, (h * 0.2) as u32, (w * 0.9) as u32, (h * 0.6) as u32)), 0.0, None, None),
+        // No face: the middle band, below where hook titles sit (about 10-28% of the height) and
+        // above the captions (about 60-75%), so burned-in text does not decide the sharpness.
+        None => (laplacian_variance(gray, ((w * 0.1) as u32, (h * 0.34) as u32, (w * 0.9) as u32, (h * 0.56) as u32)), 0.0, None, None),
     }
 }
 
