@@ -136,9 +136,9 @@ async fn add_lists_searches_removes() {
     let tagged = run(&f, "asset.list", json!({"tag": "impact"})).await.unwrap();
     assert_eq!(ids(&tagged, "assets"), vec![gid.clone()]);
     let styles = run(&f, "asset.list", json!({"kind": "caption_style"})).await.unwrap();
-    assert_eq!(styles["count"], 4);
+    assert_eq!(styles["count"], 6);
     let alias = run(&f, "asset.list", json!({"kind": "caption-style"})).await.unwrap();
-    assert_eq!(alias["count"], 4);
+    assert_eq!(alias["count"], 6);
 
     // search: name, tag, typo, kind filter, no hit
     let s = run(&f, "asset.search", json!({"query": "whoosh"})).await.unwrap();
@@ -301,7 +301,7 @@ async fn custom_caption_style_flow_without_tools() {
     assert!(b["style"]["box_padding"].as_f64().unwrap() > 0.0);
     run(&f, "asset.remove", json!({"id": "style-neon-pop"})).await.unwrap();
     let styles = run(&f, "caption.styles", json!({})).await.unwrap();
-    assert_eq!(styles["styles"].as_array().unwrap().len(), 5);
+    assert_eq!(styles["styles"].as_array().unwrap().len(), 7);
     assert_eq!(styles["styles"][6]["name"], "yellow-box");
     assert_eq!(styles["styles"][6]["scope"], "global");
 }
