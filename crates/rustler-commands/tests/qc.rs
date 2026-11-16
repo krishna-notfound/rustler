@@ -314,8 +314,13 @@ async fn export_with_custom_name_and_captions_off_has_no_srt() {
     let mut clip = store.load_clip(&fx.clip_id).unwrap();
     let base = clip.revision;
     clip.captions.enabled = false;
+    // Rendered with captions off (export follows the clip as the render was made): a new render record.
+    let mut again = clip.renders[0].clone();
+    again.id = RenderId::new();
+    again.created_at = Utc::now();
+    clip.renders.push(again);
     store.save_clip(&mut clip, base).unwrap();
-    let out = fx.run("export.clip", json!({"clip_id": fx.clip_id, "name": "../evil:name"})).await.unwrap();
+    let out = fx.run("export.clip", json!({"clip_id": fx.clip_id, "name": "../evil:name", "allow_fail": true})).await.unwrap();
     let video = PathBuf::from(out["video"].as_str().unwrap());
     assert_eq!(video.parent().unwrap(), fx.root.join("exports"));
     assert_eq!(video.file_name().unwrap(), "_evil_name.mp4");
