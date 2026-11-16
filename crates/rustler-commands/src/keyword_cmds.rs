@@ -443,13 +443,14 @@ mod tests {
         let w = cw(&["I", "met", "Elon", "and", "made", "10", "million", "dollars", "never", "again", "so", "nice"]);
         // max 2: the number (10) first, then an emphasis word that is not adjacent to it.
         let p = propose(&w, 2);
-        assert_eq!(p.iter().map(|(k, _)| *k).collect::<Vec<_>>(), vec![5, 8]);
+        // ("million" next to the 10 is skipped; "dollars" is the first emphasis word with a gap)
+        assert_eq!(p.iter().map(|(k, _)| *k).collect::<Vec<_>>(), vec![5, 7]);
         assert_eq!(p[0].1, Reason::Number);
         assert_eq!(p[1].1, Reason::Emphasis);
-        // no room limit: neighbours of marked words (million, dollars) are skipped, the name fits
+        // no cap: neighbours of marked words (million, never) are skipped, the name fits
         let all = propose(&w, 10);
         let idx: Vec<usize> = all.iter().map(|(k, _)| *k).collect();
-        assert_eq!(idx, vec![2, 5, 8]);
+        assert_eq!(idx, vec![2, 5, 7]);
         assert!(propose(&cw(&["just", "plain", "words"]), 3).is_empty());
     }
 
