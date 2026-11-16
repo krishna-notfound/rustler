@@ -13,6 +13,7 @@ mod proc_render;
 pub mod proxy;
 pub mod qc;
 pub mod render;
+pub mod retention;
 pub mod tiles;
 
 pub use audio_analysis::analyze_audio;
