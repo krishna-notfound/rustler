@@ -351,6 +351,14 @@ async fn cold_open(ctx: Ctx, i: ColdOpenIn) -> Result<TimelineEditOut> {
     pieces.extend(rest);
     let (mut new, w) = rebuild(&cur, pieces);
     warnings.extend(w);
+    // A hook title that opened the clip keeps opening it (it belongs to the start, not to the
+    // words it happened to sit on).
+    for (old, t) in cur.tracks.text.iter().zip(new.tracks.text.iter_mut()) {
+        if old.id == t.id && old.style == rustler_core::timeline::TextStyle::HookTop && old.start < 0.05 {
+            t.start = old.start;
+            t.end = old.end;
+        }
+    }
     let hook_len = he - hs;
     if i.flash.unwrap_or(true) {
         let dur = new.edit_duration();
@@ -676,9 +684,9 @@ pub fn register(reg: &mut Registry) {
     reg.register(typed(
         "clip.merge",
         "New clip that plays clips back to back with ALL their layers (captions, text, images, masks, cutaways, sfx, effects, transitions, freezes, speeds, crop paths): time-based items shift by each clip's offset, word-anchored items keep their anchors; optional transition between the clips",
-        &[],
+        &["clip_ids"],
         write,
-        vec![Example { description: "hook clip + main clip with a quick dissolve", cli: "rustler clip merge --clip-ids clp_hook,clp_main --name hook-plus-main --transition dissolve --transition-duration 0.2" }],
+        vec![Example { description: "hook clip + main clip with a quick dissolve", cli: "rustler clip merge clp_hook clp_main --name hook-plus-main --transition dissolve --transition-duration 0.2" }],
         merge,
     ));
     reg.register(typed(

@@ -3,7 +3,7 @@ mod common;
 
 use common::*;
 use rustler_commands::timeline_doc;
-use rustler_core::{ErrorCode, ProjectStore, Timeline};
+use rustler_core::{ErrorCode, ProjectStore};
 use serde_json::{Value, json};
 
 fn extras_json(store: &ProjectStore, clip: &str) -> Value {

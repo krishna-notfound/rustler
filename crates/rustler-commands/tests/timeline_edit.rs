@@ -128,7 +128,8 @@ async fn cold_open_moves_range_and_adds_flash() {
     // A punch-in on "ask" (source 4.05-4.3 -> edit 2.45-2.7), an sfx on word 4 ("Americans").
     x.run("effect.add", json!({"clip_id": id, "kind": "punch-in", "start": 2.45, "end": 2.7})).await;
     x.run("audio.add_sfx", json!({"clip_id": id, "file": x.store.resolve(&x.src.media_path), "at_word": {"source_id": x.src.id, "word_index": 4}})).await;
-    x.run("overlay.add_text", json!({"clip_id": id, "text": "Ending", "start": 4.0, "end": 5.0})).await;
+    x.run("overlay.add_text", json!({"clip_id": id, "text": "Ending", "start": 4.0, "end": 5.0, "style": "lower-third"})).await;
+    x.run("overlay.add_text", json!({"clip_id": id, "text": "Hook title", "start": 0.0, "end": 1.2})).await;
 
     // Hook = "Americans ask" (source 3.45-4.3), inside the middle segment.
     let r = x.run("edit.cold_open", json!({"clip_id": id, "start": 3.45, "end": 4.3})).await;
@@ -149,6 +150,8 @@ async fn cold_open_moves_range_and_adds_flash() {
     assert!(close(f(&flash["start"]), 0.85) && close(f(&flash["end"]), 1.1), "{flash}");
     // The ending overlay keeps its words (it was after the hook range).
     assert!(close(f(&xj["overlays"][0]["start"]), 4.0));
+    // The hook title that opened the clip keeps opening it.
+    assert!(close(f(&xj["overlays"][1]["start"]), 0.0) && close(f(&xj["overlays"][1]["end"]), 1.2), "{}", xj["overlays"][1]);
     // The word-anchored sfx now plays inside the hook.
     let s = x.show(&id).await;
     assert!(close(f(&item(&s, "sfx", "sfx_1")["start"]), 0.0), "{}", item(&s, "sfx", "sfx_1"));

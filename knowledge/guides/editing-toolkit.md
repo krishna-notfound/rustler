@@ -65,8 +65,8 @@ document and its resolved times. `history undo` reverts a whole apply, every lay
 | `clip add-segment clp_X --source-id src_X --start-unit … --end-unit …` | build a multi-part clip | hook line first, payoff after (see `cut-points`) |
 
 | `edit insert-segment clp_X --source-id src_X --start-unit 40 --end-unit 42 --at-index 1` | put a range anywhere | or `--at-out-t 12.5` (splits the segment there); layers after it move with their content |
-| `edit cold-open clp_X --start-unit 57 --end-unit 57` | open on the hook line | the range goes first (cut out of where it was if the clip has it) + a white flash at the cut out of the hook (`--flash false` to skip); every layer stays on its words |
-| `clip merge --clip-ids clp_A,clp_B --name a-b --transition dissolve --transition-duration 0.2` | join clips (hook clip + main clip, part 1 + part 2) | new clip with ALL layers: times shift by each clip's offset, word anchors keep their words; the first clip's captions, music and progress bar win |
+| `edit cold-open clp_X --start-unit 57 --end-unit 57` | open on the hook line | the range goes first (cut out of where it was if the clip has it) + a white flash at the cut out of the hook (`--flash false` to skip); every layer stays on its words, except a hook-top title that opened the clip, which keeps opening it |
+| `clip merge clp_A clp_B --name a-b --transition dissolve --transition-duration 0.2` | join clips (hook clip + main clip, part 1 + part 2) | new clip with ALL layers: times shift by each clip's offset, word anchors keep their words; the first clip's captions, music and progress bar win |
 | `clip duplicate clp_X --name clp-x-v2` | try another hook or cut safely | copies clip + every layer |
 | `edit speed clp_X --segment-id seg_B --factor 1.2` | tighten slow talk (0.5-2.0; 1 resets) | pitch kept; captions and layers follow; the rendered clip gets shorter |
 | `edit freeze clp_X --out-t 6.2 --duration 0.8` | hold a reaction frame (silent) | the rendered clip gets longer by the hold; an item starting at `out_t` shows during the hold |
@@ -244,7 +244,7 @@ rustler overlay add-text clp_X "Later that night…" --style plain --start 6.5 -
 rustler clip duplicate clp_X --name clp-x-cold                       # keep the original
 rustler edit cold-open clp_Y --start-unit 57 --end-unit 57 --expect-text "That is when"
 rustler render preview-frame clp_Y --out-t 0.3                      # hook frame
-rustler clip merge --clip-ids clp_teaser,clp_Y --name teaser-plus-story --transition fade --transition-duration 0.2
+rustler clip merge clp_teaser clp_Y --name teaser-plus-story --transition fade --transition-duration 0.2
 rustler timeline show clp_Z                                          # every layer with its new time
 ```
 

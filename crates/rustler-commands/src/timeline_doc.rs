@@ -759,9 +759,9 @@ pub fn validate(store: &ProjectStore, t: &Timeline, current: Option<&Timeline>) 
             errs.push(format!("{p}/speed: {f} must be between 0.5 and 2.0"));
         }
         if let Some(cp) = &v.crop_path
-            && cp.iter().any(|k| !(k.t.is_finite() && k.x.is_finite() && k.t >= -1e-6 && (0.0..=1.0).contains(&k.x)))
+            && cp.iter().any(|k| !(k.t.is_finite() && k.x.is_finite() && (-1e-6..=1.0 + 1e-6).contains(&k.x)))
         {
-            errs.push(format!("{p}/crop_path: keys need t >= 0 and x in 0..1"));
+            errs.push(format!("{p}/crop_path: keys need finite t (segment-relative seconds; keys outside the segment are kept for undo) and x in 0..1"));
         }
     }
     if !errs.is_empty() {
