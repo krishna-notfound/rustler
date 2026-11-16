@@ -382,3 +382,13 @@ Demo outputs: `%TEMP%\rustler-e2e\exports\jfk-hook.mp4`, `%TEMP%\rustler-stream\
   at the crop edge and the smoothed path lags quick leans (worked around with split + static `focus_x`); caption-derived
   word timings stretch words over pauses, so `edit remove-pauses` finds nothing (re-transcribing with whisper fixed it);
   hormozi-pop at 0.076 renders ~45 px cap height (used a custom 0.115 style).
+
+## 2026-11-16
+- v0.1.1 released (Windows + Linux, install.sh verified in WSL; ~500 tests green crate by crate).
+- Real trial: 5 clips from Vinh Giang × Raj Shamani → release `clips-trial-1`, all QC pass; 4 bugs found and
+  fixed (crop path lost on split/trim, track-face failing with blur-fit parts, static crop crash, ">>" markers in
+  captions), merged + pushed. Gaps seen: face centring without look-room, small hook text, no way to hide source
+  pop-ups/logos, missed scene cuts in dark footage.
+- Muse's 23-item list triaged; OpusClip researched (`docs/research/opusclip.md`); v2 design drafted
+  (`docs/superpowers/specs/2026-11-16-rustler-v2-design.md`), builder check running; awaiting user approval.
+- Note: git push over SSH is blocked on this network → push over HTTPS with the gh token.

@@ -107,3 +107,10 @@ renders, checks quality, fixes problems, and delivers finished short-form clips.
   analyzers are opt-in helpers (`setup --profile full` / `--with <extra>`). **No fixed creative assets**:
   the agent can add any music/SFX/image (file, URL, or audio from an imported source); built-in packs
   are opt-in; license metadata optional (warned, not required).
+- 2026-11-16: After Muse's live test (23-item list) the user added: **OpusClip-level quality** target;
+  **agent full control of the whole timeline** (every item visible/editable, many clips); **agent-made assets
+  and templates** for future use (asset class must not be limited); **learn style from a folder of videos**
+  (the agent sees frames like a vision model); **posting JSON per clip** (agent-written title/description/
+  hashtags + campaign requirements); titles/hashtags written by the agent via a skill ("top-up" layer), not
+  templates inside Rustler. Design draft: `docs/superpowers/specs/2026-11-16-rustler-v2-design.md` (approach A
+  recommended, awaiting approval). OpusClip analysis: `docs/research/opusclip.md`.
