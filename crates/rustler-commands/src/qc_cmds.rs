@@ -137,7 +137,9 @@ pub(crate) async fn execute_qc_with(
     persist: bool,
     faces: bool,
 ) -> rustler_core::Result<(QcView, PathBuf)> {
-    let want_faces = faces || store.load_project().map(|p| p.settings.qc_faces).unwrap_or(false);
+    let want_faces = faces
+        || store.load_project().map(|p| p.settings.qc_faces).unwrap_or(false)
+        || crate::config_cmds::setting::<bool>(ctx, "qc.faces").unwrap_or(false);
     let paths = tools(ctx)?;
     let font = default_font(&paths).ok_or_else(|| {
         RustlerError::new(ErrorCode::DependencyMissing, STAGE, "no font available for the contact sheet")
