@@ -13,7 +13,12 @@ curl -fsSL -H "Authorization: Bearer $RUSTLER_TOKEN" -H "Accept: application/vnd
   https://api.github.com/repos/krishna-notfound/rustler/contents/scripts/install.sh | bash
 # installs ~/.rustler/app/rustler, puts it on PATH, runs `rustler setup run` (lite, ~0.5 GB; latest release is v0.1.1, pin with `--version v0.1.1`)
 rustler doctor run            # must say "ready": true
+rustler doctor run --network  # probes YouTube through yt-dlp; tells you which fix below you need
 ```
+If every yt-dlp call fails with `CERTIFICATE_VERIFY_FAILED` (the VM's proxy re-signs TLS with a private CA):
+`rustler setup run --insecure-tls` (writes `~/.rustler/yt-dlp.conf`; no hand-made config needed). If it reports
+`JS runtimes: none` / challenge errors: plain `rustler setup run` installs Deno into `~/.rustler/bin`, which
+Rustler puts on `PATH` for every yt-dlp call.
 If no release binary works on that machine, build from source:
 `git clone https://$RUSTLER_TOKEN@github.com/krishna-notfound/rustler && cd rustler && cargo build --release -p rustler-cli`
 (needs a C compiler; see `docs/linux.md` for the no-root zig recipe), then `./target/release/rustler setup run`.

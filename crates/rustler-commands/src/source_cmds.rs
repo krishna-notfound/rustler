@@ -224,7 +224,13 @@ async fn run_ytdlp(
     let mut cmd = tokio::process::Command::new(ytdlp);
     // Persistent cache (player JS / challenge solutions) next to the tools, so repeat calls are cheaper.
     if let Some(home) = ytdlp.parent().and_then(Path::parent) {
+        // `<home>/yt-dlp.conf` (written by `setup run --insecure-tls`), when present.
+        cmd.args(rustler_tools::ytdlp_install::config_args(home));
         cmd.arg("--cache-dir").arg(home.join("cache").join("yt-dlp"));
+    }
+    // yt-dlp finds the Deno that `setup` installed (its JS runtime for YouTube) in `<home>/bin`.
+    if let Some(bin) = ytdlp.parent() {
+        cmd.env("PATH", rustler_tools::ytdlp_install::path_with_bin(bin));
     }
     cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
     let mut child = cmd.spawn().map_err(|e| {
@@ -267,8 +273,11 @@ async fn run_ytdlp(
         .map_err(|e| RustlerError::new(ErrorCode::Internal, "yt-dlp", format!("waiting for yt-dlp: {e}")))?;
     let err_tail = err_task.await.unwrap_or_default();
     if !status.success() {
-        let (hint, retryable) = classify_ytdlp_error(&err_tail);
-        let mut e = RustlerError::new(ErrorCode::Provider, "yt-dlp", format!("yt-dlp failed: {}", trunc(err_tail.trim(), 800))).hint(hint);
+        let (hint, retryable) = match rustler_tools::ytdlp_install::classify_probe_failure(&err_tail) {
+            Some(issue) => (issue.hint, false),
+            None => classify_ytdlp_error(&err_tail),
+        };
+        let mut e =RustlerError::new(ErrorCode::Provider, "yt-dlp", format!("yt-dlp failed: {}", trunc(err_tail.trim(), 800))).hint(hint);
         if retryable {
             e = e.retryable();
         }

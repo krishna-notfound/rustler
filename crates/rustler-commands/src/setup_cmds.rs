@@ -8,8 +8,8 @@ use rustler_core::{ErrorCode, RustlerError};
 use rustler_engine_bridge::EngineClient;
 use rustler_registry::{Annotations, Ctx, Example, ProgressEvent, Registry, typed};
 use rustler_tools::{
-    DoctorReport, InstallPlan, SetupOptions, SetupReport, ToolPaths, doctor, installed_state, optional_features,
-    profile_name, setup,
+    DoctorReport, InstallPlan, SetupOptions, SetupReport, ToolPaths, doctor, installed_state, network_probe,
+    optional_features, profile_name, setup,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -33,7 +33,12 @@ pub struct SetupOutput {
 
 #[derive(Deserialize, JsonSchema, Default, Debug)]
 #[serde(default)]
-pub struct DoctorInput {}
+pub struct DoctorInput {
+    /// Also probe the network path yt-dlp uses with one real `yt-dlp --simulate` of a YouTube video. Detects a proxy that
+    /// re-signs TLS (hint: `rustler setup run --insecure-tls`) and a missing JS runtime (hint: `rustler setup run`).
+    /// Takes up to a minute; off by default.
+    pub network: bool,
+}
 
 #[derive(Deserialize, Debug, Default)]
 struct FetchResult {
@@ -139,9 +144,12 @@ async fn setup_run(ctx: Ctx, opts: SetupOptions) -> rustler_core::Result<SetupOu
     .retryable())
 }
 
-async fn doctor_run(ctx: Ctx, _input: DoctorInput) -> rustler_core::Result<DoctorReport> {
+async fn doctor_run(ctx: Ctx, input: DoctorInput) -> rustler_core::Result<DoctorReport> {
     let paths = ToolPaths::from_home(&ctx.home);
     let mut report = doctor(&paths).await;
+    if input.network {
+        report.network = Some(network_probe(&paths).await);
+    }
     if paths.venv_python.is_file() {
         let caps = async {
             let engine = EngineClient::spawn(&paths).await?;
@@ -191,6 +199,10 @@ pub fn register(reg: &mut Registry) {
                 cli: "rustler setup run --profile full",
             },
             Example {
+                description: "Behind a proxy that re-signs TLS (yt-dlp fails with CERTIFICATE_VERIFY_FAILED)",
+                cli: "rustler setup run --insecure-tls",
+            },
+            Example {
                 description: "Also fetch the medium whisper model",
                 cli: "rustler setup run --whisper-models base --whisper-models medium",
             },
@@ -205,10 +217,16 @@ pub fn register(reg: &mut Registry) {
             read_only: true,
             ..Default::default()
         },
-        vec![Example {
-            description: "Check the installation",
-            cli: "rustler doctor",
-        }],
+        vec![
+            Example {
+                description: "Check the installation",
+                cli: "rustler doctor",
+            },
+            Example {
+                description: "Also probe YouTube access through yt-dlp (TLS proxy, JS runtime)",
+                cli: "rustler doctor --network",
+            },
+        ],
         doctor_run,
     ));
 }
