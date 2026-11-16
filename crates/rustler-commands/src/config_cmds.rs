@@ -98,7 +98,7 @@ const KEYS: &[KeyDef] = &[
         key: "clip.smart_defaults",
         kind: Kind::Bool,
         default: Some(d_true),
-        doc: "Let clip creation apply smart defaults (layout, framing); used from v0.3.0 on.",
+        doc: "Let clip creation apply smart defaults (per-shot layout and framing, filler/pause cleanup); `clip create --raw` skips them for one clip.",
     },
     KeyDef {
         key: "qc.faces",
