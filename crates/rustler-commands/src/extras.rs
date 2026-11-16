@@ -7,9 +7,11 @@
 //! Writes are atomic (`ProjectStore::write_json`: temp file + rename) and serialized within the
 //! process.
 
-use rustler_core::{ClipId, ErrorCode, ProjectStore, RustlerError};
+use rustler_core::{Clip, ClipId, ErrorCode, ProjectStore, RustlerError, Segment};
+use rustler_media::facepath::CropKey;
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -83,6 +85,109 @@ pub fn update(
         map.insert(key.to_string(), v);
     }
     store.write_json(&rel(clip), &map)
+}
+
+/// Keeps face-tracked crops attached after a timeline edit.
+///
+/// `crop_paths` is keyed by segment id and its key times are relative to the segment start, so an
+/// edit that re-cuts segments (split, remove-pauses, remove-words: new ids) or moves a segment's
+/// start (trim, set-range, refine, history restore) would otherwise leave the path on a dead id or
+/// out of step with the picture, and the crop silently falls back to the static `focus_x` window.
+///
+/// For every center-crop segment of `new`:
+/// - same id as a segment of `old` with a path: keys are shifted by the start change (all keys are
+///   kept, so undoing the edit shifts them back without loss);
+/// - new id with no path yet: the path of the `old` segment with the largest source overlap (same
+///   source) is copied, shifted and cut to the piece (boundary keys are interpolated);
+/// - an id that already has a path but is not in `old` (history restore) is left as it is.
+///
+/// Paths of ids that no longer exist are kept so `history undo` gets them back. Returns warnings
+/// (e.g. a segment now reaches outside the tracked range).
+pub fn carry_crop_paths(store: &ProjectStore, old: &Clip, new: &Clip) -> Result<Vec<String>> {
+    let mut warnings = Vec::new();
+    let map = load(store, &new.id)?;
+    let Some(paths) = from_map::<BTreeMap<String, Vec<CropKey>>>(&map, "crop_paths")? else {
+        return Ok(warnings);
+    };
+    if paths.is_empty() {
+        return Ok(warnings);
+    }
+    let mut out = paths.clone();
+    let mut changed = false;
+    for seg in &new.segments {
+        if seg.layout.preset.as_deref() != Some("center-crop") {
+            continue;
+        }
+        let id = seg.id.as_str();
+        let same = old.segments.iter().find(|o| o.id == seg.id);
+        let (parent, keep_all) = match same {
+            Some(o) if paths.contains_key(id) => (o, true),
+            Some(_) => continue,
+            None if paths.contains_key(id) => continue,
+            None => {
+                let overlap = |o: &Segment| (o.end.min(seg.end) - o.start.max(seg.start)).max(0.0);
+                match old
+                    .segments
+                    .iter()
+                    .filter(|o| o.source_id == seg.source_id && paths.contains_key(o.id.as_str()) && overlap(o) > 0.0)
+                    .max_by(|a, b| overlap(a).total_cmp(&overlap(b)))
+                {
+                    Some(o) => (o, false),
+                    None => continue,
+                }
+            }
+        };
+        let shift = parent.start - seg.start;
+        if keep_all && shift.abs() < 1e-9 {
+            continue;
+        }
+        let keys = &paths[parent.id.as_str()];
+        let shifted: Vec<CropKey> = keys.iter().map(|k| CropKey { t: k.t + shift, x: k.x }).collect();
+        let new_keys = if keep_all { shifted } else { cut_keys(&shifted, seg.end - seg.start) };
+        if new_keys.is_empty() {
+            continue;
+        }
+        if seg.start < parent.start - 0.05 || seg.end > parent.end + 0.05 {
+            warnings.push(format!(
+                "segment {} now reaches outside the face-tracked range of {}; the crop holds the edge position there (re-run `rustler crop track-face {} --segment-id {}` to track it)",
+                seg.id, parent.id, new.id, seg.id
+            ));
+        }
+        out.insert(id.to_string(), new_keys);
+        changed = true;
+    }
+    if changed {
+        let value = serde_json::to_value(&out).map_err(|e| RustlerError::new(ErrorCode::Internal, "extras", e.to_string()))?;
+        update(store, &new.id, "crop_paths", |_| Ok(Some(value)))?;
+    }
+    Ok(warnings)
+}
+
+/// Keys inside `0..=len`, with interpolated keys added at both ends.
+fn cut_keys(keys: &[CropKey], len: f64) -> Vec<CropKey> {
+    let mut keys: Vec<CropKey> = keys.iter().copied().filter(|k| k.t.is_finite() && k.x.is_finite()).collect();
+    keys.sort_by(|a, b| a.t.total_cmp(&b.t));
+    if keys.is_empty() {
+        return keys;
+    }
+    let at = |t: f64| -> f64 {
+        if t <= keys[0].t {
+            return keys[0].x;
+        }
+        if t >= keys[keys.len() - 1].t {
+            return keys[keys.len() - 1].x;
+        }
+        let k = keys.partition_point(|k| k.t <= t);
+        let (a, b) = (keys[k - 1], keys[k]);
+        let span = b.t - a.t;
+        if span <= 0.0 { b.x } else { a.x + (b.x - a.x) * (t - a.t) / span }
+    };
+    let mut out = vec![CropKey { t: 0.0, x: at(0.0) }];
+    out.extend(keys.iter().copied().filter(|k| k.t > 1e-6 && k.t < len - 1e-6));
+    if len > 1e-6 {
+        out.push(CropKey { t: len, x: at(len) });
+    }
+    out
 }
 
 #[cfg(test)]

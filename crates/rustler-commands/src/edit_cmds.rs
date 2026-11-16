@@ -297,6 +297,8 @@ fn finish(
     }
     let base = old.revision;
     store.save_clip(&mut new, base)?;
+    // Face-tracked crop paths are keyed by segment id; move them onto the re-cut segments.
+    extras.warnings.extend(crate::extras::carry_crop_paths(store, old, &new)?);
     store.append_event(&Event {
         ts: Utc::now(),
         actor: ctx.actor,
