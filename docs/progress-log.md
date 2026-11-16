@@ -466,3 +466,9 @@ then wave C (timeline doc + insert/cold-open/merge/duplicate/speed/freeze, cards
   speaker real-fixture planner tests (2 recorded excerpts: speaker in crop ≥ 90 % / ≥ 95 %, no wobble, no abrupt
   starts), engine `test_faces.py` (6, landmarks).
 - Not done: §5.10 "contact strip of the crop path" image; push-in/punch-in moves (separate tasks).
+- Merged **smooth camera** (`crates/rustler-media/src/camera.rs`): hold-or-move with a ±18% safe box, minimum-jerk
+  eased moves (≤ 0.35 widths/s, ≤ 0.8/s²), anticipation from lean onset, outlier rejection, look-room from YuNet
+  landmarks (capped for big faces), cut-with-shot on source cuts; `crop track-face|track-speaker --style
+  locked|smooth|follow`, `--no-look-room`, `--switch auto|cut|pan`; QC `camera_motion` (jitter, moves/min, abrupt
+  starts). Real trial clips: 2 moves + 2 cuts in 45 s, jitter 0. Needs `rustler setup run` with this build for the
+  engine's landmark output (look-room). 380 tests passed on the branch.
