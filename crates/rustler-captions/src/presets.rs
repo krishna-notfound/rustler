@@ -47,7 +47,7 @@ pub const PRESET_TABLE: &[Preset] = &[
         name: "bold-karaoke",
         description: "Anton, uppercase white text with a thick black outline; the spoken word turns yellow.",
         font_family: "Anton",
-        size_factor: 0.072,
+        size_factor: 0.090,
         primary: 0x00FF_FFFF,
         outline_colour: 0x0000_0000,
         back_colour: 0x0000_0000,
@@ -64,7 +64,7 @@ pub const PRESET_TABLE: &[Preset] = &[
         name: "clean-white",
         description: "Poppins ExtraBold white text, soft black outline and shadow; the spoken word turns gold.",
         font_family: "Poppins ExtraBold",
-        size_factor: 0.060,
+        size_factor: 0.090,
         primary: 0x00FF_FFFF,
         outline_colour: 0x0000_0000,
         back_colour: 0x8000_0000,
@@ -81,7 +81,7 @@ pub const PRESET_TABLE: &[Preset] = &[
         name: "boxed-highlight",
         description: "Poppins ExtraBold white text; the spoken word sits on an opaque violet box.",
         font_family: "Poppins ExtraBold",
-        size_factor: 0.058,
+        size_factor: 0.090,
         primary: 0x00FF_FFFF,
         outline_colour: 0x0000_0000,
         back_colour: 0x0000_0000,
@@ -98,7 +98,7 @@ pub const PRESET_TABLE: &[Preset] = &[
         name: "hormozi-pop",
         description: "Anton, uppercase white text; the spoken word turns green with a brief scale pop.",
         font_family: "Anton",
-        size_factor: 0.076,
+        size_factor: 0.100,
         primary: 0x00FF_FFFF,
         outline_colour: 0x0000_0000,
         back_colour: 0x0000_0000,
@@ -136,4 +136,18 @@ pub fn list_presets() -> Vec<PresetInfo> {
             font_family: p.font_family.to_string(),
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preset_sizes_are_mobile_readable() {
+        // Trial finding: ~45 px caption glyphs on a 1080x1920 frame were too small on phones.
+        for p in PRESET_TABLE {
+            assert!(p.size_factor >= 0.09, "{} size_factor {} is below 0.09 of the width", p.name, p.size_factor);
+        }
+        assert!(find_preset("hormozi-pop").unwrap().size_factor >= 0.10);
+    }
 }

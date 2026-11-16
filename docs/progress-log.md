@@ -404,3 +404,20 @@ Demo outputs: `%TEMP%\rustler-e2e\exports\jfk-hook.mp4`, `%TEMP%\rustler-stream\
   questions answered as Claude's calls. Awaiting final approval of the design doc.
 - Git: default branch renamed master → **main** (GitHub default updated, master deleted); origin now HTTPS
   (SSH port blocked on this network).
+
+## 2026-11-16 — PAUSED (user at college) — how to resume
+Merged to `main` and pushed: wave A of the v2 plan — 0.1 (720p default, `--quality`, `--audio-only`), 0.2 (Deno
+JS-runtime install, `--insecure-tls`, `doctor run --network`), 0.3 (`render batch` parallel 2, ETA in progress),
+0.4 (mobile-size captions/hooks, `effect add --words`). Branch is `main` (master renamed). v0.1.2 NOT yet released.
+
+Paused mid-task (work saved as WIP commits, each branch pushed to GitHub; worktrees kept locally):
+| Branch | Task | State when paused |
+|---|---|---|
+| `worktree-agent-a9576d299e649e986` | 1.3 layers (images, masks, cutaways, caption word overrides) — Opus | layers module committed; was wiring render_cmds.rs |
+| `worktree-agent-ac9af68683ae375d1` | smooth camera planner + motion QC — Opus | planner in progress; WIP commit; guide pending |
+| `worktree-agent-acb178ee097543b7a` | 0.6 settings + 1.7 posting JSON/campaigns — Sonnet | WIP commit **may not compile**: a bad regex edit on `.push(` calls was being repaired |
+| `worktree-agent-a6bde39ca2a13759d` | director: clip.retention, score_set, campaign.analyze, guides — Opus | retention analysis module committed; was running tests |
+Resume: for each branch, re-launch an agent on its worktree with "continue Task X from the WIP commit; run its tests;
+`git merge main`", then merge to main in this order: settings/posting → layers → camera → director. Then release v0.1.2,
+then wave C (timeline doc + insert/cold-open/merge/duplicate/speed/freeze, cards, references) per
+`docs/superpowers/plans/2026-11-16-rustler-v2.md` FAST PARALLEL SCHEDULE.

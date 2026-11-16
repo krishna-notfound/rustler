@@ -28,7 +28,7 @@ fn header_values() {
     let ass = write_ass(&six(), &track("bold-karaoke"), &Canvas::default(), "Anton").unwrap();
     assert!(ass.contains("PlayResX: 1080"));
     assert!(ass.contains("PlayResY: 1920"));
-    assert!(ass.contains("Style: Default,Anton,78,"));
+    assert!(ass.contains("Style: Default,Anton,97,"));
     // MarginV = round(1920 * 0.30) = 576, alignment 2
     assert!(ass.contains(",2,40,40,576,1"));
 }
@@ -102,7 +102,7 @@ fn caption_position_follows_canvas_and_position_y() {
     let t = CaptionTrack { position_y: 0.5, ..CaptionTrack::default() };
     let ass = write_ass(&six(), &t, &canvas, "Anton").unwrap();
     assert!(ass.contains("PlayResX: 720"));
-    assert!(ass.contains("Style: Default,Anton,52,")); // round(720*0.072)
+    assert!(ass.contains("Style: Default,Anton,65,")); // round(720*0.09)
     assert!(ass.contains(",2,40,40,640,1")); // round(1280*0.5)
 }
 
@@ -120,7 +120,7 @@ fn presets_table_matches_const_and_list() {
 #[test]
 fn clean_white_recolors_only_active_word() {
     let ass = write_ass(&six(), &track("clean-white"), &Canvas::default(), "").unwrap();
-    assert!(ass.contains("Style: Default,Poppins ExtraBold,65,"));
+    assert!(ass.contains("Style: Default,Poppins ExtraBold,97,"));
     let d = dialogues(&ass);
     assert_eq!(d.len(), 6);
     assert!(d[0].contains(r"{\c&H0000D7FF&}hello{\r\blur1.5}"), "{}", d[0]);

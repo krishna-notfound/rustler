@@ -684,11 +684,11 @@ fn overlays_burn_after_captions_in_one_graph() {
     println!("{ass}");
     assert!(ass.contains("PlayResX: 1080\nPlayResY: 1920"), "{ass}");
     assert!(ass.contains("WrapStyle: 2"), "{ass}");
-    // 0.075 * 1080 = 81 px, BorderStyle 3 box padded 23 px, centred (Alignment 5).
+    // 0.085 * 1080 = 92 px, BorderStyle 3 box padded 26 px, centred (Alignment 5).
     assert!(
         ass.contains(
-            "Style: ov0,Poppins ExtraBold,81,&H00FFFFFF,&H00FFFFFF,&H00141414,&H80000000,0,0,0,0,\
-             100,100,0,0,3,23,0,5,0,0,0,1"
+            "Style: ov0,Poppins ExtraBold,92,&H00FFFFFF,&H00FFFFFF,&H00141414,&H80000000,0,0,0,0,\
+             100,100,0,0,3,26,0,5,0,0,0,1"
         ),
         "{ass}"
     );
@@ -733,7 +733,7 @@ fn overlay_wraps_to_two_balanced_lines_and_shrinks() {
     let short = hook("a", "Wait for it", 0.0, 3.0, OverlayStyle::HookTop);
     let l = overlay_layout(&short, &canvas);
     assert_eq!(l.lines, vec!["Wait for it"]);
-    assert_eq!(l.font_size, 81);
+    assert_eq!(l.font_size, 92); // round(1080 * 0.085): mobile-readable hook
     assert!(l.fits);
 
     let text = "Nobody expected the intern to fix the production outage";
@@ -756,7 +756,7 @@ fn overlay_wraps_to_two_balanced_lines_and_shrinks() {
     let lh = overlay_layout(&hook("c", &words, 0.0, 3.0, OverlayStyle::HookTop), &canvas);
     assert_eq!(lh.lines.len(), 2);
     assert!(!lh.fits);
-    assert_eq!(lh.font_size, 49);
+    assert_eq!(lh.font_size, 55); // round(92 * 0.6)
 
     // ASS: \N between lines; overlays past the end are dropped, ends clamped, fade-in after t=0.
     let late = hook("d", "late", 12.0, 14.0, OverlayStyle::Plain);
@@ -797,7 +797,7 @@ fn invalid_overlay_is_a_validation_error() {
         serde_json::from_value(json!({"id": "ovl_1", "text": "hi", "start": 0, "end": 2})).unwrap();
     assert_eq!(
         (o.style, o.position_y, o.font_size_factor, o.boxed),
-        (OverlayStyle::HookTop, 0.12, 0.075, true)
+        (OverlayStyle::HookTop, 0.12, 0.085, true)
     );
     let v = serde_json::to_value(hook("ovl_2", "x", 0.0, 1.0, OverlayStyle::LowerThird)).unwrap();
     assert_eq!(v["style"], "lower-third");
