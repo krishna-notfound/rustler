@@ -491,3 +491,8 @@ Not started (stopped right at launch, nothing saved): **timeline doc + timeline 
 Resume order: finish cards + references → merge; launch timeline + smart defaults; then templates (Opus, needs the
 timeline doc), hooks/captions presets, cleanup/cover; then knowledge refresh, `clips.auto`, release v0.2.0 + trial.
 Before releasing: run `rustler setup run` with the new build so the engine has the landmark output (look-room).
+- 2026-11-17: Merged **agent graphics** (f1.4): `asset.render_card` (PNG cards from a JSON spec: gradients, rounded
+  boxes, shadows, measured text wrap/fit, images) and `text.create_style` / `text.styles`. Real POV hook card + lower
+  third rendered and checked. Running: style references (1.6), timeline doc + edit commands (Opus), smart defaults +
+  light active speaker (Opus). Next after them: templates (Opus), hook/caption presets, cleanup/cover, knowledge,
+  clips.auto, release v0.2.0.
