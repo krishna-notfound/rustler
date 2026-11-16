@@ -96,7 +96,7 @@ rustler --project ./demo asset list --kind sfx                       # then: aud
 rustler --project ./demo render run clp_X --prefer-gpu false         # libx264
 rustler --project ./demo qc run clp_X
 rustler --project ./demo export clip clp_X --name hook-1
-rustler --project ./demo mcp serve                                   # stdio MCP (119 tools)
+rustler --project ./demo mcp serve                                   # stdio MCP (one tool per registry command)
 rustler --project ./demo gui --no-open --port 47900                  # prints http://127.0.0.1:47900/?t=<token>; no token = HTTP 401
 ```
 

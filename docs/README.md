@@ -15,7 +15,7 @@ Read this file first when resuming work, then `progress-log.md`.
 | `linux.md` | Running Rustler on Linux x86_64 without a GPU (cloud agents): install, build (incl. no-root zig route), setup, doctor, measured timings, known limits |
 | `install.md` | Installing prebuilt release binaries (Windows zip, Linux tar.gz) with `scripts/install.ps1` / `scripts/install.sh`: private-repo token/`gh` auth, flags, manual download, how a release is cut |
 | `desktop.md` | Desktop app (`rustler desktop` / `rustler-desktop`): native window + menu hosting the same GUI (wry/tao, WebView2), why not Tauri, Linux feature gate, how it was verified |
-| `features/README.md` | Feature index f01–f29 with slices, dependencies, status |
+| `features/README.md` | Feature index f01–f36 with slices, dependencies, status |
 | `research/00-comparison-matrix.md` | Research synthesis: best source per capability, choices, gaps, assets |
 | `research/00-license-and-dependency-inventory.md` | Licenses of the 7 studied repos and their deps/assets |
 | `research/<repo>.md` | One deep research report per studied repo |
@@ -45,4 +45,4 @@ repos/       cloned upstream repos studied in research (gitignored, read-only)
 | 2 Architecture | approved — `superpowers/specs/2026-11-15-rustler-design.md` |
 | 3 Specs | design approved; f01–f09 detailed in the Slice 1 plan |
 | 4 Implementation plan | approved; executing (Slice 1 + 5-hour scope) |
-| 5+ Implementation | COMPLETE — all slices built, CLI (118 cmds) + full GUI; see `progress-log.md` |
+| 5+ Implementation | COMPLETE — all slices built, CLI (178 cmds) + full GUI; see `progress-log.md` |

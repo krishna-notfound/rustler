@@ -110,11 +110,12 @@ Start: `rustler mcp serve` (stdio). Then:
   `qc compare`, `asset show` for fonts and caption styles) return a file path too.
 - **Prompts** = ready workflows: `make_viral_clips`, `clip_from_stream`, `streamer_split_clip`,
   `quick_scan_source`, `polish_clip`, `review_clip`, `fix_qc_failures`, `restyle_clip`,
-  `batch_from_brief`, `hinglish_podcast_clips`.
+  `batch_from_brief`, `hinglish_podcast_clips`, `direct_campaign`, `hook_lab`, `learn_style_from_folder`,
+  `write_clip_meta`, `apply_template_batch`.
 - **Guides** (this knowledge book) are exposed by the server too (`rustler://guides/<id>`); read
   `start-here` first.
 
-## 7. Command map (all 118 registered commands)
+## 7. Command map (all 178 registered commands)
 
 Every registered command, by area. `<x>` = positional, `--x` = flag, `*` = required, `?` = optional.
 `<clip>` = clip id, `<src>` = source id. Only the useful arguments are listed:
@@ -138,6 +139,7 @@ Commands that change a clip save a new revision (`history undo` reverts); pass `
 | `project.unpack <archive> <dir>` | extract a pack, fix media paths, register it |
 | `project.set_permissions {network?, downloads?, fs_roots?, cookies_file?}` | what the project may download/read |
 | `project.set_settings {caption_script?, default_whisper_model?, qc_faces?}` | `latin` / `devanagari` / `as_transcribed` captions; default whisper model (`base`); run the engine face checks in every `qc run` (off by default) |
+| `config.list`, `config.get {key?, scope?}`, `config.set <key> <value> {scope?}`, `config.unset <key> {scope?}` | settings with their source (project, global, default), allowed values and meaning: smart defaults on/off, the default template, QC faces, render quality and so on. Project scope (`<project>/config.json`) wins over global (`<home>/config.json`); an explicit command flag always wins over a setting |
 | `guide.list`, `guide.show <id>`, `guide.search <query>` | this knowledge book |
 | `prompt.list`, `prompt.show <name> --args` | ready-made workflows |
 
@@ -153,6 +155,9 @@ CLI-only helpers (not registry commands): `rustler help`, `rustler commands list
 | `source.search <query> {limit?}` | public YouTube search |
 | `source.import <input> {sections?, name?}` | local file or URL (`--sections` downloads only those windows); proxy + wav |
 | `source.list`, `source.show <src>` | sources; probe and which analyses exist |
+| `transcript.import <target: src or url> {file?, text?, format?, language?, times?, replace?}` | import a transcript you already have (VTT/SRT, YouTube json3, words JSON, or `[mm:ss] text` lines) and skip yt-dlp and whisper |
+| `reference.import <name> {folder? \| files?, recursive?}` | make a style-reference set from example shorts (proxies and audio; originals untouched) |
+| `reference.analyze <name>`, `reference.list`, `reference.show <name> {video?}` | measure pacing, captions, hook text, zoom, layout, loudness; contact sheets and first-3-second filmstrips to LOOK at (guide `learn-style-from-videos`) |
 | `analyze.quick <src> {transcribe?: auto\|always\|never}` | light first look: loudness + scenes (on the proxy) + transcript + highlight signals. `auto` reuses captions fetched for a URL source instead of running whisper; `never` skips the transcript; no OCR/events/faces/speakers |
 | `analyze.transcribe <src> {model?, language?, device?, force?}` | transcription alone (resumable) |
 | `analyze.scenes <src>`, `analyze.audio <src>` | scene cuts; loudness curve, peaks, silences |
@@ -189,6 +194,10 @@ CLI-only helpers (not registry commands): `rustler help`, `rustler commands list
 | `edit.freeze <clip> --out-t* --duration* {base-revision?}` | hold the frame at an edit time (silent) |
 | `history.list <clip>`, `history.undo <clip>`, `history.restore <clip> <revision>` | revisions; undo/restore make a NEW revision and bring back the layers (extras) of that revision too |
 
+`clip.create` also takes `--raw` (skip the smart defaults), `--template <name[@ver]>` (apply a template right after the
+smart defaults) and reports `smart.decisions[]` (each automatic layout, framing, filler and pause decision with the
+command that overrides it, plus `smart.undo_all`). Settings `clip.smart_defaults` and `template.default` change those defaults.
+
 ### Timeline document (whole clip)
 
 | Command | What it does |
@@ -211,6 +220,8 @@ CLI-only helpers (not registry commands): `rustler help`, `rustler commands list
 | `layout.remove_region <clip> <region>`, `layout.reorder <clip> --region-ids*` | remove; back-to-front draw order |
 | `layout.save_preset <name> <from_clip>`, `layout.apply_preset <clip> <name>`, `layout.delete_preset <name>` | reuse a layout across clips |
 | `crop.track_face <clip> {segment-id?, crop-w?}`, `crop.clear <clip>` | follow the speaker's face (center-crop segments) / undo |
+| `crop.track_active <clip> {segment-id?, style?, switch?, look_room?}` | light active speaker (no diarization): the crop follows whoever's mouth moves while somebody speaks, smooth camera, reports the turns |
+| `layout.plan <clip> {apply?}` | per-shot layout plan (one face: center-crop + smooth track; two or more: active speaker; no face or graphics: blur-fit or zoom-fit); proposes only, `--apply` saves it |
 
 ### Captions and text on screen
 
@@ -220,7 +231,11 @@ CLI-only helpers (not registry commands): `rustler help`, `rustler commands list
 | `caption.list_styles`, `caption.styles` | preset names; presets + custom styles with scope, font, active-word kind |
 | `caption.create_style <name> {base?, font-family?, primary?, active-color?, active-kind?, box-color?, outline?, size-factor?, scope?}` | custom style saved as an asset |
 | `caption.export_srt <clip>` | `clips/<id>/captions.srt` |
-| `overlay.add_text <clip> <text> {style?, start?, end?, position-y?, box?}` | hook title / lower third / plain text (`hook-top`, `lower-third`, `plain`) |
+| `caption.keywords <clip> {words? \| auto?, max?, color?}` | mark the keywords the `keyword-highlight` preset colours and enlarges (`--auto` proposes numbers, emphasis words, names; `--dry-run` previews) |
+| `caption.word <clip> {source-id + word-i \| match, color?, scale?, emoji?, hide?}`, `caption.words_list <clip>`, `caption.words_clear <clip>` | style, list or clear single caption words (colour, size, emoji after the word for `emoji-karaoke`, hide); they follow re-cuts |
+| `text.create_style <name> --font --size --color {...}`, `text.styles` | save / list text looks (font, size, colour, outline, box, shadow) for cards and overlays |
+| `overlay.add_text <clip> <text> {style?, start?, end?, position-y?, box?, anim?, sfx?, sfx-volume-db?}` | hook title / lower third / plain text (`hook-top`, `lower-third`, `plain`, and the viral hook styles below); `--anim none\|pop\|zoom-in\|slide\|typewriter`, `--sfx` adds a whoosh at the hook's start |
+| `overlay.hook_styles` | the viral hook styles `hook-big`, `hook-box-yellow`, `hook-outline`, `hook-pov`, `hook-question` with their entry animation, position and size |
 | `overlay.edit <clip> <overlay> {text?, start?, end?, style?, ...}` | change one overlay |
 | `overlay.list <clip>`, `overlay.remove <clip> <overlay>` | list with wrapped lines / remove |
 | `overlay.progress_bar <clip> --enabled* {color?, height?, position?}` | bar that fills the width over the clip |
@@ -229,7 +244,7 @@ CLI-only helpers (not registry commands): `rustler help`, `rustler commands list
 
 | Command | What it does |
 |---|---|
-| `transition.set <clip> <after_segment_id> <kind> {duration?}` | `cut`, `fade`, `dissolve`, `wipeleft`, `wiperight`, `slideup`, `zoomin` (frame-exact, shortens the clip by the overlap) |
+| `transition.set <clip> <after_segment_id> <kind> {duration?}` | `cut`, `fade`, `dissolve`, `wipeleft`, `wiperight`, `slideup`, `zoomin`, plus the pacing kinds `flash` (white, 0.1 s), `flashblack` (0.1 s) and `whip` (0.2 s) (frame-exact, shortens the clip by the overlap) |
 | `transition.list <clip>`, `transition.clear <clip> {after-segment-id?}` | list with rendered windows and edit vs rendered duration / remove |
 | `effect.add <clip> <kind> --start* --end* {amount?}` | `punch-in`, `zoom-slow`, `shake`, `flash` |
 | `effect.list <clip>`, `effect.remove <clip> <effect_id>` | list (also shows the progress bar) / remove |
@@ -257,6 +272,46 @@ CLI-only helpers (not registry commands): `rustler help`, `rustler commands list
 | `qc.compare <clip> <render_a> <render_b>` | side-by-side contact sheet + per-check diff |
 | `export.clip <clip> {name?, render-id?, allow-fail?}` | copy a passing render + report + srt to `exports/` |
 
+### Layers: images, B-roll, masks
+
+Each has `add`, `edit`, `list`, `remove` (all take `<clip>`; times in seconds or anchored to transcript words with
+`--start-word` / `--end-word`; `--base-revision N` guards concurrent edits). Layers follow their content on re-cuts.
+
+| Command | What it does |
+|---|---|
+| `image.add <clip> --rect* {asset? \| file? \| url?, start?, end?, opacity?, z?, anim-in?, above-captions?}` | logo, sticker, PNG card or GIF in a canvas rect (animations fade, pop, slide_up) |
+| `cutaway.add <clip> --mode* {source-id? \| asset? \| file? \| url?, src-start?, start?, end?, rect?, mute?}` | B-roll: another source, asset, file or URL, full-frame or picture-in-picture (speech keeps playing) |
+| `mask.add <clip> --kind* --rect* {start?, end?, strength?, color?}` | hide part of the picture (pop-up, logo, burned-in subtitles) with a blur, solid box or pixelation |
+| `image.edit`, `image.list`, `image.remove`, `cutaway.edit`, `cutaway.list`, `cutaway.remove`, `mask.edit`, `mask.list`, `mask.remove` | change / list with resolved and rendered times / remove |
+| `asset.render_card <name> --spec*` | design a graphic (title card, badge, CTA, logo plate) from a JSON spec; saved as an image asset and shown to you; place it with `image.add` |
+
+### Templates
+
+| Command | What it does |
+|---|---|
+| `template.list`, `template.show <name[@ver]>` | project, global and built-in templates (`podcast-viral`, `streamer-split`); the JSON, versions, what it needs and what is missing here |
+| `template.create <name> {from-clip? \| template?, include-text?, description?, scope?}` | save a clip's look (captions, layout, hook look, text looks, brand images, progress bar, audio, sfx/effect patterns, transitions) as version 1 |
+| `template.update <name> {from-clip? \| template? \| patch?, description?}` | a new version (old versions stay); updating a starter saves your own shadowing version |
+| `template.apply <name[@ver]> {clip-ids? \| all?, overrides?, dry-run?}` | restyle clips through `timeline.apply`: one undoable revision per clip, every clip validated first, re-applying is a no-op, a missing asset or font fails with `not_found` naming it |
+| `template.diff <a> <b>`, `template.delete <name[@ver]>` | what differs / remove (starters cannot be deleted) |
+| `template.export <name> --out*`, `template.import --file* {scope?}` | zip with the template and every font, style, image, music and sfx it needs / install it on another machine |
+
+### Retention, cover, post copy and campaigns
+
+| Command | What it does |
+|---|---|
+| `clip.retention <clip>` | retention map of the output (per-second visual change, speech, silence, loudness), first-frame hook, dead zones with exact fix commands, ending type, 0-100 score; measured on the latest render when there is one |
+| `clip.score_set <clip> <hook> <flow> <value> <trend> {notes?}` | record your 4-part score (0-25 each) for the report |
+| `clip.cover <clip> {auto? \| out-t?}` | pick the cover frame of the latest render (sharp, face visible, not on a cut), save `clips/<id>/cover.jpg`, look at it; `export.clip` copies it as `<name>.cover.jpg` and names it in the post JSON |
+| `clip.meta_context <clip>` | what you need to WRITE the posting copy: spoken words, hook, platform limits, campaign rules with a live check, brief, saved copy |
+| `clip.meta_set <clip> --platforms* {campaign-id?}` | save the title, description, hashtags and mentions you wrote per platform (`shorts`, `reels`, `tiktok`); `export.clip` writes `<name>.post.json`; QC checks `meta_present` and `campaign_compliant` |
+| `campaign.create <id> {name?, platform?, payout?, duration?, hashtags-required?, mentions-required?, rules?}` | one job's rules: machine rules Rustler checks and agent rules you judge |
+| `campaign.list`, `campaign.show <id>`, `campaign.delete <id>` | list / show every requirement / delete |
+| `campaign.analyze {campaign-id?}` | hard rules, duration window, payout model to strategy, recommended clips per source, checklist (reads `brief.json` when no campaign is named) |
+| `campaign.mark <clip> <rule_id> --pass* --reason*` | record the outcome of an agent-checked rule (what you saw) |
+
+Guides: `director-retention`, `campaigns-and-posting`, `templates-and-brand`, `editing-toolkit`.
+
 ### Briefs, variants, batches
 
 | Command | What it does |
@@ -277,6 +332,7 @@ CLI-only helpers (not registry commands): `rustler help`, `rustler commands list
 | `asset.list {kind?, tag?}`, `asset.search <query>`, `asset.show <id>` | fonts, music, sfx, images, caption styles, layouts with licenses; `show` makes a preview |
 | `asset.add <path>\|--url <link>\|source:<id>@a-b --kind* {license?, name?, tags?, scope?, source-url?, attribution?}` | add anything: a file, a direct link, or the audio of an imported video; no license needed (recorded as "unspecified (added by user/agent)" with a warning) |
 | `asset.remove <id>` | remove (built-ins cannot be removed) |
+| `asset.render_card <name> --spec*` | design a card or badge from a JSON spec (see Layers above) |
 
 ### Speakers
 

@@ -624,3 +624,30 @@ merge, then templates (Opus), knowledge refresh, clips.auto, `rustler setup run`
   (6) `-q` hides command warnings in the CLI JSON.
 - Deviations: new files `keyword_cmds.rs` (for `caption.keywords`) and `emoji.rs`; one-line hooks in `render_cmds.rs` (emoji) and `qc_cmds.rs`
   (export cover); the cover record is extras key `cover` (post JSON already read it), not `meta.cover`.
+
+## 2026-11-16 - Agent-facing knowledge and docs refreshed for v2 (docs only, no code changes)
+
+- Ground truth: built `rustler-cli` into `D:\rustler-build\docs` (deleted afterwards) and used `rustler commands list` (178 commands,
+  41 groups), `commands describe`, `guide list` and `prompt list`. `clips.auto` is not in that build (it merges separately).
+- `knowledge/guides/start-here.md`: new "v2 recommended flow" (smart defaults, template, retention/director, hooks, cold open,
+  keyword captions, cover, post JSON, export), two new step-table rows, pointers to `templates-and-brand`, `director-retention`,
+  `learn-style-from-videos`, `campaigns-and-posting` and the matching prompts; one-line mention of the optional `rustler clips auto`.
+- `knowledge/guides/cli-reference-conventions.md`: command map now lists all 178 commands (51 were missing: config, campaign,
+  template, reference, image/cutaway/mask, caption word/keywords, hook-styles, clip retention/cover/meta, layout plan, crop
+  track-active, transcript import, asset render-card, text styles) in new sections (Layers, Templates, Retention/cover/post copy/
+  campaigns); transition kinds now include flash, flashblack, whip; MCP prompt list updated. Mechanical check: every
+  `group.action` in `commands list` appears in the file and no stale command name does.
+- Prompts: `make_viral_clips` and `direct_campaign` now cover smart defaults/`--raw`, templates, cold open, timeline, hook styles,
+  keyword captions, retention, cover and post JSON; new prompt `apply_template_batch` (plan Task 1.7/1.8 list). Total 15 prompts, 21 guides.
+- `skills/rustler/SKILL.md`, `skills/rustler/AGENTS.md` (there is no repo-root AGENTS.md; this is the agent-facing one),
+  `docs/context/AGENTS.md`, `docs/agent-integration.md`, `knowledge/README.md`: v2 capabilities, full group table, guide/prompt lists.
+- `docs/MUSE.md`: copy-paste prompt rewritten for v2 (smart defaults + `--template podcast-viral`, hook style, retention check, cover,
+  post JSON, never publish); release line now v0.2.0.
+- Counts replaced (118 -> 178; 17 guides/10 prompts -> 21/15) in `CLAUDE.md` (also the `*_cmds.rs` group list and a v2 bullet),
+  `README.md`, `docs/README.md`, `docs/context/progress-tracker.md`, `docs/agent-integration.md`, `docs/linux.md`.
+  `docs/install.md` and older progress-log entries keep their historical 118/119 figures (release facts). The count must be
+  bumped after `clips.auto` merges.
+- Verified: `cargo test -p rustler-knowledge` (see result below in the commit message / run). Not verified: no real end-to-end run of
+  the new prompt text against a project (docs-only task).
+- Found inconsistent: `CLAUDE.md` deferred list said "sticker/image layers" although `image.*` exists (fixed); the f11 feature
+  row in `docs/features/README.md` still says "17 guides, 10 prompts" (historical row, left as is).
