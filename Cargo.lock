@@ -3563,7 +3563,7 @@ dependencies = [
 
 [[package]]
 name = "rustler-captions"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "rustler-core",
  "schemars",
@@ -3574,7 +3574,7 @@ dependencies = [
 
 [[package]]
 name = "rustler-cli"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -3598,7 +3598,7 @@ dependencies = [
 
 [[package]]
 name = "rustler-commands"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "ab_glyph",
  "chrono",
@@ -3627,7 +3627,7 @@ dependencies = [
 
 [[package]]
 name = "rustler-core"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "chrono",
  "schemars",
@@ -3642,7 +3642,7 @@ dependencies = [
 
 [[package]]
 name = "rustler-desktop"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "muda",
@@ -3662,7 +3662,7 @@ dependencies = [
 
 [[package]]
 name = "rustler-engine-bridge"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "rustler-core",
  "rustler-registry",
@@ -3677,7 +3677,7 @@ dependencies = [
 
 [[package]]
 name = "rustler-gui"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "axum",
@@ -3696,7 +3696,7 @@ dependencies = [
 
 [[package]]
 name = "rustler-knowledge"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "include_dir",
  "rustler-core",
@@ -3707,7 +3707,7 @@ dependencies = [
 
 [[package]]
 name = "rustler-mcp"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "base64",
@@ -3726,7 +3726,7 @@ dependencies = [
 
 [[package]]
 name = "rustler-media"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "ab_glyph",
  "image",
@@ -3747,7 +3747,7 @@ dependencies = [
 
 [[package]]
 name = "rustler-registry"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "async-trait",
  "rustler-core",
@@ -3761,7 +3761,7 @@ dependencies = [
 
 [[package]]
 name = "rustler-tools"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "chrono",
  "flate2",

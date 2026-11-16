@@ -148,7 +148,9 @@ fn hormozi_pop_pops_only_active_word_on_own_layer() {
     assert!(!d[0].contains(r"\t("), "base layer must not animate");
     assert!(d[1].starts_with("Dialogue: 1,"), "{}", d[1]);
     assert_eq!(d[1].matches(r"\t(").count(), 2);
-    assert!(d[1].contains(r"\t(0,80,\fscx108\fscy112)\t(80,160,\fscx100\fscy100)"));
+    // Height-only pop: the pop layer keeps layer 0's line layout, so it never covers the spaces.
+    assert!(d[1].contains(r"\t(0,80,\fscy112)\t(80,160,\fscy100)"));
+    assert!(!d[1].contains(r"\fscx108"));
     assert!(d[1].contains(r"\c&H005EFF2B&"));
     assert!(d[1].contains("HELLO"));
     assert_eq!(PRESET_TABLE.iter().filter(|p| p.active == ActiveStyle::Pop).count(), 1);

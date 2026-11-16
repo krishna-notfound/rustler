@@ -10,7 +10,9 @@ const MAX_GAP: f64 = 0.6;
 /// How long the last word of a chunk lingers after it ends.
 const TAIL: f64 = 0.15;
 /// Pop animation: grow in 80 ms, settle in another 80 ms (relative to event start).
-const POP: &str = r"\t(0,80,\fscx108\fscy112)\t(80,160,\fscx100\fscy100)";
+/// Height only: a wider word on the pop layer would shift that layer's centred line and cover the
+/// spaces next to it (trial 3: "BIGGESTMISUNDERSTANDINGABOUT").
+const POP: &str = r"\t(0,80,\fscy112)\t(80,160,\fscy100)";
 const HIDE: &str = r"\alpha&HFF&";
 const SHOW: &str = r"\alpha&H00&";
 
@@ -337,14 +339,8 @@ fn write_ass_impl(
                                 None => POP.to_string(),
                                 Some(f) => {
                                     let p = |v: f64| (v * f).round() as i64;
-                                    format!(
-                                        r"{}\t(0,80,\fscx{}\fscy{})\t(80,160,\fscx{}\fscy{})",
-                                        fsc(f),
-                                        p(108.0),
-                                        p(112.0),
-                                        p(100.0),
-                                        p(100.0)
-                                    )
+                                    // Width stays at the word's own size (same layout as layer 0).
+                                    format!(r"{}\t(0,80,\fscy{})\t(80,160,\fscy{})", fsc(f), p(112.0), p(100.0))
                                 }
                             };
                             format!(r"{{{SHOW}\c{ac}{pop}}}{d}{{{HIDE}\fscx100\fscy100}}")

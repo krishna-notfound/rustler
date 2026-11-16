@@ -753,3 +753,6 @@ directed 77–94; 10 bugs). Four parallel fix branches (Opus x3, Sonnet x1, buil
   measured (-14.0 LUFS, peaks -2.0 to -3.4 dBTP); new visible bug logged as improvement 0 (adjacent keyword-highlighted
   caption words lose their spaces). Not run before release: a full `cargo test --workspace` after the clips.auto and
   framing merges (each branch passed its own suites; commands/media/knowledge/tools were green after the grade merge).
+- **v0.2.3** (2026-11-17): caption spacing fix (trial-3 improvement 0: the hormozi pop widened the active word on
+  its own layer and covered the neighbouring spaces for 0.16 s; pop is now height-only; re-rendered frame verified).
+  Full `cargo test --workspace --no-fail-fast`: 100 targets, 802 passed, 0 failed (covers every merge of the day).
