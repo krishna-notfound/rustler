@@ -224,6 +224,62 @@ async fn split_at_out_t() {
     assert_eq!(e.code, ErrorCode::Validation, "splitting exactly on an existing boundary");
 }
 
+/// A face-tracked crop path (extras.json `crop_paths`, keyed by segment id, segment-relative
+/// times) must follow the segments through split / remove-pauses / trim and back through undo.
+#[tokio::test]
+async fn crop_paths_follow_edits() {
+    let fx = fixture();
+    let seg = fx.first_seg();
+    let extras_rel = Path::new("clips").join(fx.id()).join("extras.json");
+    // A path that pans from 0.2 at t=0 to 0.6 at t=10 (the whole [10, 20) segment).
+    fx.store()
+        .write_json(&extras_rel, &json!({"crop_paths": {seg.clone(): [{"t": 0.0, "x": 0.2}, {"t": 10.0, "x": 0.6}]}}))
+        .unwrap();
+    let paths = |fx: &Fx| -> Value { fx.store().read_json::<Value>(&extras_rel).unwrap()["crop_paths"].clone() };
+    let x_at = |keys: &Value, t: f64| -> f64 {
+        let k = keys.as_array().unwrap();
+        let p: Vec<(f64, f64)> = k.iter().map(|k| (k["t"].as_f64().unwrap(), k["x"].as_f64().unwrap())).collect();
+        if t <= p[0].0 {
+            return p[0].1;
+        }
+        for w in p.windows(2) {
+            if t <= w[1].0 {
+                return w[0].1 + (w[1].1 - w[0].1) * (t - w[0].0) / (w[1].0 - w[0].0);
+            }
+        }
+        p[p.len() - 1].1
+    };
+
+    // split at out 3.0 (source 13.0): piece b starts at source 13 -> x there is 0.32.
+    let out = fx.run("edit.split", json!({"clip_id": fx.id(), "out_t": 3.0})).await.unwrap();
+    let a = out["segments"][0]["id"].as_str().unwrap().to_string();
+    let b = out["segments"][1]["id"].as_str().unwrap().to_string();
+    let p = paths(&fx);
+    approx(x_at(&p[&a], 0.0), 0.2);
+    approx(x_at(&p[&a], 3.0), 0.32);
+    approx(x_at(&p[&b], 0.0), 0.32);
+    approx(x_at(&p[&b], 7.0), 0.6);
+    assert!(p.get(&seg).is_some(), "the old id keeps its path for undo");
+
+    // trim the head of b by 1 s: its keys shift, x at the new start is the source-13.0+1 value.
+    fx.run("edit.trim", json!({"clip_id": fx.id(), "segment_id": b, "start_delta": 1.0})).await.unwrap();
+    approx(x_at(&paths(&fx)[&b], 0.0), 0.36);
+    // undo restores the old start and shifts the keys back without loss.
+    fx.run("history.undo", json!({"clip_id": fx.id()})).await.unwrap();
+    approx(x_at(&paths(&fx)[&b], 0.0), 0.32);
+    approx(x_at(&paths(&fx)[&b], 7.0), 0.6);
+
+    // remove-pauses re-cuts b into new pieces that each carry the right part of the path.
+    let out = fx.run("edit.remove_pauses", json!({"clip_id": fx.id(), "min_gap": 0.8, "keep": 0.2})).await.unwrap();
+    let p = paths(&fx);
+    let clip = fx.clip();
+    for s in &clip.segments {
+        let keys = p.get(s.id.as_str()).unwrap_or_else(|| panic!("segment {} lost its crop path: {out}", s.id));
+        approx(x_at(keys, 0.0), 0.2 + 0.04 * (s.start - 10.0));
+        approx(x_at(keys, s.end - s.start), 0.2 + 0.04 * (s.end - 10.0));
+    }
+}
+
 #[tokio::test]
 async fn delete_last_segment_is_validation() {
     let fx = fixture();

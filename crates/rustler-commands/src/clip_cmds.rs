@@ -993,7 +993,20 @@ pub fn tracking_crop_width(seg: &Segment, override_w: Option<f64>) -> Result<f64
 async fn crop_track_face(ctx: Ctx, i: TrackFaceIn) -> Result<TrackFaceOut> {
     let store = ctx.store()?;
     let clip = store.load_clip(&i.clip_id)?;
-    let segs = select_segments(&clip, i.segment_id.as_ref(), "crop.track_face")?;
+    let mut segs = select_segments(&clip, i.segment_id.as_ref(), "crop.track_face")?;
+    let mut skipped = Vec::new();
+    if i.segment_id.is_none() {
+        // Whole clip: track the center-crop segments and leave the others (a blur-fit chart or
+        // wide shot) alone, instead of failing the whole call on the first non-crop segment.
+        let (crop, other): (Vec<&Segment>, Vec<&Segment>) =
+            segs.into_iter().partition(|s| s.layout.preset.as_deref() == Some("center-crop"));
+        if crop.is_empty() {
+            return Err(validation("crop.track_face", format!("clip {} has no center-crop segment to track", clip.id))
+                .hint("run `rustler clip set-layout <clip_id> --preset center-crop` first"));
+        }
+        skipped = other.iter().map(|s| format!("segment {} skipped: layout {:?} is not center-crop", s.id, s.layout.preset)).collect();
+        segs = crop;
+    }
     let widths: Vec<f64> = segs.iter().map(|s| tracking_crop_width(s, i.crop_w)).collect::<Result<_>>()?;
     let next = vec![
         format!("rustler render preview-frame {} --out-t 1.0", clip.id),
@@ -1006,7 +1019,7 @@ async fn crop_track_face(ctx: Ctx, i: TrackFaceIn) -> Result<TrackFaceOut> {
     let engine = rustler_engine_bridge::EngineClient::spawn(&paths).await?;
     let mut extras = load_extras(&store, &clip.id)?;
     let mut out = Vec::new();
-    let mut warnings = Vec::new();
+    let mut warnings = skipped;
     let mut failure = None;
     for (seg, crop_w) in segs.iter().zip(widths) {
         let source = store.load_source(&seg.source_id)?;

@@ -61,6 +61,18 @@ fn sentence_end_splits_chunk() {
     assert_eq!(chunks.iter().map(Vec::len).collect::<Vec<_>>(), vec![1, 2]);
 }
 
+/// YouTube caption speaker-change markers (`>>`) are timed words in the transcript; they must
+/// not be burned in as captions.
+#[test]
+fn speaker_markers_are_not_captioned() {
+    let words = vec![w(">>", 0.0, 0.6), w("Yeah.", 0.1, 0.6), w(">>", 0.5, 0.6), w("And", 0.7, 0.9), w("-", 0.9, 1.0), w("then", 1.0, 1.2)];
+    let chunks = chunk_words(&words, 3, 0.6);
+    let texts: Vec<Vec<&str>> = chunks.iter().map(|c| c.iter().map(|w| w.text.as_str()).collect()).collect();
+    assert_eq!(texts, vec![vec!["Yeah."], vec!["And", "then"]]);
+    let ass = write_ass(&words, &track("bold-karaoke"), &Canvas::default(), "Anton").unwrap();
+    assert!(!ass.contains(">>"), "{ass}");
+}
+
 #[test]
 fn time_format() {
     let words = vec![w("x", 3725.456, 3725.9)];

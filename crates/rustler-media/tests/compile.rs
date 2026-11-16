@@ -489,6 +489,21 @@ fn crop_path_emits_sendcmd_x_only() {
     assert_eq!(prev_x, 1920 - 606, "pan clamps at the right edge");
 }
 
+/// A path that never moves (a single key, as `crop.track_face` returns for a short still
+/// segment) must not emit an empty sendcmd file: ffmpeg rejects it ("No commands were
+/// specified") and the whole preview/render fails. It becomes a plain crop at that x.
+#[test]
+fn still_crop_path_uses_plain_crop() {
+    let fx = fixture(center_crop(), probe(1920, 1080, 60.0, true), 0.0, 2.0);
+    let seg_id = fx.clip.segments[0].id.clone();
+    let mut extras = CompileExtras::default();
+    extras.crop_paths.insert(seg_id, vec![CropKey { t: 0.0, x: 0.25 }]);
+    let p = build_graph(&fx.clip, &fx.sources, false, &extras).unwrap();
+    assert!(p.cmd_files.is_empty(), "{:?}", p.cmd_files);
+    assert!(!p.graph.contains("sendcmd"), "{}", p.graph);
+    assert!(p.graph.contains("crop=606:1080:480:0"), "{}", p.graph);
+}
+
 #[test]
 fn crop_path_for_other_segment_is_ignored() {
     let fx = fixture(center_crop(), probe(1920, 1080, 60.0, true), 0.0, 10.0);
