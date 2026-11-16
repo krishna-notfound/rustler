@@ -733,3 +733,17 @@ directed 77–94; 10 bugs). Four parallel fix branches (Opus x3, Sonnet x1, buil
   v0.2.1 binary on a copy of the trial-2 project (`D:\rustler-build\trial3`): `timeline show` and `template apply
   --dry-run` now succeed on all five directed clips (all failed on v0.2.0 because of their hook styles); re-applying
   `podcast-viral` to clip 05 adds no second set of punch-ins.
+
+### 2026-11-17 — follow-ups merged; trial 3 on a new Raj Shamani episode
+- Merged one build at a time after the RAM crash (repo `.cargo/config.toml` caps `jobs = 4`, `RUST_TEST_THREADS=4`):
+  zoom policy (no automatic punch-ins anywhere; retention only suggests; static gap 6 s, pacing target 1.5/10 s;
+  held, subtle punch-ins when the agent asks), template fields (layout_rules, keyword/emoji, cutaway_rules, music by
+  tag, brand logo/CTA/outro, export, post_defaults; f35), colour grading `grade.*` (6 commands, never automatic; f38),
+  clips.auto follow-ups (no zooms, whisper fallback for caption-less URLs, cover ~3 s instead of ~15 s, 720p sections
+  two at a time, GPU encoder; f37), framing follow-ups (face margin on the box spread: edge samples 15 -> 2 on trial
+  clip 05; smart-defaults scan ~1.8x faster; subscribe-card detector with solid masks listed as decisions; YouTube
+  caption markup stripped; f34). 185 commands; commands/media/knowledge/tools tests green after the grade merge
+  (620 passed); each later branch passed its own suites before merge.
+- Trial 3: `clips auto` on Raj Shamani x Sam Altman (68 min) -> 3 clips, QC pass, retention 86 / 58 / 57, 119 s total.
+  Report and ranked improvements: `docs/research/trial-3-2026-11-17.md` (top: skip the source's intro trailer when
+  ranking; burned-in source text/subtitles; hook and cold-open suggestions). Not released yet (latest release v0.2.1).
