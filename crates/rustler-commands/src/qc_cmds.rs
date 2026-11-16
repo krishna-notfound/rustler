@@ -152,7 +152,10 @@ pub(crate) async fn execute_qc_with(
     };
     let render_path = store.resolve(&render.path);
     let extras = gather_extras(ctx, store, &clip, &render_path, &paths, want_faces).await;
-    let report = rustler_media::run_qc_with(&paths, &clip, render, &render_path, &font, &out_dir, &extras).await?;
+    let mut report = rustler_media::run_qc_with(&paths, &clip, render, &render_path, &font, &out_dir, &extras).await?;
+    // v2: the agent-written posting copy and the campaign's rules are part of "done".
+    report.checks.extend(crate::post_cmds::qc_checks(store, &clip));
+    report.passed = report.checks.iter().all(|c| c.status != QcStatus::Fail);
     let v = view(report);
     let report_path = out_dir.join(format!("{}.json", render.id));
     if !persist {
@@ -512,6 +515,8 @@ pub struct ExportOutput {
     /// Caption sidecar, when captions are enabled and the transcript covers the clip.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub srt: Option<PathBuf>,
+    /// `<name>.post.json`: the agent-written title/description/hashtags plus campaign compliance.
+    pub post: PathBuf,
     pub qc_passed: bool,
     pub verdict: String,
     pub dry_run: bool,
@@ -612,6 +617,7 @@ async fn export_clip(ctx: Ctx, input: ExportInput) -> rustler_core::Result<Expor
     let dir = store.exports_dir();
     let video = dir.join(format!("{name}.mp4"));
     let report = dir.join(format!("{name}.report.json"));
+    let post_path = dir.join(format!("{name}.post.json"));
     let srt_path = dir.join(format!("{name}.srt"));
 
     let srt_text = if clip.captions.enabled {
@@ -632,6 +638,7 @@ async fn export_clip(ctx: Ctx, input: ExportInput) -> rustler_core::Result<Expor
             video,
             report,
             srt: srt_text.map(|_| srt_path),
+            post: post_path,
             qc_passed: qc.report.passed,
             verdict: qc.verdict,
             dry_run: true,
@@ -668,6 +675,9 @@ async fn export_clip(ctx: Ctx, input: ExportInput) -> rustler_core::Result<Expor
             })
         })
         .collect();
+    let (post_body, post_warnings) = crate::post_cmds::post_json(&store, &clip, &video)?;
+    warnings.extend(post_warnings);
+    store.write_json(&post_path, &post_body)?;
     store.write_json(
         &report,
         &json!({
@@ -690,12 +700,14 @@ async fn export_clip(ctx: Ctx, input: ExportInput) -> rustler_core::Result<Expor
             "video": store.relativize(&video),
             "qc_passed": qc.report.passed,
             "srt": srt_out.as_ref().map(|p| store.relativize(p)),
+            "post": store.relativize(&post_path),
         }),
     })?;
     Ok(ExportOutput {
         video,
         report,
         srt: srt_out,
+        post: post_path,
         qc_passed: qc.report.passed,
         verdict: qc.verdict,
         dry_run: false,
@@ -717,6 +729,7 @@ fn dry_export(
         video: dir.join(format!("{name}.mp4")),
         report: dir.join(format!("{name}.report.json")),
         srt: None,
+        post: dir.join(format!("{name}.post.json")),
         qc_passed: false,
         verdict: "QC not run yet (dry run)".to_string(),
         dry_run: true,
