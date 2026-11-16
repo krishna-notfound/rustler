@@ -26,7 +26,7 @@ design §5.3).
   built-in (bare name = highest version in the first scope that has it; `name@N` searches every scope).
 - Built-in starters `podcast-viral`, `streamer-split` (`crates/rustler-commands/starters/*.json`, embedded).
 - `clip.create --template <name[@ver]>` and config `template.default` (explicit: resolved and checked before the
-  clip is written, error → no clip; configured default that cannot apply → warning).
+  clip is written, error → no clip; configured default that cannot apply → warning). The template is applied after the smart defaults (f34), as one more revision.
 
 **Out:** spec §5.3 fields `layout_rules` (faces=1 / faces>=2 / screen), `cutaway_rules`, `cleanup`,
 `keyword_highlight` / `emoji`, `export` (quality / lengths), `post_defaults`, `brand.cta_card/outro_card`, music by

@@ -68,7 +68,7 @@ fn portrait() -> Option<PathBuf> {
 }
 
 /// A project with a 10 s 1920x1080 source, transcript and a center-crop clip over the first three
-/// sentences. `real_tools`: use the installed tools home (engine possible); else a throwaway home
+/// sentences (`raw`: the smart defaults would blur-fit the face-less test pattern). `real_tools`: use the installed tools home (engine possible); else a throwaway home
 /// with only ffmpeg/ffprobe (so the engine is unavailable).
 async fn fixture(real_tools: bool) -> Option<Fx> {
     let (tools, home) = if real_tools {
@@ -95,7 +95,7 @@ async fn fixture(real_tools: bool) -> Option<Fx> {
         &reg,
         &ctx,
         "clip.create",
-        json!({"name": "fix demo", "source_id": src.id, "start_unit": 0, "end_unit": 2, "caption_style": "bold-karaoke"}),
+        json!({"name": "fix demo", "source_id": src.id, "start_unit": 0, "end_unit": 2, "caption_style": "bold-karaoke", "raw": true}),
     )
     .await
     .unwrap();

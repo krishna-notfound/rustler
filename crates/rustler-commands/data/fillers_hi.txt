@@ -1,0 +1,13 @@
+# Hinglish / Hindi filler words removed by the smart defaults of `clip create`, together with
+# fillers_en.txt, when the transcript language is Hindi or the words contain Devanagari.
+# Same format as fillers_en.txt. These are real words inside a sentence ("matlab" = "meaning",
+# "haan" = "yes", "na" = "no" / tag question), so they are only removed as standalone fillers
+# between pauses.
+~ matlab
+~ haan
+~ han
+~ na
+~ मतलब
+~ हाँ
+~ हां
+~ ना
