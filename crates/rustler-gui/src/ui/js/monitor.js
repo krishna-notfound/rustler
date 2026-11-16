@@ -312,10 +312,10 @@
     ctx.restore();
   }
   var PRESETS = {
-    'bold-karaoke': { font: 'anton', size: 0.072, upper: true, outline: 6, active: 'recolor', color: '#FFE000' },
-    'clean-white': { font: 'poppins', size: 0.060, upper: false, outline: 4, active: 'recolor', color: '#FFD700' },
-    'boxed-highlight': { font: 'poppins', size: 0.058, upper: false, outline: 3, active: 'box', color: '#7B2CFF' },
-    'hormozi-pop': { font: 'anton', size: 0.076, upper: true, outline: 6, active: 'pop', color: '#2BFF5E' }
+    'bold-karaoke': { font: 'anton', size: 0.090, upper: true, outline: 6, active: 'recolor', color: '#FFE000' },
+    'clean-white': { font: 'poppins', size: 0.090, upper: false, outline: 4, active: 'recolor', color: '#FFD700' },
+    'boxed-highlight': { font: 'poppins', size: 0.090, upper: false, outline: 3, active: 'box', color: '#7B2CFF' },
+    'hormozi-pop': { font: 'anton', size: 0.100, upper: true, outline: 6, active: 'pop', color: '#2BFF5E' }
   };
   // Custom styles (caption.create_style): approximate from caption.styles (R.styleDefs); exact look = Exact frame.
   function customPreset(name) {

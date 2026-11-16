@@ -83,6 +83,7 @@ pub async fn install(
             stage: "setup.fonts".into(),
             pct: Some((i + 1) as f32 / total as f32),
             message: Some(format!("installed {local}")),
+            eta_s: None,
         });
     }
     Ok(Component {

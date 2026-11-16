@@ -216,3 +216,81 @@ async fn render_with_transition_keeps_captions_overlays_and_duration_in_sync() {
     let eff = rustler_commands::fx_cmds::effective_duration_of(&store, &store.load_clip(&id.parse().unwrap()).unwrap()).unwrap();
     assert!((eff - 3.1).abs() < 1e-9);
 }
+
+#[tokio::test]
+async fn effect_add_words_resolves_occurrences() {
+    let (proj, store, ctx) = new_project();
+    let media = proj.path().join("v.mp4");
+    std::fs::write(&media, b"x").unwrap();
+    let src = add_source(&store, &media, probe_1080p(10.0, true, true));
+    // "not" appears twice in the source: "ask not." and an extra "Not" in place of "can".
+    let mut words = sample_words();
+    words[10] = word(10, "Not", 6.05, 6.3);
+    write_transcript(&store, &src.id, words);
+    let reg = registry();
+    let c = three_segments(&reg, &ctx, &src).await;
+    let id = c["id"].as_str().unwrap().to_string();
+
+    // Edit timeline (TimeMap): seg1 0..1.4, seg2 1.4..3.4, seg3 3.4..5.35.
+    // "ask" 4.05..4.30 -> 2.45..2.70 ; "country" 5.55..6.00 -> 3.90..4.35
+    let a = call(&reg, &ctx, "effect.add", json!({"clip_id": id, "kind": "punch-in", "words": ["Ask", "country"]})).await.unwrap();
+    assert_eq!(a["effect_ids"].as_array().unwrap().len(), 2, "{a}");
+    let fx = a["effects"].as_array().unwrap();
+    // Window = [word.start - 0.05, word.end + 0.25], effects in time order.
+    assert!((fx[0]["start"].as_f64().unwrap() - 2.40).abs() < 1e-6, "{a}");
+    assert!((fx[0]["end"].as_f64().unwrap() - 2.95).abs() < 1e-6, "{a}");
+    assert!((fx[1]["start"].as_f64().unwrap() - 3.85).abs() < 1e-6, "{a}");
+    assert!((fx[1]["end"].as_f64().unwrap() - 4.60).abs() < 1e-6, "{a}");
+    assert!(a["warnings"].is_null(), "no warnings expected: {a}");
+    let l = call(&reg, &ctx, "effect.list", json!({"clip_id": id})).await.unwrap();
+    assert_eq!(l["effects"].as_array().unwrap().len(), 2);
+
+    // Punctuation and case are ignored; every occurrence gets an effect ("not." and "Not").
+    let b = call(&reg, &ctx, "effect.add", json!({"clip_id": id, "kind": "flash", "words": ["NOT,"]})).await.unwrap();
+    assert_eq!(b["effect_ids"].as_array().unwrap().len(), 2, "{b}");
+    // A comma list in one element works too (what the CLI passes for --words "what,do").
+    let c2 = call(&reg, &ctx, "effect.add", json!({"clip_id": id, "kind": "flash", "words": ["what,do"]})).await.unwrap();
+    assert_eq!(c2["effect_ids"].as_array().unwrap().len(), 2, "{c2}");
+
+    // source_id restricts the search to that source: an unknown source finds nothing and says so.
+    let other = call(&reg, &ctx, "effect.add", json!({"clip_id": id, "kind": "flash", "words": ["ask"], "source_id": src.id})).await.unwrap();
+    assert_eq!(other["effect_ids"].as_array().unwrap().len(), 1, "{other}");
+    let none = call(&reg, &ctx, "effect.add", json!({"clip_id": id, "kind": "flash", "words": ["ask"], "source_id": "src_zzzzzz"})).await;
+    assert!(none.is_err() || none.unwrap()["effect_ids"].as_array().unwrap().is_empty());
+
+    // Explicit start/end still works; words together with start/end, or neither, is rejected.
+    call(&reg, &ctx, "effect.add", json!({"clip_id": id, "kind": "punch-in", "start": 0.5, "end": 1.0})).await.unwrap();
+    let both = call(&reg, &ctx, "effect.add", json!({"clip_id": id, "kind": "punch-in", "start": 0.5, "end": 1.0, "words": ["ask"]})).await.unwrap_err();
+    assert_eq!(code(&both), ErrorCode::Validation);
+    let neither = call(&reg, &ctx, "effect.add", json!({"clip_id": id, "kind": "punch-in"})).await.unwrap_err();
+    assert_eq!(code(&neither), ErrorCode::Validation);
+}
+
+#[tokio::test]
+async fn effect_add_words_missing_word_warns() {
+    let (proj, store, ctx) = new_project();
+    let media = proj.path().join("v.mp4");
+    std::fs::write(&media, b"x").unwrap();
+    let src = add_source(&store, &media, probe_1080p(10.0, true, true));
+    write_transcript(&store, &src.id, sample_words());
+    let reg = registry();
+    let c = three_segments(&reg, &ctx, &src).await;
+    let id = c["id"].as_str().unwrap().to_string();
+    // "friends" is in the clip, "banana" is nowhere: one effect, one warning naming the word.
+    let a = call(&reg, &ctx, "effect.add", json!({"clip_id": id, "kind": "punch-in", "words": ["friends", "banana"]})).await.unwrap();
+    assert_eq!(a["effect_ids"].as_array().unwrap().len(), 1, "{a}");
+    let w = a["warnings"].as_array().unwrap();
+    assert_eq!(w.len(), 1, "{a}");
+    assert!(w[0].as_str().unwrap().contains("banana"), "{a}");
+    // "friends." 1.85..2.3 -> 0.85..1.30 -> window [0.80, 1.55]
+    assert!((a["effects"][0]["start"].as_f64().unwrap() - 0.80).abs() < 1e-6, "{a}");
+
+    // A word in the transcript but cut out of the clip: warned, nothing placed.
+    let mut cl = store.load_clip(&id.parse::<rustler_core::ClipId>().unwrap()).unwrap();
+    let base = cl.revision;
+    cl.segments.remove(0);
+    store.save_clip(&mut cl, base).unwrap();
+    let b = call(&reg, &ctx, "effect.add", json!({"clip_id": id, "kind": "flash", "words": ["Hello"]})).await.unwrap();
+    assert!(b["effect_ids"].as_array().unwrap().is_empty(), "{b}");
+    assert!(b["warnings"][0].as_str().unwrap().contains("Hello"), "{b}");
+}

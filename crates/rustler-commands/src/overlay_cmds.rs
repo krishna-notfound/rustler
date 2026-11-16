@@ -71,7 +71,7 @@ fn check_style_values(stage: &str, o: &TextOverlay) -> Result<()> {
         return Err(validation(stage, "position_y must be between 0 (top) and 1 (bottom)"));
     }
     if !(o.font_size_factor.is_finite() && (0.01..=0.2).contains(&o.font_size_factor)) {
-        return Err(validation(stage, "font_size_factor must be between 0.01 and 0.2 (hook-top default 0.075)"));
+        return Err(validation(stage, "font_size_factor must be between 0.01 and 0.2 (hook-top default 0.085)"));
     }
     Ok(())
 }
@@ -202,7 +202,7 @@ pub struct AddTextIn {
     pub style: Option<OverlayStyle>,
     /// Vertical centre 0 (top) .. 1 (bottom); default by style: hook-top 0.12, lower-third 0.80, plain 0.50.
     pub position_y: Option<f64>,
-    /// Font size as a fraction of the canvas width (hook-top 0.075, lower-third 0.05, plain 0.065).
+    /// Font size as a fraction of the canvas width (hook-top 0.085, lower-third 0.05, plain 0.065).
     pub font_size_factor: Option<f64>,
     /// Dark box behind the text (default true, plain: false).
     #[serde(rename = "box")]

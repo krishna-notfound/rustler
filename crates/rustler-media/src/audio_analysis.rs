@@ -49,6 +49,7 @@ pub async fn analyze_audio(
                     stage: "analyze.audio".into(),
                     pct: Some((parser.last_t / total).clamp(0.0, 1.0) as f32),
                     message: None,
+                    eta_s: None,
                 });
             }
         }

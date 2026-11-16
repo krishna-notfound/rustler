@@ -276,7 +276,7 @@ async fn render_run(ctx: Ctx, i: RenderRunIn) -> Result<RenderRunOut> {
     let out = renders.join(format!("{render_id}.mp4"));
     let next = vec![format!("rustler qc run {}", clip.id)];
 
-    ctx.progress.emit(ProgressEvent { stage: "render.prepare".into(), pct: Some(0.0), message: Some(clip.name.clone()) });
+    ctx.progress.emit(ProgressEvent { stage: "render.prepare".into(), pct: Some(0.0), message: Some(clip.name.clone()), eta_s: None });
     let paths = ToolPaths::from_home(&ctx.home);
     if ctx.dry_run {
         let enc = rustler_media::pick_encoder(&paths, quality, i.prefer_gpu.unwrap_or(true)).await;

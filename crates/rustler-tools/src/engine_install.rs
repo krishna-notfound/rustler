@@ -165,6 +165,7 @@ fn emit(progress: &ProgressSink, message: impl Into<String>) {
         stage: "setup.engine".into(),
         pct: None,
         message: Some(message.into()),
+        eta_s: None,
     });
 }
 

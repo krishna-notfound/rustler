@@ -84,6 +84,9 @@ pub struct DoctorReport {
     pub ffprobe: Option<ToolInfo>,
     pub ytdlp: Option<ToolInfo>,
     pub uv: Option<ToolInfo>,
+    /// The JS runtime `setup` installs for yt-dlp (`<home>/bin/deno`). Not part of `ready`: only YouTube needs it.
+    #[serde(default)]
+    pub deno: Option<ToolInfo>,
     pub libass: bool,
     pub encoders: Vec<EncoderStatus>,
     pub nvidia_gpu: Option<String>,
@@ -99,6 +102,9 @@ pub struct DoctorReport {
     /// Optional features, whether each is available, and the exact command to enable it. Not part of `ready`.
     #[serde(default)]
     pub optional_features: Vec<OptionalFeature>,
+    /// Present only with `doctor run --network`: a real yt-dlp probe of YouTube.
+    #[serde(default)]
+    pub network: Option<NetworkCheck>,
     pub ready: bool,
     pub missing: Vec<String>,
 }
@@ -139,6 +145,8 @@ pub(crate) enum VersionKind {
     Ytdlp,
     /// `uv --version`: "uv <v> (...)"
     Uv,
+    /// `deno --version`: "deno <v> (stable, release, ...)"
+    Deno,
 }
 
 /// Version of an installed tool; `None` when it cannot be run.
@@ -149,7 +157,7 @@ pub(crate) async fn tool_version(kind: VersionKind, path: &Path) -> Option<Strin
     let (arg, token) = match kind {
         VersionKind::Ffmpeg => ("-version", 2),
         VersionKind::Ytdlp => ("--version", 0),
-        VersionKind::Uv => ("--version", 1),
+        VersionKind::Uv | VersionKind::Deno => ("--version", 1),
     };
     let (stdout, _) = run_text(path, &[arg]).await?;
     stdout
@@ -227,13 +235,92 @@ pub async fn detect_nvidia() -> Option<String> {
         .map(str::to_string)
 }
 
+/// The video `doctor run --network` probes (the first YouTube upload, 19 seconds).
+pub const NETWORK_PROBE_URL: &str = "https://www.youtube.com/watch?v=jNQXAC9IVRw";
+
+/// Result of `doctor run --network`: one real `yt-dlp --simulate` of [`NETWORK_PROBE_URL`].
+#[derive(Serialize, Deserialize, JsonSchema, Clone, PartialEq, Eq, Debug, Default)]
+pub struct NetworkCheck {
+    pub url: String,
+    /// yt-dlp extracted the video info.
+    pub ok: bool,
+    /// `[debug] JS runtimes:` value yt-dlp reported (`deno-2.9.2`, `none`); absent on older yt-dlp.
+    pub js_runtime: Option<String>,
+    /// `tls` (proxy re-signs certificates), `js_runtime` (no JS runtime), or `other`; absent when fine.
+    pub issue: Option<String>,
+    /// The command that fixes `issue`.
+    pub hint: Option<String>,
+    /// Last lines of yt-dlp's stderr when it failed.
+    pub detail: Option<String>,
+}
+
+/// Probes the network path yt-dlp uses (TLS, JS challenge) with the same `PATH` and config that
+/// `source import` uses. Needs yt-dlp installed.
+pub async fn network_probe(paths: &ToolPaths) -> NetworkCheck {
+    let mut check = NetworkCheck { url: NETWORK_PROBE_URL.to_string(), ..Default::default() };
+    if !paths.ytdlp.is_file() {
+        check.issue = Some("other".into());
+        check.hint = Some("yt-dlp is not installed; run `rustler setup run`".into());
+        return check;
+    }
+    let mut cmd = tokio::process::Command::new(&paths.ytdlp);
+    cmd.args(crate::ytdlp_install::config_args(&paths.home))
+        .arg("--cache-dir")
+        .arg(paths.home.join("cache").join("yt-dlp"))
+        .args(["-v", "--simulate", "--no-playlist", "--no-colors", NETWORK_PROBE_URL])
+        .env("PATH", crate::ytdlp_install::path_with_bin(&paths.bin))
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000);
+    let out = match tokio::time::timeout(Duration::from_secs(120), cmd.output()).await {
+        Ok(Ok(o)) => o,
+        Ok(Err(e)) => {
+            check.issue = Some("other".into());
+            check.detail = Some(format!("cannot start yt-dlp: {e}"));
+            return check;
+        }
+        Err(_) => {
+            check.issue = Some("other".into());
+            check.detail = Some("the probe timed out after 120 s".into());
+            check.hint = Some("network problem; check connectivity or proxy settings".into());
+            return check;
+        }
+    };
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    check.js_runtime = crate::ytdlp_install::js_runtime_name(&stderr);
+    check.ok = out.status.success();
+    let issue = crate::ytdlp_install::classify_probe_failure(&stderr).or_else(|| {
+        // The probe worked but yt-dlp has no JS runtime: later downloads can still lose formats.
+        (crate::ytdlp_install::js_runtime_detected(&stderr) == Some(false)).then_some(
+            crate::ytdlp_install::ProbeIssue {
+                kind: "js_runtime",
+                hint: "no JS runtime for YouTube's challenge; run `rustler setup run` (installs Deno next to yt-dlp)",
+            },
+        )
+    });
+    if let Some(i) = issue {
+        check.issue = Some(i.kind.to_string());
+        check.hint = Some(i.hint.to_string());
+    } else if !check.ok {
+        check.issue = Some("other".into());
+        check.hint = Some("run `rustler doctor`; if yt-dlp is outdated, `rustler setup run --force` updates it".into());
+    }
+    if !check.ok {
+        check.detail = Some(crate::run::tail_lines(stderr.as_bytes(), 8));
+    }
+    check
+}
+
 pub async fn doctor(paths: &ToolPaths) -> DoctorReport {
     use crate::doctor::VersionKind::{Ffmpeg, Uv, Ytdlp};
-    let (ffmpeg, ffprobe, ytdlp, uv, nvidia_gpu) = tokio::join!(
+    let deno_path = crate::deno_install::deno_path(paths);
+    let (ffmpeg, ffprobe, ytdlp, uv, deno, nvidia_gpu) = tokio::join!(
         tool_info(Ffmpeg, &paths.ffmpeg),
         tool_info(Ffmpeg, &paths.ffprobe),
         tool_info(Ytdlp, &paths.ytdlp),
         tool_info(Uv, &paths.uv),
+        tool_info(VersionKind::Deno, &deno_path),
         detect_nvidia(),
     );
 
@@ -291,6 +378,7 @@ pub async fn doctor(paths: &ToolPaths) -> DoctorReport {
         ffprobe,
         ytdlp,
         uv,
+        deno,
         libass,
         encoders,
         nvidia_gpu,
@@ -299,6 +387,7 @@ pub async fn doctor(paths: &ToolPaths) -> DoctorReport {
         profile: crate::setup::profile_name(&install).to_string(),
         optional_features: optional_features(paths, None),
         install,
+        network: None,
         ready: missing.is_empty(),
         missing,
     }

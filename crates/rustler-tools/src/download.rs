@@ -166,6 +166,7 @@ pub async fn download(
                     stage: stage.to_string(),
                     pct: Some(pct.min(1.0)),
                     message: Some(format!("downloading {}", file_label(url))),
+                    eta_s: None,
                 });
             }
         }

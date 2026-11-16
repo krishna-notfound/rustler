@@ -224,7 +224,13 @@ async fn run_ytdlp(
     let mut cmd = tokio::process::Command::new(ytdlp);
     // Persistent cache (player JS / challenge solutions) next to the tools, so repeat calls are cheaper.
     if let Some(home) = ytdlp.parent().and_then(Path::parent) {
+        // `<home>/yt-dlp.conf` (written by `setup run --insecure-tls`), when present.
+        cmd.args(rustler_tools::ytdlp_install::config_args(home));
         cmd.arg("--cache-dir").arg(home.join("cache").join("yt-dlp"));
+    }
+    // yt-dlp finds the Deno that `setup` installed (its JS runtime for YouTube) in `<home>/bin`.
+    if let Some(bin) = ytdlp.parent() {
+        cmd.env("PATH", rustler_tools::ytdlp_install::path_with_bin(bin));
     }
     cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
     let mut child = cmd.spawn().map_err(|e| {
@@ -267,8 +273,11 @@ async fn run_ytdlp(
         .map_err(|e| RustlerError::new(ErrorCode::Internal, "yt-dlp", format!("waiting for yt-dlp: {e}")))?;
     let err_tail = err_task.await.unwrap_or_default();
     if !status.success() {
-        let (hint, retryable) = classify_ytdlp_error(&err_tail);
-        let mut e = RustlerError::new(ErrorCode::Provider, "yt-dlp", format!("yt-dlp failed: {}", trunc(err_tail.trim(), 800))).hint(hint);
+        let (hint, retryable) = match rustler_tools::ytdlp_install::classify_probe_failure(&err_tail) {
+            Some(issue) => (issue.hint, false),
+            None => classify_ytdlp_error(&err_tail),
+        };
+        let mut e =RustlerError::new(ErrorCode::Provider, "yt-dlp", format!("yt-dlp failed: {}", trunc(err_tail.trim(), 800))).hint(hint);
         if retryable {
             e = e.retryable();
         }
@@ -314,7 +323,7 @@ async fn cached_info(ctx: &Ctx, paths: &ToolPaths, project: &Project, url: &str,
             return Ok((v, path));
         }
     }
-    ctx.progress.emit(ProgressEvent { stage: "lookup".into(), pct: None, message: Some("asking YouTube for video info (one time; cached)".into()) });
+    ctx.progress.emit(ProgressEvent { stage: "lookup".into(), pct: None, message: Some("asking YouTube for video info (one time; cached)".into()), eta_s: None });
     let v = ytdlp_json(ctx, paths, project, vec![url.trim().into()]).await?;
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
@@ -653,7 +662,7 @@ pub async fn fetch_transcript(ctx: Ctx, input: FetchIn) -> rustler_core::Result<
         return Ok(Outcome::dry_run(json!({"fetch_captions_for": url, "lang": requested, "pending_id": id})));
     }
     let paths = ToolPaths::from_home(&ctx.home);
-    ctx.progress.emit(ProgressEvent { stage: "captions".into(), pct: Some(0.0), message: Some("listing caption tracks".into()) });
+    ctx.progress.emit(ProgressEvent { stage: "captions".into(), pct: Some(0.0), message: Some("listing caption tracks".into()), eta_s: None });
     let (v, info_path) = cached_info(&ctx, &paths, &project, &url, false).await?;
     let meta = parse_info(&v, &url);
     let Some((key, manual)) = choose_caption(&meta.subtitles.manual, &meta.subtitles.auto, &requested) else {
@@ -949,6 +958,7 @@ async fn import_url(
                     stage: "download".into(),
                     pct: Some((n as f32 + p) / total as f32 * 0.7),
                     message: label.clone().map(|l| format!("section {l}")),
+                    eta_s: None,
                 });
             }
         };
@@ -1046,7 +1056,7 @@ async fn finish_import(
 ) -> rustler_core::Result<Source> {
     let emit = |stage: &str, frac: f32, msg: &str| {
         let pct = progress_base + (1.0 - progress_base) * frac;
-        ctx.progress.emit(ProgressEvent { stage: stage.into(), pct: Some(pct.min(1.0)), message: Some(msg.to_string()) });
+        ctx.progress.emit(ProgressEvent { stage: stage.into(), pct: Some(pct.min(1.0)), message: Some(msg.to_string()), eta_s: None });
     };
     let _ = total;
     emit("probe", 0.0, "reading media info");

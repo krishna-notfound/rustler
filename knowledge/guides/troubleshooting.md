@@ -36,7 +36,14 @@ rustler setup run --force          # reinstall everything if files are corrupt
 rustler setup run --gpu none       # cloud box without GPU
 rustler setup run --with ocr,speakers   # add heavy analyzers later (lite is the default; nothing is removed)
 rustler setup run --profile full   # everything: all analyzers, models, SFX pack (+ cuda when an NVIDIA GPU is found)
+rustler setup run --insecure-tls   # behind a proxy that re-signs TLS (see "Every yt-dlp call fails" below)
+rustler doctor run --network       # also probe YouTube through yt-dlp: reports TLS and JS-runtime problems with the fix
 ```
+
+- **JS runtime (Deno)**: YouTube needs a JavaScript runtime for yt-dlp's player challenge. `setup run` checks
+  `yt-dlp -v` and, when it says `JS runtimes: none`, downloads Deno (checksum-verified) into `~/.rustler/bin`;
+  every yt-dlp call Rustler makes has that folder first on `PATH`. `doctor run` shows `deno`. A Deno download
+  failure is a `notes` warning in the setup output, not a failed step; re-run `rustler setup run`.
 
 - **Lite vs full**: `setup run` installs the lightweight base (whisper `base`, scenes, face tracking).
   OCR, YAMNet, diarization, CUDA libraries and the SFX pack are opt-in (`--with ...`). `doctor run` shows
@@ -87,6 +94,23 @@ What to do, in order:
 
 Never: use proxies/VPN rotation to evade a ban, bypass DRM, paywalls, age gates or private videos,
 or download content the user has no right to use.
+
+### Every yt-dlp call fails (TLS or JS runtime)
+
+Different from a bot block: it fails for every URL, on a machine that sits behind an intercepting proxy
+(some cloud VMs, corporate networks). Check first:
+
+```
+rustler doctor run --network     # data.network: ok, js_runtime, issue (tls | js_runtime | other), hint
+```
+
+| `issue` / error text | Cause | Fix |
+|---|---|---|
+| `tls`: `CERTIFICATE_VERIFY_FAILED`, `self-signed certificate in certificate chain` | the network re-signs HTTPS with its own CA that yt-dlp does not trust | `rustler setup run --insecure-tls` writes `~/.rustler/yt-dlp.conf` (`--no-check-certificates`); Rustler passes it to every yt-dlp call. Delete the file to verify certificates again |
+| `js_runtime`: `JS runtimes: none`, `n challenge solving failed`, only some formats listed | no JavaScript runtime for YouTube's challenge | `rustler setup run` (installs Deno into `~/.rustler/bin`) |
+
+`--insecure-tls` turns off certificate checking for yt-dlp only, and only when the user's network forces it:
+tell the user you enabled it. A failing `source import` / `source info` shows the same hint in its error.
 
 Other download errors:
 

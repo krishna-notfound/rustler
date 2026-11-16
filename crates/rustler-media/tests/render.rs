@@ -1161,3 +1161,38 @@ async fn render_hook_title_above_captions() {
     assert!(cap_white > 0.03, "captions missing: {cap_white:.2}");
     assert!(layout.bottom < 1344.0 - 200.0, "{layout:?}");
 }
+
+#[tokio::test]
+async fn render_reports_eta() {
+    let tmp = tempfile::tempdir().unwrap();
+    let Some(t) = tools(tmp.path()) else { return };
+    let src = tmp.path().join("src.mp4");
+    make_source(&t, &src, 12, true);
+    let (id, sources) = sources_for(&t, &src);
+    let clip = make_clip(&id, 1.0, 11.0, center_crop());
+    let out = tmp.path().join("out.mp4");
+    let c = compile_with(
+        &clip,
+        &sources,
+        None,
+        tmp.path(),
+        &x264(),
+        &out,
+        &tmp.path().join("work"),
+        &CompileExtras::default(),
+    )
+    .unwrap();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let ev = events.clone();
+    let sink = ProgressSink::new(move |e| ev.lock().unwrap().push((e.pct, e.eta_s)));
+    render(&t, &c, 10.0, &CancellationToken::new(), &sink)
+        .await
+        .unwrap();
+    let ev = events.lock().unwrap();
+    let with_eta: Vec<_> = ev.iter().filter_map(|(_, e)| *e).collect();
+    assert!(!with_eta.is_empty(), "no progress event carried eta_s: {ev:?}");
+    assert!(with_eta.iter().all(|e| e.is_finite() && *e >= 0.0), "{with_eta:?}");
+    // Start (0.0) and finish (1.0) events carry no eta.
+    assert_eq!(ev.first().unwrap().1, None);
+    assert_eq!(ev.last().unwrap().1, None);
+}
