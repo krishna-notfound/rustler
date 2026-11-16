@@ -10,6 +10,7 @@ ab_glyph.workspace = true
 chrono.workspace = true
 image.workspace = true
 imageproc.workspace = true
+json-patch.workspace = true
 rustler-captions.workspace = true
 rustler-core.workspace = true
 rustler-engine-bridge.workspace = true

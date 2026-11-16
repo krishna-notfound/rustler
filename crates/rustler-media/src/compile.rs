@@ -432,6 +432,13 @@ pub struct CompileExtras {
     /// Cutaways (full-frame or picture-in-picture), resolved timing and `media.file` set.
     #[serde(default)]
     pub cutaways: Vec<Cutaway>,
+    /// Playback speed per segment (0.5..2.0; missing = 1). Edit-timeline times inside the
+    /// segment are compressed / stretched on the rendered timeline ([`TransitionMap`]).
+    #[serde(default)]
+    pub segment_speed: HashMap<SegmentId, f64>,
+    /// Freeze frames on the edit timeline; each lengthens the rendered clip by its duration.
+    #[serde(default)]
+    pub freezes: Vec<Freeze>,
 }
 
 impl Default for CompileExtras {
@@ -451,6 +458,8 @@ impl Default for CompileExtras {
             images: Vec::new(),
             masks: Vec::new(),
             cutaways: Vec::new(),
+            segment_speed: HashMap::new(),
+            freezes: Vec::new(),
         }
     }
 }
@@ -681,18 +690,48 @@ impl Default for ProgressBar {
     }
 }
 
+/// Slowest / fastest segment speed (`setpts` + `atempo`).
+pub const MIN_SPEED: f64 = 0.5;
+pub const MAX_SPEED: f64 = 2.0;
+/// Longest freeze frame (seconds).
+pub const MAX_FREEZE: f64 = 10.0;
+
+/// A freeze frame: at edit-timeline time `out_t` the picture holds for `duration` seconds
+/// (the audio is silent meanwhile), then the clip continues. A freeze on a segment boundary
+/// holds the first frame of the next segment; one at the very end holds the last frame.
+#[derive(Serialize, Deserialize, JsonSchema, Clone, PartialEq, Debug)]
+pub struct Freeze {
+    pub id: String,
+    /// Edit-timeline seconds (like overlays and effects).
+    pub out_t: f64,
+    /// Seconds the frame holds (0 < duration <= 10).
+    pub duration: f64,
+}
+
 /// `#RRGGBB` / `RRGGBB` -> ffmpeg `0xRRGGBB`; `None` when malformed.
 pub fn ffmpeg_color(hex: &str) -> Option<String> {
     let h = hex.trim().trim_start_matches('#');
     (h.len() == 6 && h.chars().all(|c| c.is_ascii_hexdigit())).then(|| format!("0x{}", h.to_ascii_uppercase()))
 }
 
-/// Edit timeline -> rendered timeline under the clip's transitions (see the time convention
-/// above). Built from the clip's segments and fps; transitions are rounded to whole frames.
+/// Edit timeline -> rendered timeline under the clip's segment speeds, freeze frames and
+/// transitions (see the time convention above). Built from the clip's segments and fps;
+/// transitions are rounded to whole frames.
+///
+/// Two steps: the *retime* (speed compresses / stretches a segment's span, a freeze inserts a
+/// hold) gives the "retimed" timeline, then transitions overlap the retimed segments. A time
+/// exactly on a freeze maps to the start of the hold, so an item starting there shows during
+/// the freeze. With no speed and no freeze the retime is the identity.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TransitionMap {
-    /// Edit-timeline segment boundaries `0 = b0 < b1 < .. < bn = duration`.
+    /// Retimed segment boundaries `0 = B0 < B1 < .. < Bn` (freezes inside a segment count to it).
     bounds: Vec<f64>,
+    /// Edit-timeline segment boundaries `0 = b0 < b1 < .. < bn = edit duration`.
+    edit_bounds: Vec<f64>,
+    /// Speed per segment (1 = normal).
+    speeds: Vec<f64>,
+    /// (segment index, edit offset inside the segment, duration), ordered by time.
+    freezes: Vec<(usize, f64, f64)>,
     /// Per boundary k (between segment k and k+1): kind and overlap in frames.
     boundary: Vec<Option<(TransitionKind, u64)>>,
     fps: f64,
@@ -702,14 +741,54 @@ impl TransitionMap {
     /// Transitions whose `after_segment_id` is not followed by another segment (or is unknown)
     /// are ignored; `cut` and zero-frame transitions are hard cuts.
     pub fn new(clip: &Clip, transitions: &[Transition]) -> Self {
+        Self::with_retime(clip, transitions, &HashMap::new(), &[])
+    }
+
+    /// Like [`TransitionMap::new`] plus segment speeds and freeze frames. Speeds outside
+    /// 0.5..2.0 (or not finite) count as 1; freezes outside the clip or with a duration outside
+    /// 0..10 s are ignored (`render.compile` rejects them).
+    pub fn with_retime(
+        clip: &Clip,
+        transitions: &[Transition],
+        speeds: &HashMap<SegmentId, f64>,
+        freezes: &[Freeze],
+    ) -> Self {
         let fps = clip.canvas.fps;
-        let mut bounds = vec![0.0];
+        let n = clip.segments.len();
+        let mut edit_bounds = vec![0.0];
         let mut cum = 0.0;
         for s in &clip.segments {
             cum += s.end - s.start;
-            bounds.push(cum);
+            edit_bounds.push(cum);
         }
-        let n = clip.segments.len();
+        let speeds: Vec<f64> = clip
+            .segments
+            .iter()
+            .map(|s| speeds.get(&s.id).copied().filter(|f| f.is_finite() && (MIN_SPEED..=MAX_SPEED).contains(f)).unwrap_or(1.0))
+            .collect();
+        let mut fz: Vec<(usize, f64, f64)> = Vec::new();
+        if n > 0 {
+            for f in freezes {
+                if !(f.out_t.is_finite() && f.duration.is_finite() && f.duration > 0.0 && f.duration <= MAX_FREEZE) {
+                    continue;
+                }
+                if f.out_t < -1e-9 || f.out_t > cum + 1e-6 {
+                    continue;
+                }
+                let t = f.out_t.clamp(0.0, cum);
+                // The segment that starts at or holds `t` (a boundary belongs to the next one).
+                let k = edit_bounds[1..n].partition_point(|b| *b <= t);
+                fz.push((k, (t - edit_bounds[k]).clamp(0.0, edit_bounds[k + 1] - edit_bounds[k]), f.duration));
+            }
+        }
+        fz.sort_by(|a, b| (a.0, a.1).partial_cmp(&(b.0, b.1)).unwrap_or(std::cmp::Ordering::Equal));
+        let mut bounds = vec![0.0];
+        let mut r = 0.0;
+        for k in 0..n {
+            r += (edit_bounds[k + 1] - edit_bounds[k]) / speeds[k];
+            r += fz.iter().filter(|f| f.0 == k).map(|f| f.2).sum::<f64>();
+            bounds.push(r);
+        }
         let boundary = (0..n.saturating_sub(1))
             .map(|k| {
                 let id = &clip.segments[k].id;
@@ -723,7 +802,7 @@ impl TransitionMap {
                 })
             })
             .collect();
-        Self { bounds, boundary, fps }
+        Self { bounds, edit_bounds, speeds, freezes: fz, boundary, fps }
     }
 
     /// Kind and overlap (frames) at boundary `k` (after segment k).
@@ -732,7 +811,12 @@ impl TransitionMap {
     }
 
     pub fn is_identity(&self) -> bool {
-        self.boundary.iter().all(Option::is_none)
+        self.boundary.iter().all(Option::is_none) && !self.is_retimed()
+    }
+
+    /// True when a segment speed or a freeze changes the timing.
+    pub fn is_retimed(&self) -> bool {
+        !self.freezes.is_empty() || self.speeds.iter().any(|s| (s - 1.0).abs() > 1e-9)
     }
 
     fn overlap(&self, k: usize) -> f64 {
@@ -746,28 +830,69 @@ impl TransitionMap {
 
     /// Edit-timeline duration.
     pub fn edit_duration(&self) -> f64 {
+        *self.edit_bounds.last().unwrap_or(&0.0)
+    }
+
+    /// Retimed duration (speeds and freezes applied, before transitions).
+    pub fn retimed_duration(&self) -> f64 {
         *self.bounds.last().unwrap_or(&0.0)
     }
 
-    /// Rendered duration (edit duration minus the overlaps).
-    pub fn duration(&self) -> f64 {
-        (self.edit_duration() - self.total_overlap()).max(0.0)
+    /// Retimed segment boundaries (`n + 1` values).
+    pub fn retimed_bounds(&self) -> &[f64] {
+        &self.bounds
     }
 
-    /// Rendered time of edit-timeline time `t` (continuous and non-decreasing).
+    /// Speed of segment `k` (1 = normal).
+    pub fn speed(&self, k: usize) -> f64 {
+        self.speeds.get(k).copied().unwrap_or(1.0)
+    }
+
+    /// Freezes of segment `k`: (edit offset from the segment start, duration), in time order.
+    pub fn segment_freezes(&self, k: usize) -> Vec<(f64, f64)> {
+        self.freezes.iter().filter(|f| f.0 == k).map(|f| (f.1, f.2)).collect()
+    }
+
+    /// Rendered duration (retimed duration minus the transition overlaps).
+    pub fn duration(&self) -> f64 {
+        (self.retimed_duration() - self.total_overlap()).max(0.0)
+    }
+
+    /// Retimed time of edit time `t`; a time on a freeze maps to the start of the hold.
+    pub fn retime(&self, t: f64) -> f64 {
+        if !self.is_retimed() || !t.is_finite() || t <= 0.0 {
+            return t;
+        }
+        let end = self.edit_duration();
+        if t >= end {
+            return self.retimed_duration() + (t - end);
+        }
+        let n = self.edit_bounds.len() - 1;
+        let k = self.edit_bounds[1..n].partition_point(|b| *b <= t);
+        let off = t - self.edit_bounds[k];
+        let held: f64 = self.freezes.iter().filter(|f| f.0 == k && f.1 < off - 1e-9).map(|f| f.2).sum();
+        self.bounds[k] + off / self.speeds[k] + held
+    }
+
+    /// Rendered time of edit-timeline time `t` (continuous and non-decreasing except at
+    /// freezes, where it jumps forward by the hold).
     pub fn map_time(&self, t: f64) -> f64 {
         let n = self.bounds.len().saturating_sub(1);
         if n == 0 || !t.is_finite() || t <= 0.0 || self.is_identity() {
             return t;
         }
-        if t >= self.edit_duration() {
-            return t - self.total_overlap();
+        let r = self.retime(t);
+        if self.boundary.iter().all(Option::is_none) {
+            return r;
         }
-        let k = self.bounds[1..n].partition_point(|b| *b <= t);
+        if r >= self.retimed_duration() {
+            return r - self.total_overlap();
+        }
+        let k = self.bounds[1..n].partition_point(|b| *b <= r);
         let shift: f64 = (0..k).map(|j| self.overlap(j)).sum();
         let lo = self.bounds[k] - shift + if k > 0 { self.overlap(k - 1) / 2.0 } else { 0.0 };
         let hi = self.bounds[k + 1] - shift - if k + 1 < n { self.overlap(k) / 2.0 } else { 0.0 };
-        (t - shift).clamp(lo, hi.max(lo))
+        (r - shift).clamp(lo, hi.max(lo))
     }
 
     /// Rendered interval of `[s, e]`; `None` when it collapses (it lay inside the hidden half
@@ -778,10 +903,11 @@ impl TransitionMap {
     }
 }
 
-/// Rendered duration of `clip` with these extras (edit duration minus transition overlaps).
-/// QC and `render.run` compare the file against this, not the bare TimeMap duration.
+/// Rendered duration of `clip` with these extras (edit duration with segment speeds and freeze
+/// frames applied, minus transition overlaps). QC and `render.run` compare the file against
+/// this, not the bare TimeMap duration.
 pub fn effective_duration(clip: &Clip, extras: &CompileExtras) -> f64 {
-    TransitionMap::new(clip, &extras.transitions).duration()
+    TransitionMap::with_retime(clip, &extras.transitions, &extras.segment_speed, &extras.freezes).duration()
 }
 
 /// `perspective` corner expressions: source quad = centre zoom `z` shifted by (ox, oy), all
@@ -847,16 +973,15 @@ pub(crate) fn num6(v: f64) -> String {
     if s == "-0" { "0".to_string() } else { s.to_string() }
 }
 
-/// Per-segment frame and sample counts on the cumulative grid.
-fn segment_lengths(clip: &Clip) -> (Vec<u64>, Vec<u64>) {
-    let fps = clip.canvas.fps;
-    let mut cum = 0.0f64;
+/// Per-segment frame and sample counts on the cumulative grid of the retimed timeline
+/// (segment speeds and freezes applied; the plain edit timeline when there are none).
+fn segment_lengths(tmap: &TransitionMap) -> (Vec<u64>, Vec<u64>) {
+    let fps = tmap.fps;
+    let b = tmap.retimed_bounds();
     let (mut fr, mut sa) = (Vec::new(), Vec::new());
-    for seg in &clip.segments {
-        let d = seg.end - seg.start;
-        fr.push((frame_at(cum + d, fps) - frame_at(cum, fps)).max(1));
-        sa.push(sample_at(cum + d) - sample_at(cum));
-        cum += d;
+    for k in 0..b.len().saturating_sub(1) {
+        fr.push((frame_at(b[k + 1], fps) - frame_at(b[k], fps)).max(1));
+        sa.push(sample_at(b[k + 1]) - sample_at(b[k]));
     }
     (fr, sa)
 }
@@ -1139,17 +1264,33 @@ pub fn build_graph(
     let mut parts: Vec<String> = Vec::new();
     let mut cmd_files = Vec::new();
     let mut seg_audio: Vec<String> = Vec::new();
-    let tmap = TransitionMap::new(clip, &extras.transitions);
-    let (seg_frames, seg_samples) = segment_lengths(clip);
+    let tmap = TransitionMap::with_retime(clip, &extras.transitions, &extras.segment_speed, &extras.freezes);
+    let (seg_frames, seg_samples) = segment_lengths(&tmap);
 
     for (i, seg) in clip.segments.iter().enumerate() {
         let src = &sources[&seg.source_id];
         let (frames, samples) = (seg_frames[i], seg_samples[i]);
+        let speed = tmap.speed(i);
+        // Freeze frames of this segment: (frame index in the moving picture, held frames,
+        // sample offset, held samples). The picture holds via `loop`, the audio gets silence.
+        let holds = segment_holds(&tmap.segment_freezes(i), speed, canvas.fps, frames);
+        let held_frames: u64 = holds.iter().map(|h| h.1).sum();
+        let moving_frames = frames.saturating_sub(held_frames).max(1);
 
-        let crop_keys = extras
+        // Crop keys are segment-relative source seconds; a sped-up segment reaches them sooner.
+        let crop_keys: Option<Vec<CropKey>> = extras
             .crop_paths
             .get(&seg.id)
-            .filter(|k| !k.is_empty() && !seg.layout.regions.is_empty());
+            .filter(|k| !k.is_empty() && !seg.layout.regions.is_empty())
+            .map(|k| k.iter().map(|c| CropKey { t: c.t / speed, x: c.x }).collect());
+        let mut tail = String::new();
+        // Later holds first, so the earlier frame indices stay valid.
+        for (f, n, _, _) in holds.iter().rev() {
+            let _ = write!(tail, ",loop=loop={n}:size=1:start={f}");
+        }
+        if !holds.is_empty() {
+            tail.push_str(",setpts=N/FRAME_RATE/TB");
+        }
         segment_video(
             &mut parts,
             &mut cmd_files,
@@ -1160,8 +1301,10 @@ pub fn build_graph(
             &canvas,
             (cw, ch),
             &fps,
-            frames,
-            crop_keys.map(|v| v.as_slice()),
+            moving_frames,
+            crop_keys.as_deref(),
+            speed,
+            &tail,
         );
 
         let gain = extras
@@ -1170,9 +1313,22 @@ pub fn build_graph(
             .filter(|g| g.is_finite() && **g != 0.0)
             .map(|g| format!(",volume={}dB", num(*g)))
             .unwrap_or_default();
-        let achain = if src.probe.has_audio {
+        let tempo = if (speed - 1.0).abs() > 1e-9 { format!(",atempo={}", num6(speed)) } else { String::new() };
+        let achain = if src.probe.has_audio && !holds.is_empty() {
+            let held: u64 = holds.iter().map(|h| h.3).sum();
+            let moving = samples.saturating_sub(held);
+            audio_with_holds(
+                i,
+                &format!(
+                    "[{i}:a:0]aresample=48000:async=1:first_pts=0{tempo},{AUDIO_FORMAT}{gain},apad,\
+                     asetpts=N/SR/TB,atrim=end_sample={moving},asetpts=N/SR/TB"
+                ),
+                moving,
+                &holds,
+            )
+        } else if src.probe.has_audio {
             format!(
-                "[{i}:a:0]aresample=48000:async=1:first_pts=0,{AUDIO_FORMAT}{gain},apad,\
+                "[{i}:a:0]aresample=48000:async=1:first_pts=0{tempo},{AUDIO_FORMAT}{gain},apad,\
                  asetpts=N/SR/TB,atrim=end_sample={samples},asetpts=N/SR/TB[a{i}]"
             )
         } else {
@@ -1781,6 +1937,8 @@ fn segment_video(
     fps: &str,
     frames: u64,
     crop_keys: Option<&[CropKey]>,
+    speed: f64,
+    tail: &str,
 ) {
     // Regions drawn back to front; the crop path follows regions[0] wherever it sorts.
     let mut order: Vec<usize> = (0..regions.len()).collect();
@@ -1794,8 +1952,10 @@ fn segment_video(
     let blur = background == Background::BlurFill && !base_is_region;
     let uses = order.len() + usize::from(blur);
 
+    // A segment speed rescales the timestamps before the frame-rate conversion.
+    let rate = if (speed - 1.0).abs() > 1e-9 { format!("setpts=PTS/{},", num6(speed)) } else { String::new() };
     let prep = format!(
-        "[{i}:v:0]fps={fps}:start_time=0:round=near,tpad=stop_mode=clone:stop_duration=1,\
+        "[{i}:v:0]{rate}fps={fps}:start_time=0:round=near,tpad=stop_mode=clone:stop_duration=1,\
          trim=end_frame={frames},setpts=PTS-STARTPTS"
     );
     let inputs: Vec<String> = (0..uses.max(1)).map(|k| format!("[s{i}in{k}]")).collect();
@@ -1892,7 +2052,69 @@ fn segment_video(
         base = Some(format!("[s{i}c{pos}]"));
     }
     let last = base.expect("segment has a base");
-    parts.push(format!("{last}setsar=1,format=yuv420p[v{i}]"));
+    parts.push(format!("{last}setsar=1,format=yuv420p{tail}[v{i}]"));
+}
+
+/// Freeze frames of one segment as (frame index in the moving picture, held frames, sample
+/// offset in the moving audio, held samples), in time order. `freezes` holds (edit offset from
+/// the segment start, seconds); `frames` is the segment's total frame count (holds included).
+fn segment_holds(freezes: &[(f64, f64)], speed: f64, fps: f64, frames: u64) -> Vec<(u64, u64, u64, u64)> {
+    let held: u64 = freezes.iter().map(|(_, d)| frame_at(*d, fps).max(1)).sum();
+    let moving = frames.saturating_sub(held).max(1);
+    freezes
+        .iter()
+        .map(|(off, d)| {
+            let n = frame_at(*d, fps).max(1);
+            let f = frame_at(off / speed, fps).min(moving - 1);
+            (f, n, sample_at(f as f64 / fps), sample_at(n as f64 / fps))
+        })
+        .collect()
+}
+
+/// `chain` (the moving audio of segment `i`, `moving` samples, no output label) cut at the
+/// holds, with silence of each hold's length in between -> `[a{i}]`.
+fn audio_with_holds(i: usize, chain: &str, moving: u64, holds: &[(u64, u64, u64, u64)]) -> String {
+    let mut held: Vec<(u64, u64)> = holds.iter().map(|h| (h.2.min(moving), h.3)).collect();
+    held.sort_unstable();
+    // Pieces of moving audio between the cut points; silence k follows piece k.
+    let mut pieces: Vec<(u64, u64)> = Vec::new();
+    let mut prev = 0;
+    for (c, _) in &held {
+        pieces.push((prev, *c));
+        prev = *c;
+    }
+    pieces.push((prev, moving));
+    let live: Vec<usize> = (0..pieces.len()).filter(|&k| pieces[k].1 > pieces[k].0).collect();
+    let mut out = Vec::new();
+    match live.len() {
+        0 => out.push(format!("{chain},anullsink")),
+        1 => {
+            let (a, b) = pieces[live[0]];
+            out.push(format!("{chain},atrim=start_sample={a}:end_sample={b},asetpts=N/SR/TB[a{i}m{}]", live[0]));
+        }
+        n => {
+            let labels: String = live.iter().map(|k| format!("[a{i}s{k}]")).collect();
+            out.push(format!("{chain},asplit={n}{labels}"));
+            for &k in &live {
+                let (a, b) = pieces[k];
+                out.push(format!("[a{i}s{k}]atrim=start_sample={a}:end_sample={b},asetpts=N/SR/TB[a{i}m{k}]"));
+            }
+        }
+    }
+    let mut order: Vec<String> = Vec::new();
+    for k in 0..pieces.len() {
+        if live.contains(&k) {
+            order.push(format!("[a{i}m{k}]"));
+        }
+        if let Some(&(_, z)) = held.get(k) {
+            out.push(format!(
+                "anullsrc=r=48000:cl=stereo,{AUDIO_FORMAT},atrim=end_sample={z},asetpts=N/SR/TB[a{i}z{k}]"
+            ));
+            order.push(format!("[a{i}z{k}]"));
+        }
+    }
+    out.push(format!("{}concat=n={}:v=0:a=1,asetpts=N/SR/TB[a{i}]", order.concat(), order.len()));
+    out.join(";\n")
 }
 
 /// Interpolates the keys at every output frame and writes a sendcmd line only when the even
@@ -2070,14 +2292,35 @@ fn validate(
             return Err(v(format!("cutaway {}: media file is not resolved", c.id)));
         }
     }
-    check_transitions(clip, &extras.transitions)
+    for (id, f) in &extras.segment_speed {
+        if !(f.is_finite() && (MIN_SPEED..=MAX_SPEED).contains(f)) {
+            return Err(v(format!("segment {id}: speed {f} must be between {MIN_SPEED} and {MAX_SPEED}"))
+                .hint("set it again with `rustler edit speed <clip_id> --segment-id <id> --factor 1.25`"));
+        }
+    }
+    let edit = output_duration(clip);
+    for f in &extras.freezes {
+        let ok = f.out_t.is_finite() && f.out_t >= 0.0 && f.out_t <= edit + END_TOLERANCE;
+        if !ok || !(f.duration.is_finite() && f.duration > 0.0 && f.duration <= MAX_FREEZE) {
+            return Err(v(format!(
+                "freeze {}: needs 0 <= out_t <= {edit:.2} (edit duration) and 0 < duration <= {MAX_FREEZE}",
+                f.id
+            ))
+            .hint("fix it with `rustler timeline apply` or remove it from tracks.freezes"));
+        }
+    }
+    check_transitions_on(clip, &TransitionMap::with_retime(clip, &extras.transitions, &extras.segment_speed, &extras.freezes))
 }
 
 /// Transitions take frames from both neighbours: every segment must be longer than the
 /// transitions on its two sides (Validation otherwise).
 pub fn check_transitions(clip: &Clip, transitions: &[Transition]) -> rustler_core::Result<()> {
-    let tmap = TransitionMap::new(clip, transitions);
-    let (frames, _) = segment_lengths(clip);
+    check_transitions_on(clip, &TransitionMap::new(clip, transitions))
+}
+
+/// [`check_transitions`] on a map that may also carry segment speeds and freezes.
+pub fn check_transitions_on(clip: &Clip, tmap: &TransitionMap) -> rustler_core::Result<()> {
+    let (frames, _) = segment_lengths(tmap);
     for (k, seg) in clip.segments.iter().enumerate() {
         let tin = if k > 0 { tmap.at_boundary(k - 1).map_or(0, |(_, f)| f) } else { 0 };
         let tout = tmap.at_boundary(k).map_or(0, |(_, f)| f);

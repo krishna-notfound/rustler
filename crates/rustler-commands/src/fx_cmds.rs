@@ -50,7 +50,8 @@ pub fn load_effects(store: &ProjectStore, clip: &ClipId) -> Result<Vec<Effect>> 
 
 /// Transition map of a clip as stored now (edit timeline -> rendered timeline).
 pub fn transition_map(store: &ProjectStore, clip: &Clip) -> Result<TransitionMap> {
-    Ok(TransitionMap::new(clip, &load_transitions(store, &clip.id)?))
+    // Segment speeds and freeze frames (timeline v2) retime the edit timeline too.
+    crate::timeline_doc::transition_map_from(clip, &extras::load(store, &clip.id)?)
 }
 
 /// Duration of the rendered file (edit duration minus transition overlaps). QC should compare
@@ -89,6 +90,9 @@ pub(crate) fn apply_to_compile(
         }
     }
     cx.transitions = ts;
+    let (speeds, freezes) = crate::timeline_doc::retime_of(map)?;
+    cx.segment_speed = speeds.into_iter().filter(|(id, _)| clip.segments.iter().any(|s| &s.id == id)).collect();
+    cx.freezes = freezes;
     cx.effects = extras::from_map(map, EFFECTS_KEY)?.unwrap_or_default();
     cx.progress_bar = extras::from_map(map, PROGRESS_BAR_KEY)?;
     let duration = TimeMap::from_segments(&clip.segments).duration();
