@@ -116,6 +116,13 @@ fn tools(ctx: &Ctx) -> rustler_core::Result<ToolPaths> {
     Ok(paths)
 }
 
+/// Reads a stored QC report (`RenderRecord.qc`) with its paths resolved against this project's folder.
+/// Reports are stored with project-relative paths; older reports with absolute paths still load, and
+/// when such a path is gone (a copied project) it is re-rooted at the project's `clips/` folder.
+pub(crate) fn read_qc(store: &ProjectStore, rel: &std::path::Path) -> Option<QcView> {
+    store.read_json::<QcView>(rel).ok().map(|v| v.resolved_in(&store.root))
+}
+
 /// Runs QC. With `persist`: saves the report JSON, sets `RenderRecord.qc` via a revision-checked
 /// `save_clip` and appends an event. Without: everything goes to a scratch dir.
 pub(crate) async fn execute_qc(
@@ -161,7 +168,8 @@ pub(crate) async fn execute_qc_with(
     if !persist {
         return Ok((v, report_path));
     }
-    store.write_json(&report_path, &v)?;
+    // Stored with project-relative paths so a copied project does not point into the original folder.
+    store.write_json(&report_path, &v.relative_to(&store.root))?;
 
     let base = clip.revision;
     let rec = clip.renders.iter_mut().find(|r| r.id == render.id);
@@ -347,7 +355,7 @@ fn rank(s: QcStatus) -> u8 {
 async fn report_for(ctx: &Ctx, store: &ProjectStore, clip_id: &ClipId, render_id: &RenderId) -> rustler_core::Result<QcView> {
     let clip = store.load_clip(clip_id)?;
     let render = pick_render(&clip, Some(render_id))?;
-    if let Some(v) = render.qc.as_ref().and_then(|p| store.read_json::<QcView>(p).ok()) {
+    if let Some(v) = render.qc.as_ref().and_then(|p| crate::qc_cmds::read_qc(store, p)) {
         return Ok(v);
     }
     Ok(execute_qc(ctx, store, clip, &render, !ctx.dry_run).await?.0)
@@ -598,7 +606,7 @@ async fn export_clip(ctx: Ctx, input: ExportInput) -> rustler_core::Result<Expor
     let saved = render
         .qc
         .as_ref()
-        .and_then(|p| store.read_json::<QcView>(p).ok());
+        .and_then(|p| crate::qc_cmds::read_qc(&store, p));
     let qc: QcView = match saved {
         Some(v) => v,
         None if ctx.dry_run => {
