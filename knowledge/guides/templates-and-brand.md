@@ -10,8 +10,8 @@ tags: [template, brand, look, style, starter, podcast-viral, streamer-split, exp
 
 A template is a clip's **look without its content**: caption style, position and words per line,
 layout, hook title look (size, box, position, how long it stays), lower-third looks, brand images
-(logo), progress bar, loudness / denoise / music, sound-effect and effect patterns (a punch-in at every
-cut, every N seconds, at the start), transitions and canvas. Hook and label **text is not saved** unless
+(logo), progress bar, loudness / denoise / music, sound-effect and effect patterns (punch-ins on stressed
+words, an effect at every cut, every N seconds, at the start), transitions and canvas. Hook and label **text is not saved** unless
 you ask (`--include-text`): hooks are written per clip.
 
 A section that is missing from a template leaves that part of the clip alone. Templates live in
@@ -28,8 +28,19 @@ rustler template apply podcast-viral --clip-ids clp_x
 
 | Starter | Look |
 |---|---|
-| `podcast-viral` | hormozi-pop captions (3 words, y 0.70), big boxed hook (font 0.10, top, 3 s, <= 7 words), punch-in every 5 s, yellow progress bar, -14 LUFS. Leaves framing alone (close-ups: `crop track-face`; wide shots: `clip set-layout --preset blur-fit`). |
-| `streamer-split` | split-vertical (facecam top, gameplay below; segments that are already split keep their panes), hook on the seam, hormozi-pop, punch-in every 6 s, light denoise, progress bar, -14 LUFS. |
+| `podcast-viral` | hormozi-pop captions (3 words, y 0.70), big boxed hook (font 0.10, top, 3 s, <= 7 words), planned punch-ins (`at: emphasis`, 1.08-1.20, at most 5 visual changes per 10 s), yellow progress bar, -14 LUFS. Leaves framing alone (close-ups: `crop track-face`; wide shots: `clip set-layout --preset blur-fit`). |
+| `streamer-split` | split-vertical (facecam top, gameplay below; segments that are already split keep their panes), hook on the seam, hormozi-pop, planned punch-ins (1.08-1.15, at most 4 changes per 10 s), light denoise, progress bar, -14 LUFS. |
+
+**Punch-in patterns use the punch-in planner** (the same one `clip retention`'s `punch_in` fix uses):
+`{"kind": "punch-in", "at": "emphasis", "duration": 2.0, "amount": 1.08, "amount_max": 1.2, "per_10s": 5}`
+places each zoom just before a stressed word (content word, number, emphasis word, phrase end), keeps every
+stretch without a visual change under 2.5 s where it can, never puts more than `per_10s` changes (cuts, text
+pops, zoom in and out) in any 10 s, stays 0.5 s away from cuts, layout changes and transitions, skips
+graphic / blur-fit segments and cutaways (a zoom there crops the graphic's text), does not stack on your own
+punch-ins, varies the amount between `amount` and `amount_max`, and centres the zoom on the face when the
+source has `faces.json` (`rustler analyze faces <source_id>`; stored as `focus_x` / `focus_y`). A punch-in with
+`at: every` + `every_s` keeps that spacing but goes through the same planner (word snapping, cut distance,
+no graphics). Other effect kinds and `start` / `cuts` / `time` are placed exactly as written.
 
 Read the `notes` in `template show`: they say what the template does not do for you.
 
@@ -68,7 +79,12 @@ rustler template apply podcast-viral --clip-ids clp_x --overrides '{"hook":{"tex
 - Each clip gets one JSON-Patch through `timeline.apply`: fully validated, one revision,
   `rustler history undo <clip>` reverts it. Every clip is checked before any clip is saved.
 - Items the template adds (effects, sound effects, images, texts) carry `by_template: "<name>@<ver>"`;
-  applying again replaces them instead of stacking. Your own items are never removed.
+  applying again replaces them instead of stacking (also after `clip create --template` / `clips auto` and
+  later `effect add` calls). Your own items are never removed.
+- Edits that shorten a clip (`edit delete-segment`, `trim`, `set-range`, `remove-pauses`, ...) move effects,
+  texts, images, masks, cutaways, sound effects and freezes with their content, drop the ones whose content was
+  cut out and clamp the ones that run past the new end; each is named in the edit's `warnings`. Items an older
+  build left past the end are dropped / clamped (with a warning) when a template is applied.
 - The hook look restyles existing hook-top titles; with no hook on the clip you get a warning (or the
   hook is added when the template or `--overrides` has `hook.text`). Hooks longer than `max_words` warn.
 - A layout already in use on a segment is kept (its crop path or detected webcam panes stay); set

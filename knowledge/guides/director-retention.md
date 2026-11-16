@@ -82,6 +82,12 @@ pays the biggest loop. Never open a loop the clip cannot close (it reads as bait
 Ways to break a static stretch, in order of subtlety:
 - **Punch-in** on the stressed word: `rustler effect add <clip_id> punch-in --start a --end b` (or `--words`).
   The zoom in and the zoom out are both changes. Vary the amount (1.08-1.2) so it does not feel mechanical.
+  The `punch_in` fix of `clip retention` comes from the punch-in planner (the same one template punch-in
+  patterns use): stressed words, at most 5 changes in any 10 s (counting what is already there and the other
+  dead zones' fixes), 0.5 s from cuts and transitions, never on graphic / blur-fit segments or cutaways, never on
+  top of an existing zoom, varied `--amount`, and `--focus-x/--focus-y` on the face when `faces.json` exists.
+  When nothing fits, the fix is `punch_in_skipped` (no command): use a text pop or a cutaway there. Do not add
+  punch-ins by hand at a faster rhythm than that: 8-9 changes per 10 s reads as nervous, not energetic.
 - **Text pop**: 1-3 words of the line that matters, `overlay add-text … --style plain`, ~1.2 s.
 - **Jump cut**: remove a pause (`edit remove-pauses`) or a weak sentence; the reframe itself is a change.
 - **Layout change**: split-screen to the listener's reaction, or wide → tight.

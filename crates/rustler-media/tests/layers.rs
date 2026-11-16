@@ -240,7 +240,7 @@ fn layer_z_order_in_graph() {
             cutaway("cut_pip", "/p.mp4", CutawayMode::Pip, Some(rect(0.5, 0.5, 0.4, 0.3)), 1.0, 2.0),
             cutaway("cut_full", "/f.mp4", CutawayMode::Full, None, 3.0, 4.0),
         ],
-        effects: vec![Effect { id: "fx_1".into(), kind: EffectKind::PunchIn, start: 0.5, end: 1.0, amount: None }],
+        effects: vec![Effect { id: "fx_1".into(), kind: EffectKind::PunchIn, start: 0.5, end: 1.0, amount: None, focus_x: None, focus_y: None, extra: Default::default() }],
         overlays: vec![TextOverlay::new("ovl_1", "Hook", 0.0, 2.0, OverlayStyle::HookTop)],
         ..Default::default()
     };

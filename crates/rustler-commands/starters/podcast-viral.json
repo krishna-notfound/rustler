@@ -2,7 +2,7 @@
   "schema": "rustler.template@1",
   "name": "podcast-viral",
   "version": 1,
-  "description": "Talking-head / podcast short: hormozi-pop captions (3 words a line) at 0.70, a big boxed hook title (<= 7 words) for the first 3 s, a punch-in every 5 s, yellow progress bar, -14 LUFS.",
+  "description": "Talking-head / podcast short: hormozi-pop captions (3 words a line) at 0.70, a big boxed hook title (<= 7 words) for the first 3 s, planned punch-ins on stressed words (about 4-5 visual changes per 10 s, 1.08-1.20, never on graphics, centred on the face), yellow progress bar, -14 LUFS.",
   "created_by": "built-in",
   "based_on": { "trial": "clips-trial-1 (Vinh Giang x Raj Shamani, 5 clips, all QC pass)" },
   "notes": [
@@ -16,6 +16,6 @@
   "progress_bar": { "enabled": true, "color": "#FFE000", "height": 8, "position": "top" },
   "audio": { "loudnorm": true, "target_lufs": -14.0, "true_peak": -2.0 },
   "effects": [
-    { "kind": "punch-in", "at": "every", "every_s": 5.0, "duration": 1.5, "amount": 1.12 }
+    { "kind": "punch-in", "at": "emphasis", "duration": 2.0, "amount": 1.08, "amount_max": 1.2, "per_10s": 5.0 }
   ]
 }

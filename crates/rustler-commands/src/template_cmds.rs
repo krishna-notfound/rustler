@@ -335,10 +335,15 @@ pub enum PlaceAt {
     Start,
     /// At every seam between segments (jump cuts).
     Cuts,
-    /// Every `every_s` seconds from `every_s` on (not in the last 0.5 s).
+    /// Every `every_s` seconds from `every_s` on (not in the last 0.5 s). Punch-ins go through
+    /// the punch-in planner with that spacing (snapped to stressed words, away from cuts).
     Every,
     /// At `t` seconds.
     Time,
+    /// Punch-ins only: placed by the punch-in planner on stressed words, at most `per_10s`
+    /// visual changes per 10 s, at least 0.5 s from cuts, never on graphics / blur-fit
+    /// segments, amount varied between `amount` and `amount_max`, centred on the face.
+    Emphasis,
 }
 
 fn sfx_db() -> f64 {
@@ -371,10 +376,17 @@ pub struct TplEffect {
     pub every_s: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub t: Option<f64>,
-    /// Seconds each effect lasts.
+    /// Seconds each effect lasts (planned punch-ins: the target length, snapped to words).
     pub duration: f64,
+    /// Zoom factor; for planned punch-ins (at = emphasis / every) the lower end of the range.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub amount: Option<f64>,
+    /// Planned punch-ins: upper end of the zoom range (varied per punch-in; default = amount).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amount_max: Option<f64>,
+    /// Planned punch-ins: most visual changes (cuts, text pops, zoom in/out) in any 10 s (default 5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub per_10s: Option<f64>,
 }
 
 #[derive(Serialize, Deserialize, JsonSchema, Clone, PartialEq, Debug)]
@@ -602,6 +614,7 @@ pub fn validate_template(t: &Template) -> Result<()> {
     let place = |p: &str, at: PlaceAt, every: Option<f64>, tt: Option<f64>, e: &mut Vec<String>| match at {
         PlaceAt::Every if !every.is_some_and(|s| s.is_finite() && s >= 1.0) => e.push(format!("{p}/every_s: at=every needs every_s >= 1")),
         PlaceAt::Time if !tt.is_some_and(|s| s.is_finite() && s >= 0.0) => e.push(format!("{p}/t: at=time needs t >= 0")),
+        PlaceAt::Emphasis if p.starts_with("/audio") => e.push(format!("{p}/at: emphasis is for punch-in effects only")),
         _ => {}
     };
     if let Some(a) = &t.audio {
@@ -644,6 +657,20 @@ pub fn validate_template(t: &Template) -> Result<()> {
             && !(a.is_finite() && (lo..=hi).contains(&a))
         {
             e.push(format!("{p}/amount: must be between {lo} and {hi} for {:?}", x.kind));
+        }
+        if x.at == PlaceAt::Emphasis && x.kind != EffectKind::PunchIn {
+            e.push(format!("{p}/at: emphasis is for punch-in effects only"));
+        }
+        if (x.amount_max.is_some() || x.per_10s.is_some()) && x.kind != EffectKind::PunchIn {
+            e.push(format!("{p}: amount_max / per_10s apply to planned punch-ins only"));
+        }
+        if let Some(a) = x.amount_max
+            && !(a.is_finite() && (lo..=hi).contains(&a) && x.amount.is_none_or(|m| a >= m))
+        {
+            e.push(format!("{p}/amount_max: must be between {lo} and {hi} and >= amount"));
+        }
+        if x.per_10s.is_some_and(|v| !(v.is_finite() && (1.0..=10.0).contains(&v))) {
+            e.push(format!("{p}/per_10s: must be 1..10"));
         }
     }
     if let Some(tr) = &t.transitions
@@ -1011,7 +1038,16 @@ pub fn capture(ctx: &Ctx, store: &ProjectStore, doc: &Timeline, name: &str, incl
         match place_of(x.start) {
             Some(at) => {
                 if !effects.iter().any(|e| e.kind == x.kind && e.at == at) {
-                    effects.push(TplEffect { kind: x.kind, at, every_s: None, t: None, duration: ((x.end - x.start) * 100.0).round() / 100.0, amount: x.amount });
+                    effects.push(TplEffect {
+                        kind: x.kind,
+                        at,
+                        every_s: None,
+                        t: None,
+                        duration: ((x.end - x.start) * 100.0).round() / 100.0,
+                        amount: x.amount,
+                        amount_max: None,
+                        per_10s: None,
+                    });
                 }
             }
             None => loose_fx += 1,
@@ -1156,6 +1192,8 @@ fn instances(at: PlaceAt, every: Option<f64>, t: Option<f64>, cuts: &[f64], dur:
         PlaceAt::Start => vec![0.0],
         PlaceAt::Cuts => cuts.to_vec(),
         PlaceAt::Time => t.filter(|t| *t < dur).into_iter().collect(),
+        // Planned by the punch-in planner (see `build`), not a fixed grid.
+        PlaceAt::Emphasis => Vec::new(),
         PlaceAt::Every => {
             let step = every.unwrap_or(5.0).max(1.0);
             let mut v = Vec::new();
@@ -1167,6 +1205,30 @@ fn instances(at: PlaceAt, every: Option<f64>, t: Option<f64>, cuts: &[f64], dur:
             v
         }
     }
+}
+
+/// Planner settings for a punch-in pattern: `emphasis` uses the planner's pacing; `every` keeps
+/// its spacing (`every_s` between starts) but is snapped and guarded by the planner too.
+pub fn punch_config(e: &TplEffect) -> rustler_media::punchin::PunchConfig {
+    let mut c = rustler_media::punchin::PunchConfig::default();
+    match (e.amount, e.amount_max) {
+        (Some(lo), Some(hi)) => (c.amount_min, c.amount_max) = (lo, hi),
+        (Some(a), None) => (c.amount_min, c.amount_max) = (a, a),
+        (None, Some(hi)) => c.amount_max = hi,
+        (None, None) => {}
+    }
+    c.len_s = e.duration;
+    c.max_len_s = c.max_len_s.max(e.duration);
+    c.min_len_s = c.min_len_s.min(e.duration);
+    if let Some(p) = e.per_10s {
+        c.max_changes_per_10s = p;
+    }
+    if e.at == PlaceAt::Every
+        && let Some(step) = e.every_s
+    {
+        c.max_static_s = (step - e.duration).max(e.duration).max(c.min_spacing_s);
+    }
+    c
 }
 
 fn tagged(x: &Map<String, Value>, role: &str) -> bool {
@@ -1195,6 +1257,9 @@ pub fn build(ctx: &Ctx, store: &ProjectStore, tpl: &Template, paths: &HashMap<St
     let mut w: Vec<String> = Vec::new();
     let tag = format!("{}@{}", tpl.name, tpl.version);
     let _ = ctx;
+    // Items an earlier edit left past the end (older builds did not re-time layers) would fail
+    // validation: drop / clamp them first and say so.
+    w.extend(timeline_doc::prune_to_duration(&mut t));
 
     if let Some(c) = tpl.canvas {
         t.canvas = c;
@@ -1473,6 +1538,24 @@ pub fn build(ctx: &Ctx, store: &ProjectStore, tpl: &Template, paths: &HashMap<St
     if let Some(list) = &tpl.effects {
         t.tracks.effects.retain(|x| !x.extra.contains_key(BY_TEMPLATE));
         for e in list {
+            if e.kind == EffectKind::PunchIn && matches!(e.at, PlaceAt::Emphasis | PlaceAt::Every) {
+                // One planner for template and retention punch-ins: stressed words, away from
+                // cuts, not on graphics, not stacked, paced, centred on the face.
+                let (input, pw) = timeline_doc::punch_input(store, &t);
+                w.extend(pw.into_iter().filter(|x| !x.contains("no transcript")));
+                let cfg = punch_config(e);
+                let planned = rustler_media::punchin::plan(&input, &cfg);
+                for p in planned {
+                    let id = timeline_doc::next_item_id("fx", t.tracks.effects.iter().map(|x| x.id.as_str()));
+                    let mut extra = tag_map(&tag, "effect");
+                    if let (Some(x), Some(y)) = (p.focus_x, p.focus_y) {
+                        extra.insert("focus_x".into(), json!(x));
+                        extra.insert("focus_y".into(), json!(y));
+                    }
+                    t.tracks.effects.push(EffectItem { id, kind: e.kind, start: p.start, end: p.end, amount: Some(p.amount), extra });
+                }
+                continue;
+            }
             for s in instances(e.at, e.every_s, e.t, &cuts, dur) {
                 let end = (s + e.duration).min(dur);
                 if end - s < 0.1 {
