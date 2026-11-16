@@ -1527,12 +1527,18 @@ fn segment_video(
                 let name = format!("crop_s{i}r{j}.cmd");
                 let target = format!("crop@s{i}r{j}");
                 let (x0, body) = sendcmd_body(keys, &target, probe.width, s.w, canvas.fps, frames);
-                cmd_files.push((name.clone(), body));
-                let _ = write!(
-                    chain,
-                    "sendcmd=f={name},{target}={}:{}:{x0}:{}",
-                    s.w, s.h, s.y
-                );
+                if body.is_empty() {
+                    // The path never moves (one key, or a short still segment): ffmpeg's sendcmd
+                    // rejects an empty command file, so use a plain crop at the path's position.
+                    let _ = write!(chain, "crop={}:{}:{x0}:{}", s.w, s.h, s.y);
+                } else {
+                    cmd_files.push((name.clone(), body));
+                    let _ = write!(
+                        chain,
+                        "sendcmd=f={name},{target}={}:{}:{x0}:{}",
+                        s.w, s.h, s.y
+                    );
+                }
             }
             None => {
                 let _ = write!(chain, "crop={}:{}:{}:{}", s.w, s.h, s.x, s.y);
