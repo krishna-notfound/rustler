@@ -257,6 +257,19 @@ pub(crate) fn read_brief(store: &ProjectStore) -> Option<QcBrief> {
     (b != QcBrief::default()).then_some(b)
 }
 
+/// The project brief's limits with the clip's template export window (`min_len` / `max_len`,
+/// extras `export`) taking precedence for the length check.
+fn brief_for(store: &ProjectStore, clip: &Clip) -> Option<QcBrief> {
+    let brief = read_brief(store);
+    let Some(x) = crate::template_cmds::clip_export(store, &clip.id).filter(|x| x.min_len.is_some() || x.max_len.is_some()) else {
+        return brief;
+    };
+    let mut b = brief.unwrap_or_default();
+    b.min_s = x.min_len.or(b.min_s);
+    b.max_s = x.max_len.or(b.max_s);
+    Some(b)
+}
+
 /// Output time of the first caption word, if a transcript covers the clip.
 fn first_caption_word(store: &ProjectStore, clip: &Clip) -> Option<f64> {
     if !clip.captions.enabled {
@@ -283,7 +296,7 @@ async fn gather_extras(ctx: &Ctx, store: &ProjectStore, clip: &Clip, render_path
         faces_off: !want_faces,
         overlay_starts: overlay_starts(&raw),
         first_caption_word_s: first_caption_word(store, clip),
-        brief: read_brief(store),
+        brief: brief_for(store, clip),
         overlay_add_text: registry_has("overlay.add_text"),
         has_crop_path: raw.get("crop_paths").and_then(|c| c.as_object()).is_some_and(|o| !o.is_empty()),
         crop_paths: clip

@@ -343,15 +343,23 @@ async fn starter_templates_validate() {
         assert_eq!(t["progress_bar"]["enabled"], true);
         // Starters never zoom by themselves (user rule: zooms are the agent's decision).
         assert!(t["effects"].as_array().is_none_or(|e| e.is_empty()), "{t}");
+        assert!(t.get("cutaway_rules").is_none(), "no punch-in cutaway rule in a starter: {t}");
+        assert_eq!(t["export"]["quality"], "final");
     }
+    let pv = f.call("template.show", json!({"name": "podcast-viral"})).await;
+    assert_eq!(pv["template"]["layout_rules"][0]["when"], "faces=1");
+    assert_eq!(pv["template"]["captions"]["keyword_highlight"]["max_per_line"], 1);
     // A longer clip (8.5 s): hook restyled, framing left alone, no zooms added.
     let c = f.call("clip.create", json!({"name": "long", "source_id": f.src.id, "start": 1.0, "end": 9.5})).await;
     let id = c["id"].as_str().unwrap().to_string();
     f.call("overlay.add_text", json!({"clip_id": id, "text": "He quit his job"})).await;
     let r = f.call("template.apply", json!({"name": "podcast-viral", "clip_ids": [id]})).await;
     assert!(r["clips"][0]["warnings"].as_array().is_none_or(|w| w.iter().all(|w| !w.as_str().unwrap().contains("no hook"))));
+    assert!(r["clips"][0]["warnings"].to_string().contains("no face / shot data"), "layout_rules without shot data warn: {r}");
     let tr = f.show(&id).await["document"]["tracks"].clone();
-    assert_eq!(tr["video"][0]["layout"]["preset"], "center-crop", "podcast-viral leaves framing alone");
+    assert_eq!(tr["video"][0]["layout"]["preset"], "center-crop", "podcast-viral leaves framing alone without shot data");
+    let ov = tr["captions"]["word_overrides"].as_array().cloned().unwrap_or_default();
+    assert!(!ov.is_empty() && ov.iter().all(|o| o["by_template"] == "podcast-viral@1"), "keywords marked: {}", tr["captions"]);
     assert_eq!(tr["text"][0]["font_size_factor"], 0.1);
     assert_eq!(tr["text"][0]["end"], 3.0);
     assert!(tr["effects"].as_array().is_none_or(|e| e.is_empty()), "podcast-viral added zooms: {}", tr["effects"]);

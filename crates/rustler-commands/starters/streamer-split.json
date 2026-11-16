@@ -22,5 +22,6 @@
   "captions": { "enabled": true, "preset": "hormozi-pop", "position_y": 0.72, "max_words_per_line": 3 },
   "hook": { "at_seam": true, "position_y": 0.5, "font_size_factor": 0.09, "box": true, "duration": 3.0, "max_words": 7 },
   "progress_bar": { "enabled": true, "color": "#FFE000", "height": 8, "position": "top" },
-  "audio": { "loudnorm": true, "target_lufs": -14.0, "true_peak": -2.0, "denoise": "light" }
+  "audio": { "loudnorm": true, "target_lufs": -14.0, "true_peak": -2.0, "denoise": "light" },
+  "export": { "quality": "final", "fps": 30.0 }
 }
