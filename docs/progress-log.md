@@ -692,3 +692,38 @@ merge, then templates (Opus), knowledge refresh, clips.auto, `rustler setup run`
   with `rustler setup run` (doctor ready). Muse must re-run `rustler setup run` after upgrading.
 - Running: real trial 2 on a copy of rustler-real1 on D: (same 5 moments; `clips auto` + a directed pass),
   report → `docs/research/trial-2-2026-11-16.md`.
+
+### 2026-11-16 — trial-2 fixes (v0.2.1 line)
+Source: `docs/research/trial-2-2026-11-16.md` (same five moments as trial 1; retention 43–63 → auto 65–77 →
+directed 77–94; 10 bugs). Four parallel fix branches (Opus x3, Sonnet x1, build caches on D:), merged to `main`:
+- **clips.auto / export / cover:** unique clip + export names (`auto-<rank>-<orig mm>m<ss>s-<source slug>`, `-2`…);
+  `export.clip` refuses to overwrite another clip's export without `--overwrite true`; trims never cut inside the
+  first/last word and are skipped with approximate (captions) timings; a fix that worsens hook/ending/score is
+  restored (`rolled_back`); every fix reports `status` (applied | no_change | skipped | rolled_back | failed);
+  `fixes_suggested` always present; exporting an older `--render-id` rebuilds srt/post/report from that render's
+  revision (cover dropped with a warning); `clip.cover` / `clip.meta_set` no longer make the render stale for
+  retention. Real check: clip 04 keeps "…that you actually have." (ending sentence_final, score 65 → 70).
+- **Templates / layers / punch-ins:** template items keep `by_template` through every read-modify-write (0/10 → 9/9
+  tagged; re-apply now replaces instead of doubling). The shared edit save path moves effects, texts, images,
+  masks, cutaways, sfx and freezes with their content and drops/clamps what falls outside (named in warnings).
+  One punch-in planner (`crates/rustler-media/src/punchin.rs`) for templates (`"at": "emphasis"`) and retention
+  fixes: stressed words, ≥0.5 s from cuts/transitions, ≤5 changes per 10 s, amounts 1.08–1.20, skips graphic /
+  blur-fit / cutaway segments, centres on the face (`faces.json`). Clip 02: 19 → 10 punch-ins, 4.9 changes/10 s,
+  retention 77 → 75 (the one dead zone left is the skipped infographic), QC pass.
+- **Framing:** graphics shots crop to the graphic's content box (02 and 04 readable, 1.7–1.8x larger, logo out)
+  instead of whole-frame blur-fit; shot splits refined to the first frame of the new shot when faces change
+  between samples (04: 20.80 → 19.84 s); fragments < 0.6 s merged unless they continue the previous layout (02's
+  0.275 s graphic tail kept on purpose); dedupe of override commands; face kept ≥8 % of the crop width from both
+  edges, moves stop at shot cuts (05: near-edge samples 19 → 15).
+- **Small:** `caption keywords --auto` treats `>>` speaker turns as sentence ends, words also written lower-case are
+  not names, number words (EN + Hindi) count; keyword colour yellow when the preset's active word is green; all
+  hook styles ≥ 0.10 of the width (wrap before shrink); stored QC reports use project-relative paths (old absolute
+  records still load, re-rooted when the old folder is gone).
+- **Orchestrator fixes after merge:** the timeline document's `TextStyle` lacked the viral hook styles, so any clip
+  with one made `timeline show/apply` and `template apply` fail (added + `name()`/`is_hook()`; templates restyle
+  viral hooks without a box and never smaller; cold open keeps any opening hook at the start). `TextOverlay` and
+  `SfxEntry` keep unmodelled fields (`by_template`). Render freshness in `project status` / `export batch`: each
+  render writes `renders/<render_id>.extras.json` (picture/sound keys only); a newer extras.json counts as stale only
+  when those keys differ (`extras::NON_RENDER_KEYS`: post, meta, cover, smart_defaults, template_ref, variant_*).
+- Open: `clips auto` runs remove-pauses after the template, so new cuts are not re-checked against the punch-in
+  0.5 s rule; "Vietnamese"/"Western" (proper adjectives) still count as names by design.
