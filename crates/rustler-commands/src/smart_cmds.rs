@@ -1637,8 +1637,11 @@ pub async fn apply_smart_defaults(ctx: &Ctx, store: &ProjectStore, clip: Clip, o
     if report.applied {
         report.undo_all = Some(format!("rustler history restore {} --revision {raw_revision}", clip.id));
     }
-    let stored = serde_json::to_value(&report).expect("serializable");
-    extras::update(store, &clip.id, SMART_KEY, |_| Ok(Some(stored)))?;
+    if report.applied {
+        // Kept with the clip so an agent can read the decisions later (`clip show` extras).
+        let stored = serde_json::to_value(&report).expect("serializable");
+        extras::update(store, &clip.id, SMART_KEY, |_| Ok(Some(stored)))?;
+    }
     Ok((clip, report))
 }
 
