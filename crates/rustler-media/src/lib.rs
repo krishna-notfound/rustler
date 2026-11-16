@@ -9,6 +9,7 @@ pub mod encoders;
 pub mod camera;
 pub mod facepath;
 pub mod frames;
+pub mod grade;
 pub mod layers;
 pub mod probe;
 mod proc;

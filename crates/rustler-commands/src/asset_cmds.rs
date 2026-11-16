@@ -560,6 +560,10 @@ async fn asset_show(ctx: Ctx, i: IdIn) -> Result<ShowOut> {
         AssetKind::Layout => {
             next.push(format!("rustler clip set-layout <clip_id> {}", row.entry.name));
         }
+        AssetKind::Lut => {
+            next.push(format!("rustler grade set <clip_id> --lut asset:{} --lut-strength 0.6", row.entry.id));
+            next.push("rustler grade preview <clip_id> --out-t 1".to_string());
+        }
         AssetKind::Template | AssetKind::TextStyle => {}
     }
     Ok(ShowOut { asset: row, preview, style, next })
@@ -634,6 +638,7 @@ fn check_extension(kind: AssetKind, path: &Path) -> Result<()> {
         AssetKind::Music | AssetKind::Sfx => &["mp3", "wav", "ogg", "m4a", "aac", "flac", "opus"],
         AssetKind::Image => &["png", "jpg", "jpeg", "webp", "gif"],
         AssetKind::CaptionStyle | AssetKind::Layout | AssetKind::TextStyle => &["json"],
+        AssetKind::Lut => &["cube"],
         AssetKind::Template => &[],
     };
     if ok.is_empty() || ok.contains(&ext.as_str()) {
@@ -721,6 +726,10 @@ async fn asset_add(ctx: Ctx, i: AddIn) -> Result<AddOut> {
             .hint("pass an existing local file, or --url <http(s) link>"));
     }
     check_extension(i.kind, &src)?;
+    if i.kind == AssetKind::Lut {
+        let text = std::fs::read_to_string(&src).map_err(|e| io_err(STAGE, "read", &src, e))?;
+        rustler_media::grade::check_cube(&text).map_err(|m| validation(STAGE, format!("{}: {m}", src.display())))?;
+    }
     // From here on `i.path` is the resolved local file.
     let i = AddIn { path: Some(src), source_url: i.source_url.or(source_url_auto), ..i };
     let i_path: PathBuf = i.path.clone().unwrap_or_default();
@@ -803,6 +812,7 @@ async fn asset_add(ctx: Ctx, i: AddIn) -> Result<AddOut> {
             AssetKind::Music => format!("rustler audio add-music <clip_id> asset:{id}"),
             AssetKind::Sfx => format!("rustler audio add-sfx <clip_id> asset:{id}"),
             AssetKind::CaptionStyle => format!("rustler clip set-captions <clip_id> --style {}", entry.name),
+            AssetKind::Lut => format!("rustler grade set <clip_id> --lut asset:{id} --lut-strength 0.6"),
             _ => "rustler asset list".to_string(),
         },
     ];

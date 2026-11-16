@@ -5,8 +5,8 @@
   'use strict';
   var R = window.R, h = R.h, S = R.S;
 
-  var KINDS = [['', 'All'], ['sfx', 'SFX'], ['music', 'Music'], ['font', 'Fonts'], ['image', 'Images'], ['caption_style', 'Caption styles'], ['layout', 'Layouts']];
-  var KIND_LABEL = { sfx: 'sfx', music: 'music', font: 'font', image: 'image', caption_style: 'caption style', layout: 'layout', template: 'template' };
+  var KINDS = [['', 'All'], ['sfx', 'SFX'], ['music', 'Music'], ['font', 'Fonts'], ['image', 'Images'], ['caption_style', 'Caption styles'], ['layout', 'Layouts'], ['lut', 'LUTs']];
+  var KIND_LABEL = { sfx: 'sfx', music: 'music', font: 'font', image: 'image', caption_style: 'caption style', layout: 'layout', template: 'template', lut: 'lut' };
   var LICENSES = ['CC0-1.0', 'CC-BY-4.0', 'CC-BY-SA-4.0', 'OFL-1.1', 'own work', 'licensed: '];
 
   // asset.show results (preview images) by id; `v` busts the browser cache after a re-render.
