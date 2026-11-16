@@ -193,6 +193,9 @@ pub struct CameraParams {
     pub lookahead: f64,
     /// Start a move this long (s) before the subject crosses the safe-box edge.
     pub anticipation: f64,
+    /// A confirmed move starts with the subject's motion (its onset + 0.1 s reaction), at most
+    /// this long (s) before the box crossing, so a quick lean is followed, not caught up with.
+    pub max_lead: f64,
     pub max_velocity: f64,
     pub max_accel: f64,
     /// Shortest eased move (s).
@@ -231,6 +234,7 @@ impl CameraParams {
             min_out: 0.5,
             lookahead: 1.5,
             anticipation: 0.15,
+            max_lead: 0.5,
             max_velocity: 0.35,
             max_accel: 0.8,
             min_move: 0.5,
@@ -327,22 +331,35 @@ pub fn plan_detailed(samples: &[CamSample], crop_w: f64, events: &[CamEvent], p:
     let prim = primary_faces(samples);
     let cx = median_filter(&fill(&prim.iter().map(|f| f.map(|f| f.cx())).collect::<Vec<_>>(), 0.5), p.median_window);
     let widths = median_filter(&fill(&prim.iter().map(|f| f.map(|f| f.w)).collect::<Vec<_>>(), 0.1), p.median_window);
-    let shift: Vec<f64> = if p.look_room {
-        let yaw = median_filter(&fill(&prim.iter().map(|f| f.and_then(|f| f.yaw())).collect::<Vec<_>>(), 0.0), p.yaw_window);
-        yaw.iter()
-            .map(|&y| {
-                let s = ((y.abs() - p.yaw_dead) / (p.yaw_full - p.yaw_dead).max(1e-6)).clamp(0.0, 1.0);
-                s.copysign(y) * p.look_room_frac
-            })
-            .collect()
-    } else {
-        vec![0.0; n]
+    let raw = RawPath {
+        cx: fill(&prim.iter().map(|f| f.map(|f| f.cx())).collect::<Vec<_>>(), 0.5),
+        cy: fill(&prim.iter().map(|f| f.map(|f| f.y + f.h / 2.0)).collect::<Vec<_>>(), 0.5),
+        yaw: prim.iter().map(|f| f.and_then(|f| f.yaw())).collect(),
     };
+    let bounds = boundaries(&times, &cx, &widths, &raw, events, t0, p);
+    // Look-room per shot: the yaw is smoothed within a shot, never across a cut.
+    let mut shift = vec![0.0; n];
+    if p.look_room {
+        let mut edges: Vec<usize> = std::iter::once(0).chain(bounds.iter().map(|b| b.0)).collect();
+        edges.push(n);
+        for w in edges.windows(2) {
+            let (a, b) = (w[0], w[1]);
+            if a >= b {
+                continue;
+            }
+            let yaw = median_filter(&fill(&raw.yaw[a..b], 0.0), p.yaw_window);
+            for (j, y) in yaw.iter().enumerate() {
+                let st = ((y.abs() - p.yaw_dead) / (p.yaw_full - p.yaw_dead).max(1e-6)).clamp(0.0, 1.0);
+                // A big close-up has no room to spare: keep the back of the head (about 0.9 face
+                // widths behind the box centre in profile) 2% of the frame inside the crop.
+                let cap = ((crop_w / 2.0 - 0.9 * widths[a + j] - 0.02) / crop_w).max(0.0);
+                shift[a + j] = (st * p.look_room_frac).min(cap).copysign(*y);
+            }
+        }
+    }
     let target: Vec<f64> = cx.iter().zip(&shift).map(|(c, s)| clamp_c(c + s * crop_w)).collect();
-
     let safe = p.safe_frac * crop_w;
     let hard = p.hard_frac * crop_w;
-    let bounds = boundaries(&times, &cx, &widths, events, t0, p);
 
     // Pieces between boundaries; each enters with the boundary's (time, kind).
     let mut starts: Vec<(usize, Option<(f64, EventKind)>)> = vec![(0, None)];
@@ -513,7 +530,13 @@ fn hold_or_move(
         } else {
             times[i]
         };
-        let start = (tx - p.anticipation).max(*busy).max(times[a].min(tx)).max(0.0);
+        // Onset: walk back while the target keeps moving toward this side.
+        let mut on = i;
+        while on > a && (target[on] - target[on - 1]) * side > 0.004 {
+            on -= 1;
+        }
+        let lead = (times[on] + 0.1).max(tx - p.max_lead);
+        let start = (tx - p.anticipation).min(lead).max(*busy).max(times[a].min(tx)).max(0.0);
         let same_dir = |m: &Move| m.dur > 0.0 && m.stop >= m.end() && (m.to - m.from) * (new - m.to) > 0.0;
         match moves.last_mut().filter(|m| same_dir(m) && start <= m.end() + 0.1) {
             // Leaving again right after a move in the same direction: extend it into one move
@@ -550,7 +573,41 @@ fn hold_or_move(
 
 /// Piece boundaries `(first sample index, transition time (relative), kind)`: detected shot cuts
 /// in the face path merged with the caller's events.
-fn boundaries(times: &[f64], cx: &[f64], widths: &[f64], events: &[CamEvent], t0: f64, p: &CameraParams) -> Vec<(usize, f64, EventKind)> {
+/// Unfiltered per-sample subject features (cut detection looks at single steps).
+struct RawPath {
+    cx: Vec<f64>,
+    cy: Vec<f64>,
+    yaw: Vec<Option<f64>>,
+}
+
+impl RawPath {
+    /// A shot cut between two people who face each other (a reaction shot in a podcast): the face
+    /// barely moves in the frame, but the head direction flips from one sample to the next and
+    /// stays flipped, and the face box steps. A real head turn takes longer than one sample step.
+    fn pose_flip(&self, i: usize) -> bool {
+        let n = self.yaw.len();
+        if i < 2 || i + 1 >= n {
+            return false;
+        }
+        let (Some(y0), Some(a), Some(b), Some(y3)) = (self.yaw[i - 2], self.yaw[i - 1], self.yaw[i], self.yaw[i + 1]) else {
+            return false;
+        };
+        let flip = a * b < 0.0 && a.abs() > 0.2 && b.abs() > 0.2 && (a - b).abs() > 0.7;
+        let stable = y0 * a > 0.0 && y3 * b > 0.0;
+        let stepped = (self.cx[i] - self.cx[i - 1]).abs() + (self.cy[i] - self.cy[i - 1]).abs() > 0.02;
+        flip && stable && stepped
+    }
+}
+
+fn boundaries(
+    times: &[f64],
+    cx: &[f64],
+    widths: &[f64],
+    raw: &RawPath,
+    events: &[CamEvent],
+    t0: f64,
+    p: &CameraParams,
+) -> Vec<(usize, f64, EventKind)> {
     const MERGE_S: f64 = 0.75;
     let n = times.len();
     let explicit: Vec<CamEvent> = events
@@ -563,7 +620,7 @@ fn boundaries(times: &[f64], cx: &[f64], widths: &[f64], events: &[CamEvent], t0
     for i in 1..n {
         let dx = (cx[i] - cx[i - 1]).abs();
         let wr = widths[i].max(widths[i - 1]) / widths[i].min(widths[i - 1]).max(1e-6);
-        if !(dx > p.jump || (dx > p.jump * 0.5 && wr > 1.35)) {
+        if !(dx > p.jump || (dx > p.jump * 0.5 && wr > 1.35) || raw.pose_flip(i)) {
             continue;
         }
         let td = (times[i - 1] + times[i]) / 2.0;

@@ -100,7 +100,15 @@ fn the_move_starts_before_the_subject_leaves_the_safe_box() {
     let crossing = 5.0 + safe / 0.1; // the face leaves the box here
     let start = keys.iter().find(|k| (k.x - keys[0].x).abs() > 1e-6).map(|k| k.t).unwrap();
     let hold_end = keys[keys.iter().position(|k| (k.x - keys[0].x).abs() > 1e-6).unwrap() - 1].t;
-    assert!((hold_end - (crossing - p.anticipation)).abs() < 0.05, "move starts at {hold_end}, crossing {crossing}");
+    // the camera follows the lean from its onset (5.0 s) after a 0.1 s reaction, not at the crossing
+    assert!(hold_end < crossing - p.anticipation, "move starts at {hold_end}, crossing {crossing}");
+    assert!((hold_end - (5.0 + 0.1f64).max(crossing - p.max_lead)).abs() < 0.05, "move starts at {hold_end}, crossing {crossing}");
+    // a long slow drift: at most max_lead before the crossing
+    let drift = series(20.0, |t| Some(face(0.5 + 0.03 * (t - 2.0).clamp(0.0, 6.0))));
+    let dk = plan(&drift, CROP_W, &[], &p);
+    let d_hold_end = dk[dk.iter().position(|k| (k.x - dk[0].x).abs() > 1e-6).unwrap() - 1].t;
+    let d_cross = 2.0 + safe / 0.03;
+    assert!((d_hold_end - (d_cross - p.max_lead)).abs() < 0.05, "drift move starts at {d_hold_end}, crossing {d_cross}");
     assert!(start > hold_end && start - hold_end < 0.05);
     // the face never leaves the frame
     for i in 0..(14.0 * 30.0) as usize {
@@ -126,6 +134,10 @@ fn look_room_frames_toward_the_side_the_face_points() {
     let s = series(8.0, |_| Some(turned(0.5, 0.6)));
     let off = centre(&plan(&s, CROP_W, &[], &p)[0]) - 0.5;
     assert!((off / CROP_W - 0.10).abs() < 0.005, "{off}");
+    // a big close-up (face half the crop wide) gets less room, so the back of the head stays in
+    let big = series(8.0, |_| Some(CamFace { x: 0.5 - 0.07, w: 0.14, h: 0.2, ..turned(0.5, 0.6) }));
+    let off = centre(&plan(&big, CROP_W, &[], &p)[0]) - 0.5;
+    assert!(off > 0.0 && off < 0.04 * CROP_W, "{off}");
     // frontal: centred; look_room off: centred
     let s = series(8.0, |_| Some(turned(0.5, 0.03)));
     assert!((centre(&plan(&s, CROP_W, &[], &p)[0]) - 0.5).abs() < 1e-6);
@@ -236,4 +248,23 @@ fn motion_stats_flags_jitter_and_robotic_steps() {
     let cut = vec![CropKey { t: 0.0, x: 0.2 }, CropKey { t: 3.0, x: 0.2 }, CropKey { t: 3.0, x: 0.6 }, CropKey { t: 6.0, x: 0.6 }];
     let st = motion_stats(&cut);
     assert_eq!((st.cuts, st.moves, st.max_velocity), (1, 0, 0.0));
+}
+
+#[test]
+fn a_reaction_shot_of_the_other_person_is_a_cut_even_when_the_face_barely_moves() {
+    // Real trial pattern: guest close-up facing left at 0.47, a 1.5 s reaction shot of the host
+    // facing right at 0.50 (face box a little higher), then the guest again.
+    let shot = |t: f64| if (5.0..6.5).contains(&t) { CamFace { y: 0.17, ..turned(0.50, 0.5) } } else { turned(0.47, -0.6) };
+    let s = series(12.0, |t| Some(shot(t)));
+    let pl = plan_detailed(&s, CROP_W, &[], &CameraParams::default());
+    assert_eq!((pl.cuts, pl.moves), (2, 0), "{:?}", pl.keys);
+    let cut_times: Vec<f64> = pl.keys.windows(2).filter(|w| w[0].t == w[1].t).map(|w| w[0].t).collect();
+    assert_eq!(cut_times, vec![4.875, 6.375]);
+    // look-room per shot: the guest framed with room on the left, the host with room on the right
+    assert!(centre(&pl.keys[0]) < 0.47 - 0.08 * CROP_W, "{:?}", pl.keys[0]);
+    let host = at(&pl.keys, 5.5) + CROP_W / 2.0;
+    assert!(host > 0.50 + 0.05 * CROP_W, "host framed at {host}");
+    // a real head turn (over a second, face in place) is not a cut
+    let turn = series(12.0, |t| Some(turned(0.47, (-0.6 + 1.1 * (t - 5.0)).clamp(-0.6, 0.5))));
+    assert_eq!(plan_detailed(&turn, CROP_W, &[], &CameraParams::default()).cuts, 0);
 }

@@ -15,7 +15,7 @@ use rustler_core::{
     Actor, AudioSettings, CaptionScript, CaptionTrack, Clip, ClipId, ErrorCode, Event, Layout, ProjectStore,
     RustlerError, Segment, SegmentId, Source, SourceId, TimeMap, Transcript, Unit, Word,
 };
-use rustler_media::camera::{self, CamSample, CameraParams, CameraStyle};
+use rustler_media::camera::{self, CamEvent, CamSample, CameraParams, CameraStyle, EventKind};
 use rustler_media::compile::{CropKey, MusicBed};
 use rustler_registry::{Annotations, Ctx, Example, Registry, typed};
 use schemars::JsonSchema;
@@ -974,6 +974,30 @@ struct FacesTrackResult {
     samples: Vec<CamSample>,
 }
 
+/// Scene cuts of `source` (from `analyze scenes` / `analyze quick`, if run) strictly inside
+/// `start..end`, as camera shot-cut events (source time). Missing or unreadable file: none.
+pub fn scene_cut_events(store: &ProjectStore, source: &SourceId, start: f64, end: f64) -> Vec<CamEvent> {
+    #[derive(Deserialize)]
+    struct Scene {
+        start: f64,
+    }
+    #[derive(Deserialize)]
+    struct Scenes {
+        scenes: Vec<Scene>,
+    }
+    let rel = Path::new("analysis").join(source.as_str()).join("scenes.json");
+    store
+        .read_json::<Scenes>(&rel)
+        .map(|s| {
+            s.scenes
+                .iter()
+                .filter(|c| c.start > start + 0.05 && c.start < end - 0.05)
+                .map(|c| CamEvent { t: c.start, kind: EventKind::ShotCut })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Which segments a crop command touches; NotFound when `segment_id` names none.
 fn select_segments<'a>(clip: &'a Clip, segment_id: Option<&SegmentId>, stage: &str) -> Result<Vec<&'a Segment>> {
     let segs: Vec<&Segment> = clip.segments.iter().filter(|s| segment_id.is_none_or(|id| id == &s.id)).collect();
@@ -1064,7 +1088,8 @@ async fn crop_track_face(ctx: Ctx, i: TrackFaceIn) -> Result<TrackFaceOut> {
         }
         let style = i.style.unwrap_or_default();
         let params = CameraParams { look_room: i.look_room.unwrap_or(true), ..CameraParams::for_style(style) };
-        let plan = camera::plan_detailed(&res.samples, crop_w, &[], &params);
+        let cuts = scene_cut_events(&store, &seg.source_id, seg.start, seg.end);
+        let plan = camera::plan_detailed(&res.samples, crop_w, &cuts, &params);
         extras.crop_paths.insert(seg.id.as_str().to_string(), plan.keys.clone());
         out.push(TrackedSegment {
             segment_id: seg.id.clone(),

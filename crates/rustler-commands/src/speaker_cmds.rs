@@ -14,7 +14,7 @@
 //!   speakers to people (close-ups, elimination, mouth movement on big faces) and builds the crop path.
 
 use crate::analyze_cmds::spawn_engine;
-use crate::clip_cmds::{load_transcript, tracking_crop_width, transcript_rel};
+use crate::clip_cmds::{load_transcript, scene_cut_events, tracking_crop_width, transcript_rel};
 use crate::extras;
 use crate::project_cmds::{Outcome, log_event, mmss, validation};
 use crate::source_cmds::load_source_checked;
@@ -1278,7 +1278,8 @@ pub async fn crop_track_speaker(ctx: Ctx, i: TrackSpeakerIn) -> Result<TrackSpea
         } else {
             camera::from_face_samples(&face_samples)
         };
-        let events = speaker_events(&res.samples, &choices);
+        let mut events = speaker_events(&res.samples, &choices);
+        events.extend(scene_cut_events(&store, &seg.source_id, seg.start, seg.end));
         let plan = camera::plan_detailed(&cam_samples, crop_w, &events, &cam_params);
         let keys = plan.keys.clone();
         let mapped = tm.segments().iter().find(|m| m.segment_id == seg.id);
