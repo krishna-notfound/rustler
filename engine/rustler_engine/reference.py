@@ -481,8 +481,8 @@ def music_heuristic(wav_path: str) -> Dict[str, Any]:
     live = db[db > -75]
     if len(live) < 100:
         return {"available": True, "music_present": False, "likelihood": 0.0, "note": "audio is (nearly) silent"}
-    p10, p50 = np.percentile(live, 10), np.percentile(live, 50)
-    gap = float(p50 - p10)
+    p10, p90 = np.percentile(live, 10), np.percentile(live, 90)
+    gap = float(p90 - p10)
     # onset envelope in three bands -> autocorrelation at 0.35-1.0 s
     spec = np.abs(np.fft.rfft(fr, axis=1))
     freqs = np.fft.rfftfreq(win, 1.0 / sr)
@@ -497,7 +497,7 @@ def music_heuristic(wav_path: str) -> Dict[str, Any]:
         ac = ac / (ac[0] + 1e-9)
         lo_l, hi_l = int(0.35 / 0.010), int(1.0 / 0.010)
         beat = float(ac[lo_l:hi_l].max())
-    s1 = float(np.clip((30.0 - gap) / 20.0, 0, 1))
+    s1 = float(np.clip((32.0 - gap) / 18.0, 0, 1))
     s2 = float(np.clip((beat - 0.15) / 0.35, 0, 1))
     likelihood = 0.65 * s1 + 0.35 * s2
     return {
@@ -506,7 +506,7 @@ def music_heuristic(wav_path: str) -> Dict[str, Any]:
         "likelihood": _r(likelihood, 2),
         "pause_depth_db": _r(gap, 1),
         "pulse_strength": _r(beat, 2),
-        "method": "heuristic: shallow pauses (p50-p10 frame level, dB) and a periodic onset pulse (0.35-1.0 s); run `analyze events` on a source for a model-based check",
+        "method": "heuristic: shallow pauses (p90-p10 frame level, dB; speech alone has deep pauses) and a periodic onset pulse (0.35-1.0 s); run `analyze events` on a source for a model-based check",
     }
 
 
@@ -679,7 +679,8 @@ def measure(params: Dict[str, Any], progress: Callable[..., None]) -> Dict[str, 
     for i in range(nframes - 1):
         ds = float(np.abs(smalls[i] - smalls[i + 1]).mean())
         dh_ = float(cv2.compareHist(hists[i].astype(np.float32), hists[i + 1].astype(np.float32), cv2.HISTCMP_BHATTACHARYYA))
-        diffs.append(max(ds, 0.5 * ds + 0.8 * dh_ if ds > 0.6 * CUT_FLOOR else ds))
+        # flat or very dark footage has almost no structure to compare, so a big colour-histogram jump counts too
+        diffs.append(max(ds, dh_ if dh_ > 0.45 else 0.0))
     cand = detect_cut_candidates(diffs, times, eff_fps)
 
     # ---- text bands (before zoom, whose feature matching masks text out)
