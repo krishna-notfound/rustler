@@ -129,15 +129,19 @@ brief or niche calls for it.
 
 ```
 rustler caption set clp_X --style keyword-highlight
-rustler caption keywords clp_X --auto --dry-run          # what the rules would mark: numbers, emphasis words (EN + Hinglish), Title Case names
+rustler caption keywords clp_X --auto --dry-run          # what the rules would mark: numbers and number words (three, hundred, paanch), emphasis words (EN + Hinglish), names
 rustler caption keywords clp_X --auto                    # mark them (about one word in six at most; `--max N` to change)
 rustler caption keywords clp_X --words million,quit      # or name the words yourself (every occurrence, case/punctuation ignored)
 rustler caption words-list clp_X                         # review; `caption word` changes one word, `caption words-clear` removes marks
 rustler caption word clp_X --source-id src_X --word-i 42 --emoji "🔥"   # emoji after a word (any preset; emoji-karaoke is made for it)
 ```
 
-- A keyword is a colour on that word (default: the preset's accent). In `keyword-highlight` it also gets
+- A keyword is a colour on that word. Default colour: green #2BFF5E, or yellow #FFD60A when the caption style's
+  spoken-word colour is green (hormozi-pop), so a keyword never looks like the karaoke highlight; `keyword-highlight`
+  (no spoken-word colour) keeps its own accent. `--color #RRGGBB` overrides. In `keyword-highlight` it also gets
   1.15x size unless you set a size with `caption word --scale`. Your own colours set earlier are never overwritten.
+- `auto` names only Title Case words inside a sentence: the first word of a sentence or of a speaker turn (`>>`) is never a
+  name, nor is a word the clip also writes in lower case ("Three." / "three"). Proper adjectives ("Western") still count.
 - `auto` is a proposal, not a judgement: read the list, drop what is not the point, add what is. Marks follow re-cuts;
   a marked word that was cut out is skipped with a warning.
 - Keep it to 2-5 keywords per clip; a highlight on every third word is no highlight.

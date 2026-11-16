@@ -56,6 +56,54 @@ pub fn view(report: QcReport) -> QcView {
     QcView { report, look_at, verdict }
 }
 
+impl QcView {
+    /// The view as stored on disk: the contact sheet, `look_at` and the `contact_sheet` check value
+    /// are made relative to `root` (the project folder) when they are inside it, so a copied project
+    /// does not point into the original folder. The verdict is rebuilt with the relative path.
+    pub fn relative_to(&self, root: &Path) -> QcView {
+        self.map_paths(|p| p.strip_prefix(root).ok().filter(|r| !r.as_os_str().is_empty()).map(Path::to_path_buf).unwrap_or_else(|| p.to_path_buf()))
+    }
+
+    /// The view for use: relative paths are joined to `root`. An absolute path (an older record) that
+    /// no longer exists is re-rooted at `root` from its `clips/` component, so a copied project keeps working.
+    /// The verdict is rebuilt with the resolved path.
+    pub fn resolved_in(&self, root: &Path) -> QcView {
+        self.map_paths(|p| resolve_in(root, p))
+    }
+
+    fn map_paths(&self, f: impl Fn(&Path) -> PathBuf) -> QcView {
+        let mut report = self.report.clone();
+        let old_sheet = report.contact_sheet.clone();
+        report.contact_sheet = f(&old_sheet);
+        for c in report.checks.iter_mut().filter(|c| c.name == "contact_sheet") {
+            if let Some(s) = c.value.as_str() {
+                c.value = json!(f(Path::new(s)).display().to_string());
+            }
+        }
+        let look_at = self.look_at.iter().map(|p| f(p)).collect();
+        let verdict = verdict(&report);
+        QcView { report, look_at, verdict }
+    }
+}
+
+/// Joins a relative path to `root`; an absolute path that is not there is re-rooted at its last `clips` component.
+fn resolve_in(root: &Path, p: &Path) -> PathBuf {
+    if !p.is_absolute() {
+        return root.join(p);
+    }
+    if p.exists() {
+        return p.to_path_buf();
+    }
+    let comps: Vec<_> = p.components().collect();
+    match comps.iter().rposition(|c| c.as_os_str() == "clips") {
+        Some(i) => {
+            let candidate = comps[i..].iter().fold(root.to_path_buf(), |acc, c| acc.join(c.as_os_str()));
+            if candidate.exists() { candidate } else { p.to_path_buf() }
+        }
+        None => p.to_path_buf(),
+    }
+}
+
 /// Names of checks with the given status.
 pub fn names_with(report: &QcReport, status: QcStatus) -> Vec<String> {
     report.checks.iter().filter(|c| c.status == status).map(|c| c.name.clone()).collect()
