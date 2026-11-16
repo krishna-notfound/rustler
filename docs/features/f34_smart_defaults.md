@@ -1,4 +1,4 @@
-# f33 — Smart defaults at clip.create + light active speaker + layout plan
+# f34 — Smart defaults at clip.create + light active speaker + layout plan
 
 **Status:** Built  |  **Depends on:** f14 (camera planner), f19 (cuts), f29 (speaker crop helpers), config settings  |  **Owner:** smart-defaults agent (wave D)
 

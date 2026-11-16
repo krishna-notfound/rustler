@@ -474,7 +474,7 @@ async fn add_sfx(ctx: Ctx, mut i: AddSfxIn) -> Result<SfxOut> {
         log_event(&ctx, &store, STAGE, serde_json::json!({"clip_id": clip.id, "sfx_id": e.id, "file": e.file}))?;
     }
     let words = words_for(&store, e.at_word.iter().map(|a| a.source_id.clone()))?;
-    let tmap = TransitionMap::new(&clip, &crate::fx_cmds::load_transitions(&store, &clip.id)?);
+    let tmap = crate::fx_cmds::transition_map(&store, &clip)?;
     let v = sfx_view(e, &tm, &tmap, &words);
     Ok(SfxOut {
         clip_id: clip.id.clone(),
@@ -562,7 +562,7 @@ async fn list(ctx: Ctx, i: ListIn) -> Result<AudioListOut> {
     let mut warnings = Vec::new();
     let entries = parse_sfx(&map, &mut warnings);
     let tm = TimeMap::from_segments(&clip.segments);
-    let tmap = TransitionMap::new(&clip, &crate::fx_cmds::load_transitions(&store, &clip.id)?);
+    let tmap = crate::fx_cmds::transition_map(&store, &clip)?;
     let words = words_for(&store, entries.iter().filter_map(|e| e.at_word.as_ref().map(|a| a.source_id.clone())))?;
     let segment_volumes = fx
         .segment_volumes

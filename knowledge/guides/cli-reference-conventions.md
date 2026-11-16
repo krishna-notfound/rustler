@@ -181,7 +181,21 @@ CLI-only helpers (not registry commands): `rustler help`, `rustler commands list
 | `edit.delete_segment <clip> <seg>`, `edit.move_segment <clip> <seg> <to_index>` | remove / reorder segments |
 | `edit.remove_pauses <clip> {min-gap?, keep?}` | cut long word gaps |
 | `edit.remove_words <clip> {words?, word-indices?}` | cut fillers (um, uh, hmm…) by default, or listed words |
-| `history.list <clip>`, `history.undo <clip>`, `history.restore <clip> <revision>` | revisions; undo/restore make a NEW revision |
+| `edit.insert_segment <clip> --source-id* {at-index \| at-out-t, start-unit, end-unit, start, end, expect-text, layout, base-revision}` | insert a range anywhere (at an out time the segment is split); layers move with their content |
+| `edit.cold_open <clip> {start-unit, end-unit \| start, end, source-id?, expect-text?, flash? (default true), base-revision?}` | hook range first (cut out of where it was) + white flash at the cut |
+| `clip.merge <clip>... --name* {transition?, transition-duration?}` | new clip = clips back to back with all their layers (times shifted, word anchors kept) |
+| `clip.duplicate <clip> --name*` | copy a clip with every layer |
+| `edit.speed <clip> --segment-id* --factor* {base-revision?}` | segment speed 0.5-2.0 (1 resets); captions/layers follow |
+| `edit.freeze <clip> --out-t* --duration* {base-revision?}` | hold the frame at an edit time (silent) |
+| `history.list <clip>`, `history.undo <clip>`, `history.restore <clip> <revision>` | revisions; undo/restore make a NEW revision and bring back the layers (extras) of that revision too |
+
+### Timeline document (whole clip)
+
+| Command | What it does |
+|---|---|
+| `timeline.show <clip>` | the clip as one `rustler.timeline@2` document (every track: video, freezes, cutaways, images, masks, text, captions, audio, effects, transitions, progress bar, meta, extra) + `resolved` edit/rendered times of every item + `revision` |
+| `timeline.schema` | JSON Schema of the document + the rules (edit-timeline times, anchors, rects, ids, patch paths) |
+| `timeline.apply <clip> --base-revision* {patch \| document, dry-run?}` | JSON-Patch ops or a whole document, validated (errors list their paths), one new revision; stale base -> `revision_conflict`. Use `--input-json @patch.json` |
 
 ### Layout and framing
 

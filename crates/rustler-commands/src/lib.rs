@@ -30,6 +30,9 @@ pub mod setup_cmds;
 pub mod smart_cmds;
 pub mod source_cmds;
 pub mod speaker_cmds;
+pub mod timeline_cmds;
+pub mod timeline_doc;
+pub mod timeline_edit_cmds;
 pub mod transcript_cmds;
 pub mod transcript_import_cmds;
 pub mod understand_cmds;
@@ -71,4 +74,6 @@ pub fn register_all(reg: &mut Registry) {
     campaign_cmds::register(reg);
     post_cmds::register(reg);
     card_cmds::register(reg);
+    timeline_cmds::register(reg);
+    timeline_edit_cmds::register(reg);
 }

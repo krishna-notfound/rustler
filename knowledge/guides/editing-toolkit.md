@@ -1,9 +1,9 @@
 ---
 id: editing-toolkit
-title: "Editing toolkit: cuts, hook titles, transitions, effects, progress bar, layers"
-summary: "Every edit command with when to use it and example sequences: refine/trim/split/remove-pauses/remove-words, history, overlay hook titles and lower thirds, transitions, effects, the progress bar, image layers, masks, cutaways (B-roll), keyword captions, and the polish order."
+title: "Editing toolkit: timeline document, cuts, cold opens, merges, speed, freezes, hook titles, transitions, effects, layers"
+summary: "Every edit command with when to use it and example sequences: the whole-clip timeline document (timeline show/schema/apply), refine/trim/split/remove-pauses/remove-words, insert-segment, cold-open, clip merge/duplicate, speed, freeze frames, history, overlay hook titles and lower thirds, transitions, effects, the progress bar, image layers, masks, cutaways (B-roll), keyword captions, and the polish order."
 order: 15
-tags: [edit, overlay, hook, transition, effect, progress-bar, history, polish, image, mask, cutaway, b-roll, keyword]
+tags: [edit, timeline, cold-open, merge, speed, freeze, overlay, hook, transition, effect, progress-bar, history, polish, image, mask, cutaway, b-roll, keyword]
 ---
 
 # Editing toolkit
@@ -11,11 +11,44 @@ tags: [edit, overlay, hook, transition, effect, progress-bar, history, polish, i
 All of these edit the clip (`clips/<id>/clip.json` and `extras.json`), each saves a **new revision**
 and nothing is rendered until `render run`. `history undo clp_X` reverts the last change;
 `history list` shows revisions; `history restore clp_X <revision>` brings one back (as a new revision).
-Pass `--dry-run` to see what would change, `--expect-revision N` to guard against concurrent edits.
+Pass `--dry-run` to see what would change, `--expect-revision N` (v1 cut commands) or `--base-revision N`
+(timeline, layer and timeline-edit commands) to guard against concurrent edits.
 
 Two kinds of time: cut commands (`edit trim --start/--end`) use **source** seconds; everything on the
 output timeline (`edit split <out_t>`, `overlay --start/--end`, `effect --start/--end`, `audio add-sfx
 --at`) uses **output (clip) time**, the numbers `clip show` prints in `timeline`.
+
+## 0. The whole clip as one document (timeline v2)
+
+`rustler timeline show clp_X` prints the clip as one `rustler.timeline@2` document: `tracks.video`
+(segments with `src_in`/`src_out`, layout, `crop_path`, `speed`), `freezes`, `cutaways`, `images`,
+`masks`, `text` (hook titles), `captions` (settings + `word_overrides` + `speaker_colors`), `audio`
+(loudness, denoise, volumes, `music`, `sfx`), `effects`, `transitions`, `progress_bar`, `meta`
+(score, retention, post copy) and `tracks.extra` (keys this build does not know, kept verbatim).
+`resolved` lists every item with its edit time and its time in the rendered file (word anchors
+resolved; `problem` says why an item will not render). `rustler timeline schema` prints the JSON
+Schema and the rules.
+
+Change anything in one step with `timeline apply` and the `revision` that `show` printed:
+
+```
+rustler timeline show clp_X                                   # note "revision": 7
+rustler timeline apply clp_X --base-revision 7 --input-json @patch.json --dry-run
+rustler timeline apply clp_X --base-revision 7 --input-json @patch.json
+```
+`patch.json` (RFC 6902 JSON-Patch; `-` appends; or `"document": {...}` for a whole document):
+```json
+{"patch": [
+  {"op": "replace", "path": "/tracks/text/0/start", "value": 0.4},
+  {"op": "replace", "path": "/tracks/video/2/speed", "value": 1.2},
+  {"op": "add", "path": "/tracks/effects/-", "value": {"id": "fx_7", "kind": "punch-in", "start": 9.1, "end": 9.6}}
+]}
+```
+Everything is validated before anything is written (rects 0..1, times inside the clip, files and
+sources exist, new word anchors resolve, transition overlaps fit) and every error names its path
+(`/tracks/images/0/rect: ...`). A stale `base_revision` (someone edited meanwhile) fails with
+`revision_conflict` and writes nothing: show again, re-apply. The result lists the `changes`, the new
+document and its resolved times. `history undo` reverts a whole apply, every layer included.
 
 ## 1. Cut commands
 
@@ -30,6 +63,17 @@ output timeline (`edit split <out_t>`, `overlay --start/--end`, `effect --start/
 | `edit remove-pauses clp_X --min-gap 0.5 --keep 0.25` | cut dead air | pauses ≥ `min-gap` seconds are cut down to `keep` seconds (defaults 0.5 / 0.12) |
 | `edit remove-words clp_X` | cut fillers | um, uh, umm, uhh, hmm, erm by default; `--words '["basically"]'` or `--word-indices '[...]'` for others |
 | `clip add-segment clp_X --source-id src_X --start-unit … --end-unit …` | build a multi-part clip | hook line first, payoff after (see `cut-points`) |
+
+| `edit insert-segment clp_X --source-id src_X --start-unit 40 --end-unit 42 --at-index 1` | put a range anywhere | or `--at-out-t 12.5` (splits the segment there); layers after it move with their content |
+| `edit cold-open clp_X --start-unit 57 --end-unit 57` | open on the hook line | the range goes first (cut out of where it was if the clip has it) + a white flash at the cut out of the hook (`--flash false` to skip); every layer stays on its words, except a hook-top title that opened the clip, which keeps opening it |
+| `clip merge clp_A clp_B --name a-b --transition dissolve --transition-duration 0.2` | join clips (hook clip + main clip, part 1 + part 2) | new clip with ALL layers: times shift by each clip's offset, word anchors keep their words; the first clip's captions, music and progress bar win |
+| `clip duplicate clp_X --name clp-x-v2` | try another hook or cut safely | copies clip + every layer |
+| `edit speed clp_X --segment-id seg_B --factor 1.2` | tighten slow talk (0.5-2.0; 1 resets) | pitch kept; captions and layers follow; the rendered clip gets shorter |
+| `edit freeze clp_X --out-t 6.2 --duration 0.8` | hold a reaction frame (silent) | the rendered clip gets longer by the hold; an item starting at `out_t` shows during the hold |
+
+Times stay on the **edit timeline** (sum of the segments' source lengths) even with speeds and
+freezes: `timeline show` -> `resolved` and `audio list` print where each item lands in the rendered
+file; `render run`, QC `duration` and `clip retention` use the rendered length.
 
 `remove-pauses` and `remove-words` shift everything after the cut earlier: captions follow
 automatically; look at `overlay list`, `effect list` and `audio list` afterwards (word-anchored sound
@@ -195,6 +239,15 @@ rustler transition set clp_X seg_A dissolve --duration 0.25
 rustler overlay add-text clp_X "Later that night…" --style plain --start 6.5 --end 8.5     # times AFTER the transition shrinks the clip
 ```
 
+**Cold open + hook clip merge:**
+```
+rustler clip duplicate clp_X --name clp-x-cold                       # keep the original
+rustler edit cold-open clp_Y --start-unit 57 --end-unit 57 --expect-text "That is when"
+rustler render preview-frame clp_Y --out-t 0.3                      # hook frame
+rustler clip merge clp_teaser clp_Y --name teaser-plus-story --transition fade --transition-duration 0.2
+rustler timeline show clp_Z                                          # every layer with its new time
+```
+
 **Reaction beat (sound + zoom + flash):**
 ```
 rustler audio add-sfx clp_X asset:sfx-... --at-word '{"source_id":"src_X","word_index":412}' --volume-db -8
@@ -213,5 +266,6 @@ second; then `render run`, `qc run`, contact sheet. If you do not like a step, `
 - Do not hide a weak cut with a transition; fix the cut (`edit refine`, `cut-points`).
 - Do not stack hook title + big caption + lower third + progress bar at once: pick what carries the
   clip. If `caption_over_face` or `caption_safe_zone` warns, move the caption (`caption set --position-y`).
-- Time-anchored items (overlays, effects, `--at` sound effects, layers given in seconds) do not follow later cuts: add them last, or anchor layers to words (`--start-word`).
-- `history undo` restores segments, not layers: remove a layer with its own `remove` command.
+- Time-anchored items (overlays, effects, `--at` sound effects, layers given in seconds) do not follow v1 re-cuts (`remove-pauses`, `remove-words`, `trim`): add them last, or anchor layers to words (`--start-word`). `insert-segment`, `cold-open` and `clip merge` do move them with their content.
+- `history undo` restores segments **and** layers for edits saved by `timeline apply`, the `edit` cut commands and the commands of section 1. Layer commands that do not bump the revision (`overlay add-text`, `image add`, ...) are undone together with the revision before them; to undo just one layer, remove it with its own `remove` command or a `timeline apply` patch.
+- No speed outside about 0.85-1.3 on speech unless it is a deliberate effect; a freeze longer than ~1.5 s feels like a stall.
