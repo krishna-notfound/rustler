@@ -81,6 +81,7 @@ fn registry(image_path: String) -> Registry {
                     stage: "work".into(),
                     pct: Some(k as f32 / 3.0),
                     message: None,
+                    eta_s: None,
                 });
             }
             Ok(EchoOut {

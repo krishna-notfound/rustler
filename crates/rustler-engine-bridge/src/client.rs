@@ -443,6 +443,7 @@ fn dispatch_line(sh: &Shared, line: &str) {
                     stage: p.stage,
                     pct: p.pct.map(|v| (v / 100.0).clamp(0.0, 1.0) as f32),
                     message: p.message,
+                    eta_s: None,
                 });
             }
         }

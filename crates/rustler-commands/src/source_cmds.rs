@@ -314,7 +314,7 @@ async fn cached_info(ctx: &Ctx, paths: &ToolPaths, project: &Project, url: &str,
             return Ok((v, path));
         }
     }
-    ctx.progress.emit(ProgressEvent { stage: "lookup".into(), pct: None, message: Some("asking YouTube for video info (one time; cached)".into()) });
+    ctx.progress.emit(ProgressEvent { stage: "lookup".into(), pct: None, message: Some("asking YouTube for video info (one time; cached)".into()), eta_s: None });
     let v = ytdlp_json(ctx, paths, project, vec![url.trim().into()]).await?;
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
@@ -653,7 +653,7 @@ pub async fn fetch_transcript(ctx: Ctx, input: FetchIn) -> rustler_core::Result<
         return Ok(Outcome::dry_run(json!({"fetch_captions_for": url, "lang": requested, "pending_id": id})));
     }
     let paths = ToolPaths::from_home(&ctx.home);
-    ctx.progress.emit(ProgressEvent { stage: "captions".into(), pct: Some(0.0), message: Some("listing caption tracks".into()) });
+    ctx.progress.emit(ProgressEvent { stage: "captions".into(), pct: Some(0.0), message: Some("listing caption tracks".into()), eta_s: None });
     let (v, info_path) = cached_info(&ctx, &paths, &project, &url, false).await?;
     let meta = parse_info(&v, &url);
     let Some((key, manual)) = choose_caption(&meta.subtitles.manual, &meta.subtitles.auto, &requested) else {
@@ -909,6 +909,7 @@ async fn import_url(
                     stage: "download".into(),
                     pct: Some((n as f32 + p) / total as f32 * 0.7),
                     message: label.clone().map(|l| format!("section {l}")),
+                    eta_s: None,
                 });
             }
         };
@@ -1006,7 +1007,7 @@ async fn finish_import(
 ) -> rustler_core::Result<Source> {
     let emit = |stage: &str, frac: f32, msg: &str| {
         let pct = progress_base + (1.0 - progress_base) * frac;
-        ctx.progress.emit(ProgressEvent { stage: stage.into(), pct: Some(pct.min(1.0)), message: Some(msg.to_string()) });
+        ctx.progress.emit(ProgressEvent { stage: stage.into(), pct: Some(pct.min(1.0)), message: Some(msg.to_string()), eta_s: None });
     };
     let _ = total;
     emit("probe", 0.0, "reading media info");

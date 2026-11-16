@@ -44,6 +44,16 @@ fn progress_seconds(l: &str) -> Option<f64> {
     Some(h.parse::<f64>().ok()? * 3600.0 + m.parse::<f64>().ok()? * 60.0 + s.parse::<f64>().ok()?)
 }
 
+/// Seconds of wall time still needed, from the output-time rate so far. `None` until ffmpeg
+/// has produced output, or when the total is unknown.
+pub(crate) fn eta_seconds(out_time: f64, expected: f64, elapsed: f64) -> Option<f32> {
+    if !expected.is_finite() || out_time <= 0.0 || elapsed <= 0.0 {
+        return None;
+    }
+    let rate = out_time / elapsed;
+    Some(((expected - out_time).max(0.0) / rate) as f32)
+}
+
 fn out_path(compiled: &CompiledRender) -> rustler_core::Result<PathBuf> {
     compiled.args.last().map(PathBuf::from).ok_or_else(|| {
         RustlerError::new(
@@ -207,6 +217,7 @@ pub async fn render_with_report(
             stage: "render.denoise".into(),
             pct: Some(0.0),
             message: Some("measuring the noise floor".into()),
+            eta_s: None,
         });
         match measure_noise(&ffmpeg, compiled, np, cancel).await? {
             Ok(floor) => {
@@ -232,6 +243,7 @@ pub async fn render_with_report(
             stage: "render.loudness".into(),
             pct: Some(0.0),
             message: Some("measuring loudness (pass 1 of 2)".into()),
+            eta_s: None,
         });
         match measure_loudness(&ffmpeg, compiled, pass, cancel).await? {
             Ok(m) if graph.contains(&pass.filter) => {
@@ -263,6 +275,7 @@ pub async fn render_with_report(
         stage: STAGE.into(),
         pct: Some(0.0),
         message: None,
+        eta_s: None,
     });
     let expected = if expected_duration > 0.0 {
         expected_duration
@@ -270,6 +283,7 @@ pub async fn render_with_report(
         f64::INFINITY
     };
     let mut last_pct = 0.0f32;
+    let started = std::time::Instant::now();
     let result = proc_render::run_streaming(&ffmpeg, &args, Some(&compiled.workdir), cancel, |l| {
         if !is_progress_line(l) {
             return false;
@@ -282,6 +296,7 @@ pub async fn render_with_report(
                     stage: STAGE.into(),
                     pct: Some(pct),
                     message: None,
+                    eta_s: eta_seconds(t, expected, started.elapsed().as_secs_f64()),
                 });
             }
         }
@@ -302,6 +317,7 @@ pub async fn render_with_report(
         stage: STAGE.into(),
         pct: Some(1.0),
         message: Some(out.display().to_string()),
+        eta_s: None,
     });
     Ok(report)
 }
@@ -378,4 +394,19 @@ pub async fn preview_frame(
         return Err(e);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::eta_seconds;
+
+    #[test]
+    fn eta_from_rate() {
+        // 5 s of a 10 s render done in 2.5 s wall -> 2.5 s left.
+        let e = eta_seconds(5.0, 10.0, 2.5).unwrap();
+        assert!((e - 2.5).abs() < 1e-4, "{e}");
+        assert_eq!(eta_seconds(0.0, 10.0, 1.0), None);
+        assert_eq!(eta_seconds(1.0, f64::INFINITY, 1.0), None);
+        assert_eq!(eta_seconds(12.0, 10.0, 3.0), Some(0.0));
+    }
 }

@@ -76,7 +76,7 @@ pub async fn romanize(engine: &EngineClient, ctx: &Ctx, texts: Vec<String>) -> r
 }
 
 fn progress(ctx: &Ctx, stage: &str, pct: f32, msg: &str) {
-    ctx.progress.emit(ProgressEvent { stage: stage.into(), pct: Some(pct), message: Some(msg.to_string()) });
+    ctx.progress.emit(ProgressEvent { stage: stage.into(), pct: Some(pct), message: Some(msg.to_string()), eta_s: None });
 }
 
 fn path_for(source: &Source, store: &ProjectStore, rel: &Option<PathBuf>) -> Option<PathBuf> {

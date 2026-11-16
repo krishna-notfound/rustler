@@ -44,6 +44,12 @@ const MAX_COMPARE: usize = 12;
 /// NVENC allows a couple of concurrent sessions on consumer GPUs.
 const NVENC_PARALLEL: usize = 2;
 const MAX_PARALLEL: usize = 4;
+
+/// Default `render.batch` concurrency: 2 with a GPU encoder (NVENC session limit), else
+/// `min(2, cores / 4)` so software x264 does not starve the machine (at least 1).
+pub fn default_parallel(nvenc: bool, cores: usize) -> usize {
+    if nvenc { NVENC_PARALLEL } else { (cores / 4).clamp(1, 2) }
+}
 /// Slack when comparing file times against the render time.
 const FRESH_SLACK: Duration = Duration::from_secs(2);
 
@@ -381,6 +387,7 @@ async fn variant_compare(ctx: Ctx, i: VariantCompareIn) -> Result<VariantCompare
             stage: "variant.compare".into(),
             pct: Some(k as f32 / i.clip_ids.len() as f32),
             message: Some(id.to_string()),
+            eta_s: None,
         });
         let clip = store.load_clip(id)?;
         let frame = preview_frame_image(&ctx, id, out_t).await?;
@@ -483,7 +490,7 @@ pub struct RenderBatchIn {
     pub all: bool,
     /// draft | final (default final)
     pub quality: Option<RenderQuality>,
-    /// Renders at once (default 1; capped at 2 when the GPU encoder is NVENC, else at 4).
+    /// Renders at once (default 2 with NVENC, else min(2, cores/4); capped at 2 with NVENC, else at 4).
     pub parallel: Option<u32>,
     /// Skip clips that already have an up-to-date render of this quality (default false).
     pub only_missing: Option<bool>,
@@ -533,7 +540,9 @@ async fn render_batch(ctx: Ctx, i: RenderBatchIn) -> Result<RenderBatchOut> {
     let paths = ToolPaths::from_home(&ctx.home);
     let encoder = rustler_media::pick_encoder(&paths, quality, prefer_gpu).await.name;
     let cap = if encoder.contains("nvenc") { NVENC_PARALLEL } else { MAX_PARALLEL };
-    let parallel = (i.parallel.unwrap_or(1) as usize).clamp(1, cap);
+    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+    let default = default_parallel(encoder.contains("nvenc"), cores);
+    let parallel = (i.parallel.map(|p| p as usize).unwrap_or(default)).clamp(1, cap);
     let only_missing = i.only_missing.unwrap_or(false);
 
     let total = ids.len();
@@ -596,11 +605,12 @@ async fn render_batch(ctx: Ctx, i: RenderBatchIn) -> Result<RenderBatchOut> {
                     stage: "render.batch".into(),
                     pct: Some(done as f32 / total as f32),
                     message: Some(format!("{} ({done}/{total}): {}", r.name, r.status)),
+                    eta_s: None,
                 });
                 results[idx] = Some(r);
             }
             Err(e) => {
-                ctx.progress.emit(ProgressEvent { stage: "render.batch".into(), pct: None, message: Some(format!("a render task crashed: {e}")) });
+                ctx.progress.emit(ProgressEvent { stage: "render.batch".into(), pct: None, message: Some(format!("a render task crashed: {e}")), eta_s: None });
             }
         }
     }
@@ -707,7 +717,7 @@ async fn export_batch(ctx: Ctx, i: ExportBatchIn) -> Result<ExportBatchOut> {
     let mut exported = Vec::new();
     let mut skipped = Vec::new();
     for (k, id) in ids.iter().enumerate() {
-        ctx.progress.emit(ProgressEvent { stage: "export.batch".into(), pct: Some(k as f32 / ids.len() as f32), message: Some(id.to_string()) });
+        ctx.progress.emit(ProgressEvent { stage: "export.batch".into(), pct: Some(k as f32 / ids.len() as f32), message: Some(id.to_string()), eta_s: None });
         let mut clip = match store.load_clip(id) {
             Ok(c) => c,
             Err(e) => {

@@ -240,3 +240,26 @@ async fn render_batch_continues_on_failure_and_export_batch_skips_failing_clips(
     assert!(report["brief"]["rules"].is_array(), "{report}");
     assert_eq!(report["brief"]["clip_id"], good.as_str());
 }
+
+#[test]
+fn batch_default_parallel_is_2() {
+    use rustler_commands::variant_cmds::default_parallel;
+    assert_eq!(default_parallel(true, 2), 2, "NVENC defaults to 2 regardless of cores");
+    assert_eq!(default_parallel(true, 32), 2);
+    assert_eq!(default_parallel(false, 16), 2);
+    assert_eq!(default_parallel(false, 8), 2);
+    assert_eq!(default_parallel(false, 4), 1);
+    assert_eq!(default_parallel(false, 2), 1);
+    assert_eq!(default_parallel(false, 1), 1);
+}
+
+#[tokio::test]
+async fn render_batch_without_parallel_uses_default() {
+    let Some(f) = fx().await else { return };
+    let a = make_clip(&f, "a", 0, 2).await;
+    let r = call(&f.reg, &f.ctx, "render.batch", json!({"clip_ids": [a], "quality": "draft"})).await.unwrap();
+    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+    let nvenc = r["encoder"].as_str().unwrap().contains("nvenc");
+    let want = rustler_commands::variant_cmds::default_parallel(nvenc, cores);
+    assert_eq!(r["parallel"].as_u64().unwrap() as usize, want, "{r}");
+}

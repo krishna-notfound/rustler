@@ -78,6 +78,7 @@ async fn setup() -> Env {
                 stage: "work".into(),
                 pct: Some(0.5),
                 message: Some("half".into()),
+                eta_s: None,
             });
             tokio::select! {
                 _ = tokio::time::sleep(std::time::Duration::from_millis(ms)) => Ok(json!({"done": true})),

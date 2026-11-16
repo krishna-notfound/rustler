@@ -331,6 +331,7 @@ pub async fn setup(
             stage: "setup".into(),
             pct: None,
             message: Some(m.to_string()),
+            eta_s: None,
         })
     };
     emit("installing ffmpeg, yt-dlp, uv and fonts");

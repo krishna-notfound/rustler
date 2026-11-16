@@ -607,7 +607,7 @@ pub async fn install_with(paths: &ToolPaths, force: bool, sfx: bool, music_pack:
     std::fs::create_dir_all(&root).map_err(|e| err(format!("create {}: {e}", root.display())))?;
     let mut report = AssetsReport::default();
     let emit = |m: String, pct: f32| {
-        progress.emit(ProgressEvent { stage: "setup.assets".into(), pct: Some(pct), message: Some(m) })
+        progress.emit(ProgressEvent { stage: "setup.assets".into(), pct: Some(pct), message: Some(m), eta_s: None })
     };
 
     let builtins = builtin_entries();
