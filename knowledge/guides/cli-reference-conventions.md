@@ -167,7 +167,7 @@ CLI-only helpers (not registry commands): `rustler help`, `rustler commands list
 | `transcript.search <src> <query> {limit?}` | phrase search with neighbouring units |
 | `transcript.read_window <src> <start> <end>` | readable text of a time window with unit ids |
 | `highlights.signals <src> {window?, limit?, offset?}` | per-window loudness peak, speech rate, questions, emphasis words, pause before, scene cuts, heatmap |
-| `highlights.candidates <src> {count?, min_len?, max_len?, platform?}` | ranked sentence-aligned windows with unit ids, reasons, breakdown and a ready `create_cmd` |
+| `highlights.candidates <src> {count?, min_len?, max_len?, platform?, include_intro?}` | ranked sentence-aligned windows with unit ids, reasons, breakdown and a ready `create_cmd`; skips the source's intro trailer (reported in `intro_trailer`) unless `include_intro` |
 | `see.frame <src> --t {width?}` (or `--clip-id --out-t`) | one jpg: **look at it** |
 | `see.tiles <src> {around? \| unit? \| start?/end?, window?, count?, cols?}` | labelled contact sheet of frames |
 | `see.preview <src> --start --end` | low-res mp4 of a source range (max 60 s) |
@@ -185,7 +185,8 @@ CLI-only helpers (not registry commands): `rustler help`, `rustler commands list
 | `edit.split <clip> <out_t>` | split the segment at an output time |
 | `edit.delete_segment <clip> <seg>`, `edit.move_segment <clip> <seg> <to_index>` | remove / reorder segments |
 | `edit.remove_pauses <clip> {min-gap?, keep?}` | cut long word gaps |
-| `edit.remove_words <clip> {words?, word-indices?}` | cut fillers (um, uh, hmm…) by default, or listed words |
+| `edit.remove_words <clip> {words?, word-indices?}` | cut fillers (um, uh, hmm…) by default, or listed words (neighbouring words as one span) |
+| `edit.find_bad_takes <clip> {min-confidence?}` | read-only: restarts, stutters, false starts, repeated sentences with times, confidence and the `edit remove-words` command that keeps the cleaner take (exact word timings only) |
 | `edit.insert_segment <clip> --source-id* {at-index \| at-out-t, start-unit, end-unit, start, end, expect-text, layout, base-revision}` | insert a range anywhere (at an out time the segment is split); layers move with their content |
 | `edit.cold_open <clip> {start-unit, end-unit \| start, end, source-id?, expect-text?, flash? (default true), base-revision?}` | hook range first (cut out of where it was) + white flash at the cut |
 | `clip.merge <clip>... --name* {transition?, transition-duration?}` | new clip = clips back to back with all their layers (times shifted, word anchors kept) |
@@ -300,7 +301,7 @@ Each has `add`, `edit`, `list`, `remove` (all take `<clip>`; times in seconds or
 
 | Command | What it does |
 |---|---|
-| `clip.retention <clip>` | retention map of the output (per-second visual change, speech, silence, loudness), first-frame hook, dead zones with exact fix commands, ending type, 0-100 score; measured on the latest render when there is one |
+| `clip.retention <clip>` | retention map of the output (per-second visual change, speech, silence, loudness), first-frame hook, dead zones with exact fix commands, bad takes (`take_fixes`), ending type, 0-100 score; measured on the latest render when there is one |
 | `clip.score_set <clip> <hook> <flow> <value> <trend> {notes?}` | record your 4-part score (0-25 each) for the report |
 | `clip.cover <clip> {auto? \| out-t?}` | pick the cover frame of the latest render (sharp, face visible, not on a cut), save `clips/<id>/cover.jpg`, look at it; `export.clip` copies it as `<name>.cover.jpg` and names it in the post JSON |
 | `clip.meta_context <clip>` | what you need to WRITE the posting copy: spoken words, hook, platform limits, campaign rules with a live check, brief, saved copy |
@@ -316,7 +317,7 @@ Guides: `director-retention`, `campaigns-and-posting`, `templates-and-brand`, `e
 
 | Command | What it does |
 |---|---|
-| `clips.auto {source-id? \| url?, count?, min-len?, max-len?, platform?, template?, campaign?, ranges?, quality?, fixes?, raw?, cover?, pad?, dry-run?}` | picks moments (hook score for the first 2 s), creates clips with smart defaults and a template, applies cheap retention fixes, renders, runs QC, picks the cover and exports with an EMPTY post JSON (you write the copy with `clip.meta_set`); never publishes. `--dry-run` shows the plan. Guide `clips-auto` |
+| `clips.auto {source-id? \| url?, count?, min-len?, max-len?, platform?, template?, campaign?, ranges?, quality?, fixes?, raw?, cover?, include-intro?, pad?, dry-run?}` | picks moments (hook score for the first 2 s; skips the source's intro trailer), lists hook lines, a cold open and bad takes as suggestions, creates clips with smart defaults and a template, applies cheap retention fixes, renders, runs QC, picks the cover and exports with an EMPTY post JSON (you write the copy with `clip.meta_set`); never publishes. `--dry-run` shows the plan. Guide `clips-auto` |
 
 ### Briefs, variants, batches
 

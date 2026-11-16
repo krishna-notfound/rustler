@@ -11,5 +11,5 @@ pub use ass::{
     write_srt,
 };
 pub use custom::{ActiveKind, CustomStyle, find_preset_in, list_presets_with, load_custom_presets};
-pub use chunk::{CaptionWord, chunk_words};
+pub use chunk::{CaptionWord, chunk_words, is_continuation, join_fragments};
 pub use presets::{PRESETS, Preset, PresetInfo, list_presets};

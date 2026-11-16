@@ -120,12 +120,18 @@ pub fn select_script_words(
     (transcript.words.clone(), Some(warn))
 }
 
+/// Seconds between a word and a following hyphen tail ("chop" + "-up,") that are joined.
+const FRAGMENT_JOIN_GAP: f64 = 0.3;
+
 /// Caption words for `clip` in output time: for every segment (via `TimeMap`), the words whose
-/// midpoint lies inside it, clipped to the segment and shifted to the output timeline.
+/// midpoint lies inside it, clipped to the segment and shifted to the output timeline. Word
+/// fragments are fixed (f39): a hyphen tail is joined to the word before it, a leading one is
+/// dropped, and the clip's first word is dropped when the clip starts well inside it (its sound
+/// is cut, so the caption would show a word the viewer only half hears).
 pub fn build_caption_words(clip: &Clip, words_by_source: &HashMap<SourceId, Vec<Word>>) -> Vec<CaptionWord> {
     let tm = TimeMap::from_segments(&clip.segments);
     let mut out = Vec::new();
-    for seg in tm.segments() {
+    for (k, seg) in tm.segments().iter().enumerate() {
         let Some(words) = words_by_source.get(&seg.source_id) else { continue };
         for w in words {
             let text = w.text.trim();
@@ -135,6 +141,9 @@ pub fn build_caption_words(clip: &Clip, words_by_source: &HashMap<SourceId, Vec<
             let mid = (w.start + w.end) / 2.0;
             if mid < seg.src_start || mid >= seg.src_end {
                 continue;
+            }
+            if k == 0 && seg.src_start - w.start > (0.3 * (w.end - w.start)).max(0.1) {
+                continue; // the clip starts inside this word: a partial word
             }
             let s = w.start.max(seg.src_start);
             let e = w.end.min(seg.src_end).max(s + 0.02);
@@ -146,7 +155,7 @@ pub fn build_caption_words(clip: &Clip, words_by_source: &HashMap<SourceId, Vec<
         }
     }
     out.sort_by(|a, b| a.out_start.total_cmp(&b.out_start));
-    out
+    rustler_captions::join_fragments(out, FRAGMENT_JOIN_GAP)
 }
 
 pub(crate) fn fmt_ts(t: f64) -> String {
