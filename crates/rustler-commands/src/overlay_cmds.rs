@@ -7,8 +7,9 @@
 use crate::clip_cmds::log_event;
 use crate::extras;
 use rustler_core::{Canvas, Clip, ClipId, ErrorCode, ProjectStore, RustlerError, TimeMap};
+use crate::audio_cmds::{SFX_KEY, SfxEntry, change, next_id as next_sfx_id};
 use rustler_media::compile::{
-    OVERLAY_MAX_CHARS, OverlayLayout, OverlayStyle, TextOverlay, clean_overlay_text, overlay_layout,
+    OVERLAY_MAX_CHARS, OverlayAnim, OverlayLayout, OverlayStyle, TextOverlay, clean_overlay_text, display_text, overlay_layout,
 };
 use rustler_registry::{Annotations, Ctx, Example, Registry, typed};
 use schemars::JsonSchema;
@@ -80,8 +81,12 @@ fn check_style_values(stage: &str, o: &TextOverlay) -> Result<()> {
 pub fn overlay_warnings(o: &TextOverlay, layout: &OverlayLayout, clip: &Clip) -> Vec<String> {
     let mut w = Vec::new();
     let words = o.text.split_whitespace().count();
-    if o.style == OverlayStyle::HookTop && words > HOOK_WORDS {
+    if (o.style == OverlayStyle::HookTop || o.style.is_hook_preset()) && words > HOOK_WORDS {
         w.push(format!("hook has {words} words; keep hooks <= {HOOK_WORDS} words"));
+    }
+    let shown = display_text(o);
+    if matches!(o.style, OverlayStyle::HookPov | OverlayStyle::HookQuestion) && shown != clean_overlay_text(&o.text) {
+        w.push(format!("{} shows \"{shown}\" (its accent was added to your text)", o.style.name()));
     }
     if !layout.fits {
         w.push("text needs more than 2 lines even at the smallest size; shorten it".into());
@@ -198,15 +203,60 @@ pub struct AddTextIn {
     pub start: Option<f64>,
     /// Output time it disappears (default start + 3 s, clamped to the clip).
     pub end: Option<f64>,
-    /// hook-top (default) | lower-third | plain
+    /// hook-top (default) | lower-third | plain | hook-big | hook-box-yellow | hook-outline | hook-pov |
+    /// hook-question (the viral hook presets, see `overlay.hook_styles`)
     pub style: Option<OverlayStyle>,
-    /// Vertical centre 0 (top) .. 1 (bottom); default by style: hook-top 0.12, lower-third 0.80, plain 0.50.
+    /// Vertical centre 0 (top) .. 1 (bottom); default by style: hook-top 0.12, lower-third 0.80, plain 0.50, hook presets 0.14-0.17.
     pub position_y: Option<f64>,
-    /// Font size as a fraction of the canvas width (hook-top 0.085, lower-third 0.05, plain 0.065).
+    /// Font size as a fraction of the canvas width (hook-top 0.085, lower-third 0.05, plain 0.065, hook-big 0.10).
     pub font_size_factor: Option<f64>,
-    /// Dark box behind the text (default true, plain: false).
+    /// Box behind the text (default by style; hook-big, hook-outline and plain: no box).
     #[serde(rename = "box")]
     pub boxed: Option<bool>,
+    /// Entry animation: none | pop | zoom-in | slide | typewriter (default by style; hook presets animate).
+    pub anim: Option<OverlayAnim>,
+    /// A whoosh at the hook's start: a local audio file, `asset:<id>` (`rustler asset list --kind sfx`) or a URL.
+    /// Added as a sound effect (`audio.add_sfx`) and removed with the hook.
+    pub sfx: Option<String>,
+    /// Gain of the whoosh in dB (default -6).
+    pub sfx_volume_db: Option<f64>,
+}
+
+/// Audio extensions a hook whoosh may have (same set as `audio.add_sfx`).
+const SFX_EXTS: &[&str] = &["wav", "mp3", "m4a", "aac", "ogg", "opus", "flac", "webm", "mp4", "mov"];
+
+/// Resolves `spec` to a sound-effect entry at edit time `at` (id not set yet).
+async fn hook_sfx(ctx: &Ctx, stage: &str, spec: &str, at: f64, volume_db: Option<f64>) -> Result<SfxEntry> {
+    let resolved = crate::media_ref::resolve(ctx, stage, spec, crate::media_ref::Want::Any).await?;
+    if !resolved.pending && !resolved.path.is_file() {
+        return Err(RustlerError::new(ErrorCode::NotFound, stage, format!("no such sfx file: {}", resolved.path.display()))
+            .hint("pass an existing audio file or `asset:<id>` from `rustler asset list --kind sfx`"));
+    }
+    let ext = resolved.path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+    if !SFX_EXTS.contains(&ext.as_str()) {
+        return Err(validation(stage, format!("'{}' does not look like an audio file", resolved.path.display()))
+            .hint(format!("supported extensions: {}", SFX_EXTS.join(", "))));
+    }
+    let volume_db = volume_db.unwrap_or(-6.0);
+    if !(volume_db.is_finite() && (-60.0..=12.0).contains(&volume_db)) {
+        return Err(validation(stage, "sfx_volume_db must be between -60 and 12"));
+    }
+    Ok(SfxEntry {
+        id: String::new(),
+        file: std::path::absolute(&resolved.path).unwrap_or(resolved.path),
+        at: Some(at),
+        at_word: None,
+        volume_db,
+    })
+}
+
+/// Saves `entry` in the clip's sfx list; returns its id.
+fn save_sfx(ctx: &Ctx, store: &ProjectStore, clip: &ClipId, mut entry: SfxEntry) -> Result<String> {
+    change(ctx, store, clip, SFX_KEY, Vec::is_empty, |list: &mut Vec<SfxEntry>| {
+        entry.id = next_sfx_id("sfx", list.iter().map(|e| e.id.as_str()));
+        list.push(entry.clone());
+        Ok(entry.id.clone())
+    })
 }
 
 async fn add_text(ctx: Ctx, i: AddTextIn) -> Result<OverlayOut> {
@@ -235,7 +285,16 @@ async fn add_text(ctx: Ctx, i: AddTextIn) -> Result<OverlayOut> {
     if let Some(b) = i.boxed {
         o.boxed = b;
     }
+    o.anim = i.anim;
     check_style_values(STAGE, &o)?;
+    // The whoosh is validated before anything is saved.
+    let sfx = match &i.sfx {
+        Some(spec) => Some(hook_sfx(&ctx, STAGE, spec, start, i.sfx_volume_db).await?),
+        None => None,
+    };
+    if let Some(entry) = sfx {
+        o.sfx_id = Some(save_sfx(&ctx, &store, &clip.id, entry)?);
+    }
 
     if ctx.dry_run {
         o.id = next_id(&load_overlays(&store, &clip.id)?);
@@ -315,6 +374,8 @@ pub struct EditIn {
     pub font_size_factor: Option<f64>,
     #[serde(rename = "box")]
     pub boxed: Option<bool>,
+    /// none | pop | zoom-in | slide | typewriter. A new style resets the animation to its default.
+    pub anim: Option<OverlayAnim>,
 }
 
 /// Applies the edit to `o` (pure; validated by the caller).
@@ -327,6 +388,10 @@ pub fn apply_edit(stage: &str, o: &mut TextOverlay, i: &EditIn, duration: f64) -
         o.position_y = s.default_position_y();
         o.font_size_factor = s.default_font_size_factor();
         o.boxed = s.default_box();
+        o.anim = None;
+    }
+    if let Some(a) = i.anim {
+        o.anim = Some(a);
     }
     if let Some(y) = i.position_y {
         o.position_y = y;
@@ -367,10 +432,23 @@ async fn edit(ctx: Ctx, i: EditIn) -> Result<OverlayOut> {
         apply_edit(STAGE, o, &i, duration)?;
         Ok(o.clone())
     };
+    // A hook's whoosh follows its start.
+    let move_sfx = |ctx: &Ctx, o: &TextOverlay| -> Result<()> {
+        if let (Some(id), Some(_)) = (&o.sfx_id, i.start) {
+            change(ctx, &store, &clip.id, SFX_KEY, Vec::is_empty, |list: &mut Vec<SfxEntry>| {
+                if let Some(e) = list.iter_mut().find(|e| &e.id == id) {
+                    e.at = Some(o.start);
+                }
+                Ok(())
+            })?;
+        }
+        Ok(())
+    };
     let o = if ctx.dry_run {
         apply(&mut load_overlays(&store, &clip.id)?)?
     } else {
         let o = modify(&store, &clip.id, apply)?;
+        move_sfx(&ctx, &o)?;
         log_event(&ctx, &store, STAGE, serde_json::json!({"clip_id": clip.id, "overlay_id": o.id}))?;
         o
     };
@@ -410,21 +488,77 @@ async fn remove(ctx: Ctx, i: RemoveIn) -> Result<RemoveOut> {
     const STAGE: &str = "overlay.remove";
     let store = ctx.store()?;
     let clip = store.load_clip(&i.clip_id)?;
-    let apply = |list: &mut Vec<TextOverlay>| -> Result<Vec<String>> {
+    let apply = |list: &mut Vec<TextOverlay>| -> Result<(Vec<String>, Option<String>)> {
         let Some(pos) = list.iter().position(|o| o.id == i.overlay_id) else {
             return Err(not_found(STAGE, &clip.id, &i.overlay_id, list));
         };
-        list.remove(pos);
-        Ok(list.iter().map(|o| o.id.clone()).collect())
+        let gone = list.remove(pos);
+        Ok((list.iter().map(|o| o.id.clone()).collect(), gone.sfx_id))
     };
     let remaining = if ctx.dry_run {
-        apply(&mut load_overlays(&store, &clip.id)?)?
+        apply(&mut load_overlays(&store, &clip.id)?)?.0
     } else {
-        let r = modify(&store, &clip.id, apply)?;
+        let (r, sfx_id) = modify(&store, &clip.id, apply)?;
+        if let Some(id) = sfx_id {
+            // The hook's whoosh goes with it.
+            change(&ctx, &store, &clip.id, SFX_KEY, Vec::is_empty, |list: &mut Vec<SfxEntry>| {
+                list.retain(|e| e.id != id);
+                Ok(())
+            })?;
+        }
         log_event(&ctx, &store, STAGE, serde_json::json!({"clip_id": clip.id, "overlay_id": i.overlay_id}))?;
         r
     };
     Ok(RemoveOut { clip_id: clip.id, removed: i.overlay_id, remaining, dry_run: ctx.dry_run.then_some(true) })
+}
+
+// ---------------------------------------------------------------------------------------------
+// overlay.hook_styles
+// ---------------------------------------------------------------------------------------------
+
+#[derive(Deserialize, JsonSchema)]
+pub struct HookStylesIn {}
+
+#[derive(Serialize, JsonSchema)]
+pub struct HookStyleInfo {
+    /// What `--style` takes.
+    pub name: String,
+    pub description: String,
+    /// Entry animation by default.
+    pub anim: OverlayAnim,
+    pub position_y: f64,
+    pub font_size_factor: f64,
+    #[serde(rename = "box")]
+    pub boxed: bool,
+    pub example: String,
+}
+
+#[derive(Serialize, JsonSchema)]
+pub struct HookStylesOut {
+    pub styles: Vec<HookStyleInfo>,
+    /// Animations that can be set with `--anim` on any overlay.
+    pub animations: Vec<OverlayAnim>,
+    pub note: String,
+}
+
+async fn hook_styles(_ctx: Ctx, _i: HookStylesIn) -> Result<HookStylesOut> {
+    let styles = OverlayStyle::HOOKS
+        .iter()
+        .map(|s| HookStyleInfo {
+            name: s.name().to_string(),
+            description: s.description().to_string(),
+            anim: s.default_anim(),
+            position_y: s.default_position_y(),
+            font_size_factor: s.default_font_size_factor(),
+            boxed: s.default_box(),
+            example: format!("rustler overlay add-text <clip_id> \"Nobody tells you this\" --style {} --sfx asset:<id>", s.name()),
+        })
+        .collect();
+    Ok(HookStylesOut {
+        styles,
+        animations: vec![OverlayAnim::None, OverlayAnim::Pop, OverlayAnim::ZoomIn, OverlayAnim::Slide, OverlayAnim::Typewriter],
+        note: "write the hook text with the hooks guide (`rustler guide show director-retention`); <= 7 words; check it with `rustler render preview-frame <clip_id> --out-t 0.5`".into(),
+    })
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -442,11 +576,23 @@ pub fn register(reg: &mut Registry) {
         vec![
             Example { description: "hook title for the first 3 s", cli: "rustler overlay add-text clp_x \"He quit his job for this\"" },
             Example {
+                description: "viral hook: two bold lines that pop in, with a whoosh",
+                cli: "rustler overlay add-text clp_x \"He quit his job for this\" --style hook-big --sfx asset:whoosh1",
+            },
+            Example {
                 description: "lower-third label from 2 s to 6 s",
                 cli: "rustler overlay add-text clp_x \"Dr. Jane Doe, MIT\" --style lower-third --start 2 --end 6",
             },
         ],
         add_text,
+    ));
+    reg.register(typed(
+        "overlay.hook_styles",
+        "List the viral hook styles (hook-big, hook-box-yellow, hook-outline, hook-pov, hook-question) with their entry animation, position and size",
+        &[],
+        Annotations { read_only: true, ..write },
+        vec![Example { description: "the hook presets", cli: "rustler overlay hook-styles" }],
+        hook_styles,
     ));
     reg.register(typed(
         "overlay.list",
@@ -513,6 +659,7 @@ mod tests {
             position_y: None,
             font_size_factor: None,
             boxed: None,
+            anim: None,
         };
         apply_edit("t", &mut o, &edit(Some(OverlayStyle::Plain), None, None), 10.0).unwrap();
         assert_eq!((o.position_y, o.boxed), (0.5, false));

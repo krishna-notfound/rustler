@@ -29,7 +29,6 @@ type Result<T> = rustler_core::Result<T>;
 pub const TRANSITIONS_KEY: &str = "transitions";
 pub const EFFECTS_KEY: &str = "effects";
 pub const PROGRESS_BAR_KEY: &str = "progress_bar";
-const DEFAULT_TRANSITION: f64 = 0.3;
 const MAX_TRANSITION: f64 = 2.0;
 const END_TOLERANCE: f64 = 0.05;
 
@@ -200,9 +199,9 @@ pub struct SetIn {
     pub clip_id: ClipId,
     /// The transition goes from this segment into the next one.
     pub after_segment_id: SegmentId,
-    /// cut | fade (dip to black) | dissolve (cross-blend) | wipeleft | wiperight | slideup | zoomin
+    /// cut | fade (dip to black) | dissolve (cross-blend) | wipeleft | wiperight | slideup | zoomin | flash (0.1 s white flash) | flashblack (0.1 s black flash) | whip (0.2 s horizontal smear)
     pub kind: TransitionKind,
-    /// Overlap in seconds (default 0.3; rounded to whole frames; max 2).
+    /// Overlap in seconds (default 0.3; flash/flashblack 0.1, whip 0.2; rounded to whole frames; max 2).
     pub duration: Option<f64>,
 }
 
@@ -219,7 +218,7 @@ async fn transition_set(ctx: Ctx, i: SetIn) -> Result<TransitionsOut> {
         return Err(validation(STAGE, format!("segment {} is the last one; a transition needs a next segment", i.after_segment_id))
             .hint(format!("segments in order: {}", ids.join(", "))));
     }
-    let d = i.duration.unwrap_or(DEFAULT_TRANSITION);
+    let d = i.duration.unwrap_or_else(|| i.kind.default_duration());
     let one_frame = 1.0 / clip.canvas.fps;
     if i.kind != TransitionKind::Cut && !(d.is_finite() && d >= one_frame - 1e-9 && d <= MAX_TRANSITION) {
         return Err(validation(STAGE, format!("duration must be between one frame ({one_frame:.3}s) and {MAX_TRANSITION}s")));
@@ -644,12 +643,14 @@ pub fn register(reg: &mut Registry) {
     let read = Annotations { read_only: true, ..write };
     reg.register(typed(
         "transition.set",
-        "Set the transition from a segment into the next (cut|fade|dissolve|wipeleft|wiperight|slideup|zoomin, frame-exact xfade + acrossfade); the clip gets shorter by the overlap",
+        "Set the transition from a segment into the next (cut|fade|dissolve|wipeleft|wiperight|slideup|zoomin|flash|flashblack|whip, frame-exact xfade + acrossfade); the clip gets shorter by the overlap",
         &["clip_id", "after_segment_id", "kind"],
         write,
         vec![
             Example { description: "0.3 s cross-dissolve", cli: "rustler transition set clp_x seg_a dissolve" },
             Example { description: "half-second dip to black", cli: "rustler transition set clp_x seg_a fade --duration 0.5" },
+            Example { description: "0.1 s white flash at a cut (pacing)", cli: "rustler transition set clp_x seg_a flash" },
+            Example { description: "fast horizontal whip into the next shot", cli: "rustler transition set clp_x seg_a whip" },
             Example { description: "back to a hard cut", cli: "rustler transition set clp_x seg_a cut" },
         ],
         transition_set,
