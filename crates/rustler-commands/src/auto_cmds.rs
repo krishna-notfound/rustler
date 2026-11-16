@@ -50,6 +50,11 @@ const MAX_COUNT: usize = 20;
 const HOOK_WEIGHT: f64 = 20.0;
 /// Seconds of padding around each section downloaded for a URL.
 const DEFAULT_PAD: f64 = 3.0;
+/// URL sections are downloaded at this height unless `download_quality` says otherwise (the
+/// 1080x1920 short is cut from a crop of the 16:9 frame; 720p is plenty and much smaller).
+pub const DEFAULT_DOWNLOAD_QUALITY: &str = "720";
+/// URL sections downloaded at the same time (yt-dlp is network-bound).
+pub const PARALLEL_DOWNLOADS: usize = 2;
 /// Retention fix actions applied automatically (deterministic, non-creative, framing unchanged).
 /// Zooms (`punch_in`) are never applied: the agent decides; they stay in `fixes_suggested`.
 const SILENCE_FIXES: &[&str] = &["trim_head", "trim_tail", "remove_pauses"];
@@ -95,7 +100,7 @@ pub struct AutoIn {
     pub template: Option<String>,
     /// Render quality: draft | final (default final).
     pub quality: Option<RenderQuality>,
-    /// URL only: download height 480 | 720 | 1080 | best (default: `source.import` default).
+    /// URL only: download height 480 | 720 | 1080 | best (default 720). Sections download 2 at a time.
     pub download_quality: Option<String>,
     /// Attach every clip to this campaign (`clip.meta_set --campaign-id`); its duration and platform are
     /// used when min_len/max_len/platform are not given.
@@ -310,6 +315,9 @@ pub struct Settings {
     pub fixes: bool,
     pub cover: bool,
     pub raw: bool,
+    /// URL only: the height the sections are downloaded at.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub download_quality: Option<String>,
 }
 
 #[derive(Serialize, JsonSchema, Debug)]
@@ -1341,6 +1349,7 @@ async fn clips_auto(ctx: Ctx, i: AutoIn) -> Result<AutoOut> {
     }
     emit(&ctx, "rank", Some(0.15), format!("{} moments picked", picks.len()));
 
+    let dl_quality = i.download_quality.clone().filter(|q| !q.trim().is_empty()).unwrap_or_else(|| DEFAULT_DOWNLOAD_QUALITY.to_string());
     let settings = Settings {
         count,
         min_len,
@@ -1352,6 +1361,7 @@ async fn clips_auto(ctx: Ctx, i: AutoIn) -> Result<AutoOut> {
         fixes: fixes_on,
         cover: cover_on,
         raw,
+        download_quality: url.as_ref().map(|_| dl_quality.clone()),
     };
 
     // Per-clip skeletons. Names are unique in the project and in exports/ (an export of another
@@ -1426,8 +1436,8 @@ async fn clips_auto(ctx: Ctx, i: AutoIn) -> Result<AutoOut> {
     if dry {
         for (c, p) in clips.iter_mut().zip(&picks) {
             if let (Some(u), Some((a, b))) = (&url, c.section) {
-                c.plan.push(format!("rustler source import {u} --sections {a:.1}-{b:.1}{}", i.download_quality.as_ref().map(|q| format!(" --quality {q}")).unwrap_or_default()));
-                c.plan.push("rustler analyze quick <new src_id>".into());
+                c.plan.push(format!("rustler source import {u} --sections {a:.1}-{b:.1} --quality {dl_quality}   # {PARALLEL_DOWNLOADS} sections at a time"));
+                c.plan.push("rustler analyze quick <new src_id> --transcribe always   # whisper on the section (captions if whisper is missing)".into());
                 c.plan.push(create_cmd(c, p, "<new src_id>", a));
             } else {
                 c.plan.push(create_cmd(c, p, &rank_id, 0.0));
@@ -1474,25 +1484,73 @@ async fn clips_auto(ctx: Ctx, i: AutoIn) -> Result<AutoOut> {
         });
     }
 
-    // ---- 3. create + retention fixes (sequential: each writes project.json) ----------------
+    // ---- 3a. URL: download the padded sections, PARALLEL_DOWNLOADS at a time --------------
+    // (each import writes only its own source folder and appends one event line).
+    let mut imported: Vec<Option<Result<Value>>> = (0..clips.len()).map(|_| None).collect();
+    if let Some(u) = &url {
+        let jobs: Vec<(usize, Value)> = clips
+            .iter()
+            .enumerate()
+            .filter_map(|(k, c)| c.section.map(|(a, b)| (k, json!({"input": u, "sections": [format!("{a:.2}-{b:.2}")], "name": c.name, "quality": dl_quality}))))
+            .collect();
+        let n = jobs.len();
+        let started = Instant::now();
+        emit(&ctx, "import", Some(0.15), format!("downloading {n} sections at {dl_quality}p, {PARALLEL_DOWNLOADS} at a time"));
+        let mut queue = jobs.into_iter();
+        let mut set = tokio::task::JoinSet::new();
+        let mut done = 0usize;
+        loop {
+            while set.len() < PARALLEL_DOWNLOADS && !ctx.cancel.is_cancelled() {
+                let Some((k, input)) = queue.next() else { break };
+                let cctx = quiet(&ctx);
+                set.spawn(async move {
+                    let reg = inner();
+                    let r = reg.dispatch("source.import", input, cctx).await;
+                    (k, r)
+                });
+            }
+            let Some(res) = set.join_next().await else { break };
+            done += 1;
+            let name = match res {
+                Ok((k, r)) => {
+                    let ok = if r.is_ok() { "downloaded" } else { "failed" };
+                    imported[k] = Some(r);
+                    format!("{} {ok}", clips[k].name)
+                }
+                Err(e) => format!("a download task stopped: {e}"),
+            };
+            // Completions so far set the pace (they already overlap PARALLEL_DOWNLOADS at a time).
+            let el = started.elapsed().as_secs_f32();
+            let eta = el / done as f32 * (n - done) as f32;
+            ctx.progress.emit(ProgressEvent {
+                stage: format!("{STAGE}.import"),
+                pct: Some(0.15 + 0.15 * done as f32 / n.max(1) as f32),
+                message: Some(format!("{done}/{n} sections: {name}")),
+                eta_s: Some(eta),
+            });
+        }
+    }
+
+    // ---- 3b. create + retention fixes (sequential: each writes project.json) ---------------
     let total = clips.len().max(1);
     for (k, (c, p)) in clips.iter_mut().zip(&picks).enumerate() {
         if ctx.cancel.is_cancelled() {
             fail(c, "create", RustlerError::new(ErrorCode::Cancelled, STAGE, "cancelled"));
             continue;
         }
-        let base = 0.15 + 0.45 * (k as f32 / total as f32);
+        let base = if url.is_some() { 0.3 + 0.3 * (k as f32 / total as f32) } else { 0.15 + 0.45 * (k as f32 / total as f32) };
         emit(&ctx, "create", Some(base), format!("{} ({}/{}) {}", c.name, k + 1, total, c.mmss));
-        // URL: import the padded section and analyse it.
-        let (src_id, offset) = if let (Some(u), Some((a, b))) = (&url, c.section) {
-            let mut imp = json!({"input": u, "sections": [format!("{a:.2}-{b:.2}")], "name": c.name});
-            if let Some(q) = &i.download_quality {
-                imp["quality"] = json!(q);
-            }
-            let out = match x.call("source.import", imp).await {
-                Ok(v) => v,
-                Err(e) => {
+        // URL: the downloaded section, analysed.
+        let (src_id, offset) = if let (Some(_), Some((a, _))) = (&url, c.section) {
+            let out = match imported[k].take() {
+                Some(Ok(v)) => v,
+                Some(Err(e)) => {
                     fail(c, "import", e);
+                    continue;
+                }
+                None => {
+                    let why = if ctx.cancel.is_cancelled() { "cancelled" } else { "the download task stopped before it finished" };
+                    fail(c, "import", RustlerError::new(ErrorCode::Internal, STAGE, why));
                     continue;
                 }
             };
@@ -1501,11 +1559,29 @@ async fn clips_auto(ctx: Ctx, i: AutoIn) -> Result<AutoOut> {
                 continue;
             };
             c.warnings.extend(out.get("warnings").and_then(Value::as_array).into_iter().flatten().filter_map(|w| w.as_str().map(String::from)));
-            emit(&ctx, "analyze", Some(base), format!("{}: analyze quick {sid}", c.name));
-            if let Err(e) = x.call("analyze.quick", json!({"source_id": sid})).await {
-                fail(c, "analyze", e);
-                c.source_id = Some(sid);
-                continue;
+            // Whisper on the short section: exact word timings (the silence fixes need them) and no
+            // caption markup ("[ Laughter ]", "-" speaker dashes) in the burned captions. The
+            // fetched captions are the fallback when whisper is not available.
+            emit(&ctx, "analyze", Some(base), format!("{}: analyze quick {sid} --transcribe always", c.name));
+            match x.call("analyze.quick", json!({"source_id": sid, "transcribe": "always"})).await {
+                Ok(v) if v.get("transcript_source").and_then(Value::as_str) == Some("whisper") => {}
+                Ok(v) => {
+                    let why: Vec<String> = v.get("warnings").and_then(Value::as_array).into_iter().flatten().filter_map(|w| w.as_str().map(String::from)).collect();
+                    if let Err(e) = x.call("analyze.quick", json!({"source_id": sid})).await {
+                        fail(c, "analyze", e);
+                        c.source_id = Some(sid);
+                        continue;
+                    }
+                    c.warnings.push(format!(
+                        "whisper did not transcribe {sid} ({}); the fetched captions are used (approximate timings: trims and pause cuts are skipped; captions may show markup like [ Laughter ])",
+                        why.join("; ")
+                    ));
+                }
+                Err(e) => {
+                    fail(c, "analyze", e);
+                    c.source_id = Some(sid);
+                    continue;
+                }
             }
             (sid, a)
         } else {
@@ -1615,7 +1691,8 @@ async fn clips_auto(ctx: Ctx, i: AutoIn) -> Result<AutoOut> {
                 eta_s: eta.or(e.pct.filter(|p| *p >= 1.0).map(|_| 0.0)),
             });
         });
-        match reg.dispatch("render.batch", json!({"clip_ids": to_render, "quality": quality}), rctx).await {
+        // The GPU encoder when one passes the probe (`rustler doctor` lists them); libx264 otherwise.
+        match reg.dispatch("render.batch", json!({"clip_ids": to_render, "quality": quality, "prefer_gpu": true}), rctx).await {
             Ok(b) => {
                 for r in b.get("results").and_then(Value::as_array).into_iter().flatten() {
                     let id = s(r, "clip_id");

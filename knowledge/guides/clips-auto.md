@@ -1,7 +1,7 @@
 ---
 id: clips-auto
 title: "clips auto: the one-call pipeline, and when to do the steps yourself"
-summary: "What clips auto runs (resolve, rank with a first-2-seconds hook, create with smart defaults and a template, cheap retention fixes, render batch with ETA, QC, export with an empty post JSON), how to read its report, how to change each decision, and when the manual steps are the better choice."
+summary: "What clips auto runs (resolve with captions or a whisper fallback, rank with a first-2-seconds hook, create with smart defaults and a template, silence trims only (never zooms or grades), render batch with ETA, QC, cover, export with an empty post JSON), how to read its report, how to change each decision, and when the manual steps are the better choice."
 order: 22
 tags: [auto, pipeline, batch, quick, clips, rank, hook, retention, export, dry-run]
 ---
@@ -16,13 +16,17 @@ changes it, and you can do any step yourself at any time.
 
 | Stage | Commands it calls |
 |---|---|
-| resolve (URL) | `source info` (one cached lookup), `source fetch-transcript` (captions, no download) |
+| resolve (URL) | `source info` (one cached lookup), `source fetch-transcript` (captions, no download). **No captions:** it downloads the audio only (`source import <url> --audio-only true`) and transcribes it with whisper base (`analyze quick <src> --transcribe always --model base`) to rank; `source.transcript_via` says `captions` or `whisper`, `source.transcript_s` how long it took |
 | resolve (source) | `analyze quick` when the source has no transcript |
 | rank | `highlights candidates`, then a first-2-seconds hook score (question, emphasis word, number, "you", loud or fast opening; weak openers lose points). Picks never overlap each other or a clip you already made on that moment |
-| create | URL: `source import --sections` per pick (padded 3 s) + `analyze quick`; then `clip create` (smart defaults, `--template`), `clip meta-set --campaign-id` when `--campaign` is given |
-| fix | `clip retention --timeline-only`; applies only `trim_head`, `trim_tail`, `remove_pauses`, then `punch_in` (re-measured after each silence fix). Trims never cut into the first or last word (they stop 0.2 s from it); trims and pause cuts are **skipped** when the word timings are approximate (a captions-based transcript); a silence fix after which the hook or ending scores worse is restored (`rolled_back`). Text pops and cutaways are listed in `fixes_suggested`, never applied |
-| render | `render batch` (progress `clips.auto.render` with `eta_s`) |
-| check | `clip retention` on the render, `qc run`, `clip cover --auto` (best effort; `--cover false` skips it), `export clip` |
+| create | URL: `source import --sections` per pick (padded 3 s, 720p unless `--download-quality`, 2 sections at a time, progress `clips.auto.import` with `eta_s`) + `analyze quick --transcribe always` (whisper on the section: exact word timings and no caption markup; the fetched captions only when whisper is missing); then `clip create` (smart defaults, `--template`), `clip meta-set --campaign-id` when `--campaign` is given |
+| fix | `clip retention --timeline-only`; applies only `trim_head`, `trim_tail`, `remove_pauses` (re-measured after each). Trims never cut into the first or last word (they stop 0.2 s from it); trims and pause cuts are **skipped** when the word timings are approximate (a captions-based transcript); a silence fix after which the hook or ending scores worse is restored (`rolled_back`). After the cuts, the punch-ins **your template** placed (an explicit punch-in pattern; the starters have none) are re-checked: one closer than 0.5 s to a cut, across one or on a graphic makes it re-plan the template's punch-ins with the template's own pattern (`fixes_applied` action `template_punch_ins`). Punch-ins, text pops and cutaways are listed in `fixes_suggested` with their commands, never applied |
+| render | `render batch` (progress `clips.auto.render` with `eta_s`; the GPU encoder when `rustler doctor` lists a working one, else libx264) |
+| check | `clip retention` on the render, `qc run`, `clip cover --auto` (best effort, about 3 s: it scores the QC contact sheet's 12 frames, leaves out frames where a mask is shown or the face is under a mask, card or text; `--cover false` skips it), `export clip` |
+
+**clips auto never adds a zoom, a punch-in, a shake or a colour grade by itself.** The only zooms on its clips are
+the ones in the template you passed; a grade only comes from your template's `grade`. Retention punch-ins are in
+`fixes_suggested` with the exact `rustler effect add ...` command: run the ones you want.
 
 The export writes `<name>.post.json` with **empty** title, description and hashtags: Rustler never writes copy
 and never publishes. Exports whose only QC failure is `meta_present` (the copy) still go out, marked
@@ -68,7 +72,8 @@ Then, for every exported clip:
 | a different moment | `rustler highlights candidates <source> --count 20`, then its `create_cmd` |
 | smart defaults | the `undo_all` command in `change[]` (`rustler history restore <clip_id> --revision 1`) |
 | the look | `rustler template apply <name> --clip-ids <clip_id>` |
-| a punch-in it added | `rustler effect remove <clip_id> <fx_id>` (in `fixes_applied[].undo`) |
+| a suggested punch-in | run its command from `fixes_suggested` yourself (`rustler effect add <clip_id> punch-in ...`) |
+| the template punch-in re-plan | the `undo` in `fixes_applied` (`rustler history restore <clip_id> <revision before it>`) |
 | a trim / pause cut it made | the `undo` in `fixes_applied` (`rustler history restore <clip_id> <revision before it>`) |
 | the cover frame | `rustler clip cover <clip_id> --out-t <seconds>`, then `rustler export clip <clip_id>` |
 | re-render and re-check | `rustler render run <clip_id>`, `rustler qc run <clip_id>`, `rustler export clip <clip_id>` |
@@ -84,6 +89,7 @@ Do the steps yourself (see `workflow-youtube-longform` and `finding-hooks`) when
   reads no meaning);
 - the clip needs a cold open, a merge, cutaways or a custom hook (`edit cold-open`, `clip merge`, `cutaway add`);
 - the campaign pays per clip and must match a creator's style exactly (`reference analyze`, then a template);
-- the video has no captions (it stops with a hint: import sections, `analyze quick`, then `--source-id`).
+- the video has no captions and is long: the whisper fallback downloads and transcribes the whole audio first
+  (about 1/6 of the video's length on a GPU); for a 2-hour video import the sections you want yourself.
 
 A middle way: pick the moments yourself and let it do the rest with `ranges`.

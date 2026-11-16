@@ -261,7 +261,7 @@ pub fn text_box(text: &str, position_y: f64, font_size_factor: f64, canvas_w: f6
     let chars = text.chars().count().max(1) as f64;
     let per_line = (0.9 / (0.55 * fs)).max(1.0);
     let lines = (chars / per_line).ceil().max(1.0);
-    let width = (chars.min(per_line) * 0.55 * fs + fs).min(1.0);
+    let width = (chars.min(per_line) * 0.55 * fs + fs).min(0.96);
     let height = (lines * 1.25 * fs + fs) * canvas_w / canvas_h.max(1.0);
     (0.5 - width / 2.0, position_y - height / 2.0, 0.5 + width / 2.0, position_y + height / 2.0)
 }
@@ -666,7 +666,7 @@ async fn run(
             next: Vec::new(),
         });
     }
-    let image = store.resolve(&rel);
+    let image = store.clip_dir(&clip.id).join("cover.jpg"); // native separators for the caller
     Ok(CoverOut {
         clip_id: clip.id.clone(),
         image,
