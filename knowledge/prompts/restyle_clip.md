@@ -36,7 +36,7 @@ is about pacing. Reference guides: `captions-and-style`, `layouts-and-framing`, 
 | "add music", "calmer music", "no music" | `asset search <mood>` then `audio add-music --path asset:<id> --volume-db -18` / lower `--volume-db` / `audio remove-music` |
 | "tighter", "faster" | `edit remove-pauses --min-gap 0.4 --keep 0.2` |
 | "hook text", "title on top" | `overlay add-text {{clip_id}} "<text>" --style hook-top --start 0 --end 2.5` (`overlay edit` to change) |
-| "punchier", "more energy" | `effect add {{clip_id}} punch-in --start <t> --end <t+0.5>`, `audio add-sfx`, `overlay progress-bar {{clip_id}} --enabled true` |
+| "punchier", "more energy" | one held punch-in on the strongest line (`effect add {{clip_id}} punch-in --start <t> --end <t+4> --amount 1.08`; not a zoom pump), `audio add-sfx`, `overlay progress-bar {{clip_id}} --enabled true` |
 | "smooth cuts" | `transition set {{clip_id}} <seg_id> dissolve --duration 0.3` |
 | "colour per speaker" | `analyze speakers <src>` then `caption speaker-colors {{clip_id}} --enabled true` |
 | "a custom look" | `caption create-style <name> --base <preset> --active-color "#RRGGBB"` then `--style <name>` |

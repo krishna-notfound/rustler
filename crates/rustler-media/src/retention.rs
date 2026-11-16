@@ -16,8 +16,10 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use tokio_util::sync::CancellationToken;
 
-/// A span longer than this without any visual change is a static dead zone (seconds).
-pub const STATIC_GAP_S: f64 = 2.5;
+/// A span longer than this without any visual change is a static dead zone (seconds). A talking
+/// head with live captions holds attention on its own; the old 2.5 s pushed the tools into
+/// zooming in and out every couple of seconds, which viewers find distracting.
+pub const STATIC_GAP_S: f64 = 6.0;
 /// Silence at least this long is a dead zone (seconds).
 pub const SILENCE_MIN_S: f64 = 0.8;
 /// A text overlay that appears before this time counts as a first-frame hook.
@@ -32,14 +34,15 @@ pub const SCENE_SPIKE: f64 = 0.12;
 pub const MOTION_FIRST_SECOND: f64 = 0.02;
 /// Visual changes closer than this are one change.
 pub const MERGE_S: f64 = 0.25;
-/// Pacing target: visual changes per 10 s (one every 2.5 s).
-pub const PACE_TARGET_PER_10S: f64 = 4.0;
+/// Pacing target: visual changes per 10 s (about one every 6-7 s: a cut, a reframe or a held
+/// punch-in, not constant zooming).
+pub const PACE_TARGET_PER_10S: f64 = 1.5;
 
 /// How the retention score is computed (also printed by `clip.retention`).
 pub const SCORE_FORMULA: &str = "retention_score = hook (25) + pacing (25) + visual_dead (15) + silence (10) + captions (10) + ending (10) + energy (5). \
 hook: text overlay on screen before 0.3 s = 10, speech start delay <=0.3 s = 10 / <=0.5 s = 8 / <=1 s = 4 / <=2 s = 1, motion in the first second = 5 (capped at 25). \
-pacing: 25 x min(1, visual changes per 10 s / 4). \
-visual_dead: 15 x (1 - min(1, 2 x share of the clip inside static dead zones > 2.5 s)). \
+pacing: 25 x min(1, visual changes per 10 s / 1.5). \
+visual_dead: 15 x (1 - min(1, 2 x share of the clip inside static dead zones > 6 s)). \
 silence: 10 x (1 - min(1, seconds of silence >= 0.8 s / (10% of the clip, at least 1 s))). \
 captions: words per second 2.0-4.5 = 10, below scales down linearly, above loses 5 per extra word/s; captions off with speech = 0; no speech = 5. \
 ending: loopable 10, cta 8, sentence_final 6, hard_stop 0, no_speech 5. \

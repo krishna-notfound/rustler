@@ -2,13 +2,12 @@
   "schema": "rustler.template@1",
   "name": "podcast-viral",
   "version": 1,
-  "description": "Talking-head / podcast short: per-shot framing from the shot data (one face: center-crop + face track, two or more: center-crop + active speaker, screens: zoom-fit, graphics / no face: blur-fit), hormozi-pop captions (3 words a line) at 0.70 with one keyword a line highlighted, a big boxed hook title (<= 7 words) for the first 3 s, yellow progress bar, -14 LUFS. No automatic punch-ins: add them yourself where a moment earns it (`rustler effect add <clip> punch-in --start <s> --end <s> --amount 1.08`).",
+  "description": "Talking-head / podcast short: per-shot framing from the shot data (one face: center-crop + face track, two or more: center-crop + active speaker, screens: zoom-fit, no face / graphics: blur-fit), hormozi-pop captions (3 words a line) at 0.70 with one keyword a line highlighted, a big boxed hook title (<= 7 words) for the first 3 s, no automatic zooms (punch-ins are your call: add them only where a moment earns it), yellow progress bar, -14 LUFS.",
   "created_by": "built-in",
   "based_on": { "trial": "clips-trial-1 (Vinh Giang x Raj Shamani, 5 clips, all QC pass)" },
   "notes": [
-    "Framing follows layout_rules per shot from the smart defaults' shot plan (`rustler layout plan <clip> --apply`) or `rustler analyze faces <source_id>`; segments without shot data keep their framing (warning). The template does not run face tracking: a center-crop segment without a crop path gets the exact `rustler crop track-face` / `crop track-active` command in the warnings.",
+    "Framing follows layout_rules per shot, from the smart defaults' shot plan (`rustler layout plan <clip> --apply`) or `rustler analyze faces <source_id>`; segments without shot data keep their framing (warning), and a segment already on the rule's preset keeps its framing and crop path. The template does not run face tracking: a center-crop segment without a crop path gets the exact `rustler crop track-face` / `crop track-active` command in the warnings.",
     "Write the hook title yourself (<= 7 words) with `rustler overlay add-text <clip> \"...\"`, then apply the template again to restyle it; or pass overrides {\"hook\": {\"text\": \"...\"}}.",
-    "No punch-ins are added automatically. Zoom only where a moment earns it, subtle and held for a phrase: `rustler effect add <clip> punch-in --start <s> --end <s> --amount 1.08`.",
     "The trial found the hook text too small at 0.085; this template uses 0.1."
   ],
   "canvas": { "width": 1080, "height": 1920, "fps": 30.0 },
