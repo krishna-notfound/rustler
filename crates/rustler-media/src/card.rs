@@ -1096,6 +1096,12 @@ fn draw_text(pm: &mut Pixmap, i: usize, raw: &TextSpec, cx: &mut TextCtx) -> Res
 // Entry point
 // ---------------------------------------------------------------------------------------------
 
+/// Checks that `font` (asset id, path or installed family) resolves to a usable font file.
+pub fn check_font(env: &CardEnv, font: &str, weight: Option<&Weight>) -> Result<()> {
+    let w = weight.map(|w| w.value().ok_or_else(|| validation("weight must be 100..900 or a name like bold"))).transpose()?;
+    Fonts { cache: HashMap::new() }.resolve("font", env, Some(font), w).map(|_| ())
+}
+
 /// Renders `spec` to an RGBA image.
 pub fn render_card(spec: &CardSpec, env: &CardEnv) -> Result<CardOutput> {
     if spec.width < 8 || spec.height < 8 || spec.width > MAX_SIDE || spec.height > MAX_SIDE {

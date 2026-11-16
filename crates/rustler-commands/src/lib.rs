@@ -5,6 +5,7 @@ pub mod asset_cmds;
 pub mod audio_cmds;
 pub mod brief_cmds;
 pub mod campaign_cmds;
+pub mod card_cmds;
 pub mod clip_cmds;
 pub mod config_cmds;
 pub mod cut_cmds;
@@ -61,4 +62,5 @@ pub fn register_all(reg: &mut Registry) {
     config_cmds::register(reg);
     campaign_cmds::register(reg);
     post_cmds::register(reg);
+    card_cmds::register(reg);
 }
