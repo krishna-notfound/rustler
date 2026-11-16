@@ -11,6 +11,7 @@
 //! Music ducking from opensource-clipping `audio_bgm.py` (MIT) with `amix normalize=0` and fades.
 
 use crate::encoders::EncoderChoice;
+use crate::layers::{Cutaway, ImageLayer, LayerCtx, LayerInput, MaskLayer, VChain};
 use rustler_core::{
     Background, Canvas, Clip, ErrorCode, Fit, MediaProbe, Rect, Region, RustlerError, SegmentId,
     SourceId,
@@ -26,7 +27,7 @@ const STAGE: &str = "render.compile";
 const SR: u64 = 48_000;
 /// Segment end may exceed the probed duration by this much (container rounding).
 const END_TOLERANCE: f64 = 0.05;
-const AUDIO_FORMAT: &str = "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo";
+pub(crate) const AUDIO_FORMAT: &str = "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo";
 const FINITE_AUDIO: &str = "aeval='if(isnan(val(ch))+isinf(val(ch)),0,val(ch))':c=same";
 pub const GRAPH_FILE: &str = "graph.txt";
 pub const PREVIEW_GRAPH_FILE: &str = "graph_preview.txt";
@@ -283,6 +284,16 @@ pub struct CompileExtras {
     /// Progress bar across the whole rendered clip (on top of everything).
     #[serde(default)]
     pub progress_bar: Option<ProgressBar>,
+    /// Image layers (logos, stickers, GIFs). Timing must be resolved (`out_start`/`out_end`;
+    /// [`crate::layers::resolve_timing`]); edit timeline like the overlays.
+    #[serde(default)]
+    pub images: Vec<ImageLayer>,
+    /// Masks over the source picture (blur / box / pixelate), resolved timing.
+    #[serde(default)]
+    pub masks: Vec<MaskLayer>,
+    /// Cutaways (full-frame or picture-in-picture), resolved timing and `media.file` set.
+    #[serde(default)]
+    pub cutaways: Vec<Cutaway>,
 }
 
 impl Default for CompileExtras {
@@ -299,6 +310,9 @@ impl Default for CompileExtras {
             transitions: Vec::new(),
             effects: Vec::new(),
             progress_bar: None,
+            images: Vec::new(),
+            masks: Vec::new(),
+            cutaways: Vec::new(),
         }
     }
 }
@@ -672,7 +686,7 @@ fn effect_filter(e: &Effect, f0: u64, f1: u64, fps: f64) -> String {
 }
 
 /// Six-decimal number with trailing zeros trimmed (filter arguments that must be frame-exact).
-fn num6(v: f64) -> String {
+pub(crate) fn num6(v: f64) -> String {
     let s = format!("{v:.6}");
     let s = s.trim_end_matches('0').trim_end_matches('.');
     if s == "-0" { "0".to_string() } else { s.to_string() }
@@ -846,6 +860,11 @@ pub fn compile_with(
         inputs.push("-i".into());
         inputs.push(abs(p).into_os_string());
     }
+    for li in &plan.layer_inputs {
+        inputs.extend(li.opts.iter().map(OsString::from));
+        inputs.push("-i".into());
+        inputs.push(abs(&li.path).into_os_string());
+    }
 
     let loudness = match (&plan.loudness_graph, &plan.loudnorm_filter) {
         (Some(g), Some(filter)) => {
@@ -947,6 +966,8 @@ pub struct GraphPlan {
     pub noise_graph: Option<String>,
     /// The denoise filter text inside `graph` (default floor), replaced after the noise pass.
     pub denoise_filter: Option<String>,
+    /// Inputs of the image / cutaway layers, in input order after the sound effects.
+    pub layer_inputs: Vec<LayerInput>,
 }
 
 pub fn build_graph(
@@ -1033,21 +1054,63 @@ pub fn build_graph(
         .collect();
     let overlays_ass = overlays_ass(&mapped_overlays, &canvas, duration);
 
+    // Sound effects: input index after the segments and the music bed.
+    let base = n + usize::from(extras.music.is_some());
+    let mut sfx_inputs = Vec::new();
+    let mut sfx_chains = Vec::new();
+    for cue in &extras.sfx {
+        let at = tmap.map_time(cue.at);
+        if !(at.is_finite() && at >= 0.0 && at < duration - 0.01) {
+            continue;
+        }
+        let idx = base + sfx_inputs.len();
+        sfx_chains.push(format!(
+            "[{idx}:a:0]aresample=48000,{AUDIO_FORMAT},volume={}dB,adelay=delays={}S:all=1,apad,\
+             atrim=end_sample={total_samples},asetpts=N/SR/TB",
+            num(cue.volume_db),
+            sample_at(at)
+        ));
+        sfx_inputs.push(cue.path.clone());
+    }
+
+    // Layers read extra inputs after the sound effects.
+    let mut lx = LayerCtx {
+        tmap: &tmap,
+        fps: canvas.fps,
+        cw,
+        ch,
+        total_frames,
+        total_samples,
+        base_input: base + sfx_inputs.len(),
+        inputs: Vec::new(),
+        audio_chains: Vec::new(),
+    };
+
     // Concat runs on a microsecond time base; rebuild exact frame timestamps.
-    let mut vpost = format!("[vcat]settb={},setpts=N", tb_str(canvas.fps));
+    // Z-order: video -> full cutaways -> masks -> effects -> PiP cutaways -> images (below the
+    // captions, by z) -> captions -> text overlays -> images above the captions -> progress bar.
+    let mut vc = VChain::new(format!("[vcat]settb={},setpts=N", tb_str(canvas.fps)));
+    lx.full_cutaways(&mut parts, &mut vc, &extras.cutaways);
+    lx.masks(&mut parts, &mut vc, &extras.masks);
     for e in &extras.effects {
         let Some((s, t)) = tmap.map_interval(e.start, e.end) else { continue };
         let (f0, f1) = (frame_at(s, canvas.fps), frame_at(t, canvas.fps).min(total_frames));
         if f1 > f0 {
-            let _ = write!(vpost, ",{}", effect_filter(e, f0, f1, canvas.fps));
+            vc.push(&effect_filter(e, f0, f1, canvas.fps));
         }
     }
+    lx.pip_cutaways(&mut parts, &mut vc, &extras.cutaways);
+    lx.images(&mut parts, &mut vc, &extras.images, false);
     if captions {
-        let _ = write!(vpost, ",ass={ASS_FILE}:fontsdir={FONTS_DIR}");
+        vc.push(&format!("ass={ASS_FILE}:fontsdir={FONTS_DIR}"));
     }
     if overlays_ass.is_some() {
-        let _ = write!(vpost, ",ass={OVERLAYS_ASS_FILE}:fontsdir={FONTS_DIR}");
+        vc.push(&format!("ass={OVERLAYS_ASS_FILE}:fontsdir={FONTS_DIR}"));
     }
+    lx.images(&mut parts, &mut vc, &extras.images, true);
+    let LayerCtx { inputs: layer_inputs, audio_chains: layer_audio, .. } = lx;
+    sfx_chains.extend(layer_audio);
+    let mut vpost = vc.into_open();
     match &extras.progress_bar {
         None => {
             vpost.push_str(",format=yuv420p[vout]");
@@ -1071,25 +1134,6 @@ pub fn build_graph(
                 "[vbar][pbar]overlay=x='W*(n+1)/{total_frames}-W':y={y}:eval=frame,format=yuv420p[vout]"
             ));
         }
-    }
-
-    // Sound effects: input index after the segments and the music bed.
-    let base = n + usize::from(extras.music.is_some());
-    let mut sfx_inputs = Vec::new();
-    let mut sfx_chains = Vec::new();
-    for cue in &extras.sfx {
-        let at = tmap.map_time(cue.at);
-        if !(at.is_finite() && at >= 0.0 && at < duration - 0.01) {
-            continue;
-        }
-        let idx = base + sfx_inputs.len();
-        sfx_chains.push(format!(
-            "[{idx}:a:0]aresample=48000,{AUDIO_FORMAT},volume={}dB,adelay=delays={}S:all=1,apad,\
-             atrim=end_sample={total_samples},asetpts=N/SR/TB",
-            num(cue.volume_db),
-            sample_at(at)
-        ));
-        sfx_inputs.push(cue.path.clone());
     }
 
     let loudnorm_filter = clip.audio.loudnorm.then(|| {
@@ -1137,6 +1181,7 @@ pub fn build_graph(
         duration,
         noise_graph,
         denoise_filter,
+        layer_inputs,
     })
 }
 
@@ -1740,6 +1785,24 @@ fn validate(
         return Err(v(format!("progress bar: color must be #RRGGBB and height 2..200 (got {} / {})", pb.color, pb.height))
             .hint("set it again with `rustler overlay progress-bar <clip_id> --enabled true`"));
     }
+    for i in &extras.images {
+        crate::layers::check_image(i).map_err(|m| {
+            v(format!("image {}: {m}", i.id)).hint("fix it with `rustler image edit` or remove it with `rustler image remove`")
+        })?;
+    }
+    for m in &extras.masks {
+        crate::layers::check_mask(m).map_err(|e| {
+            v(format!("mask {}: {e}", m.id)).hint("fix it with `rustler mask edit` or remove it with `rustler mask remove`")
+        })?;
+    }
+    for c in &extras.cutaways {
+        crate::layers::check_cutaway(c).map_err(|e| {
+            v(format!("cutaway {}: {e}", c.id)).hint("fix it with `rustler cutaway edit` or remove it with `rustler cutaway remove`")
+        })?;
+        if c.media.file.is_none() {
+            return Err(v(format!("cutaway {}: media file is not resolved", c.id)));
+        }
+    }
     check_transitions(clip, &extras.transitions)
 }
 
@@ -1832,21 +1895,21 @@ fn even(v: f64) -> u32 {
     (v - v % 2) as u32
 }
 
-fn frame_at(t: f64, fps: f64) -> u64 {
+pub(crate) fn frame_at(t: f64, fps: f64) -> u64 {
     (t * fps).round() as u64
 }
 
-fn sample_at(t: f64) -> u64 {
+pub(crate) fn sample_at(t: f64) -> u64 {
     (t * SR as f64).round() as u64
 }
 
 /// Seconds for argv: millisecond precision.
-fn secs(t: f64) -> String {
+pub(crate) fn secs(t: f64) -> String {
     format!("{t:.3}")
 }
 
 /// Compact number: up to 3 decimals, trailing zeros trimmed (-14.0 -> "-14").
-fn num(v: f64) -> String {
+pub(crate) fn num(v: f64) -> String {
     let s = format!("{v:.3}");
     let s = s.trim_end_matches('0').trim_end_matches('.');
     if s == "-0" {
@@ -1872,7 +1935,7 @@ pub fn fps_str(fps: f64) -> String {
     }
 }
 
-fn tb_str(fps: f64) -> String {
+pub(crate) fn tb_str(fps: f64) -> String {
     let f = fps_str(fps);
     match f.split_once('/') {
         Some((n, d)) => format!("{d}/{n}"),
