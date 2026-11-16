@@ -1,5 +1,6 @@
 //! Posting JSON + campaigns (v2 Task 1.7): campaign.*, clip.meta_*, QC rules and the export's post.json.
 //! Tests that render/QC use real ffmpeg and skip (printing why) when it is missing.
+#![allow(dead_code)]
 
 use chrono::Utc;
 use rustler_commands::register_all;
