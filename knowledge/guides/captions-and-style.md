@@ -40,6 +40,9 @@ the line does not jitter).
 | `boxed-highlight` | Words on a solid box/pill, active word boxed in an accent colour | Busy or bright backgrounds (gameplay, outdoor, white walls) where outline text gets lost. |
 | `clean-white` | Lighter, sentence case, white with soft shadow, minimal animation | Calm, educational, emotional or premium content; brands that dislike "loud" captions. |
 
+| `keyword-highlight` | Poppins ExtraBold, plain white lines shown whole (no word-by-word colour); only **keywords** get their own colour and 1.15x size | Talks where 2-5 words per clip carry the point (numbers, money, strong verbs). Pair with `caption keywords`. |
+| `emoji-karaoke` | Poppins ExtraBold white, spoken word pink; emoji you set per word sit after their word | Lifestyle, comedy, food, fitness; sparing emoji (1-4 per clip). |
+
 Exact fonts/colours come from the preset data; read `caption list-styles` output once per session.
 If the brief names a caption style, match it as closely as these presets allow and say so in the
 report if none fits.
@@ -121,6 +124,26 @@ surprising nouns. 2-5 per clip, only words actually spoken. Never articles, pron
 The active-word highlight is automatic; per-word emphasis colours or emoji are available only if a
 caption edit command exists (`rustler commands list` → `caption.*`). Don't add emoji unless the
 brief or niche calls for it.
+
+### Keywords (`keyword-highlight`) and emoji (`emoji-karaoke`)
+
+```
+rustler caption set clp_X --style keyword-highlight
+rustler caption keywords clp_X --auto --dry-run          # what the rules would mark: numbers, emphasis words (EN + Hinglish), Title Case names
+rustler caption keywords clp_X --auto                    # mark them (about one word in six at most; `--max N` to change)
+rustler caption keywords clp_X --words million,quit      # or name the words yourself (every occurrence, case/punctuation ignored)
+rustler caption words-list clp_X                         # review; `caption word` changes one word, `caption words-clear` removes marks
+rustler caption word clp_X --source-id src_X --word-i 42 --emoji "🔥"   # emoji after a word (any preset; emoji-karaoke is made for it)
+```
+
+- A keyword is a colour on that word (default: the preset's accent). In `keyword-highlight` it also gets
+  1.15x size unless you set a size with `caption word --scale`. Your own colours set earlier are never overwritten.
+- `auto` is a proposal, not a judgement: read the list, drop what is not the point, add what is. Marks follow re-cuts;
+  a marked word that was cut out is skipped with a warning.
+- Keep it to 2-5 keywords per clip; a highlight on every third word is no highlight.
+- Emoji need an emoji font. On Windows Segoe UI Emoji is found automatically and draws the emoji as a one-colour
+  outline in the caption colour (not full colour). With no emoji font installed the render **drops the emoji and warns**.
+  Check a frame with `render preview-frame` before you rely on them.
 
 ### Speaker colours (interviews, podcasts, panels)
 

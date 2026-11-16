@@ -684,8 +684,10 @@ async fn export_clip(ctx: Ctx, input: ExportInput) -> rustler_core::Result<Expor
             })
         })
         .collect();
-    let (post_body, post_warnings) = crate::post_cmds::post_json(&store, &clip, &video)?;
+    let (mut post_body, post_warnings) = crate::post_cmds::post_json(&store, &clip, &video)?;
     warnings.extend(post_warnings);
+    // The cover picked with `clip.cover` goes next to the video as <name>.cover.jpg.
+    crate::cover_cmds::export_cover(&store, &clip, &dir, &name, &mut post_body, &mut warnings);
     store.write_json(&post_path, &post_body)?;
     store.write_json(
         &report,

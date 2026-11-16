@@ -176,6 +176,50 @@ pub enum OverlayStyle {
     LowerThird,
     /// Outlined white text, no box (default y 0.50).
     Plain,
+    /// Viral hook: two bold uppercase lines, ~0.10 of the width, thick outline, pops in.
+    HookBig,
+    /// Viral hook: black text on an opaque yellow box, slides in from above.
+    HookBoxYellow,
+    /// Viral hook: yellow text with a thick black outline, typed out letter by letter.
+    HookOutline,
+    /// Viral hook: left-aligned dark box, "POV:" in yellow, slides in from the left.
+    HookPov,
+    /// Viral hook: ends in a big red "?", zooms in.
+    HookQuestion,
+}
+
+/// Entry animation of a text overlay.
+#[derive(Serialize, Deserialize, JsonSchema, Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[serde(rename_all = "kebab-case")]
+pub enum OverlayAnim {
+    /// Static (appears with a short fade).
+    None,
+    /// Scales 70% -> 112% -> 100% in a quarter of a second.
+    Pop,
+    /// Starts 140% large and settles to 100%.
+    ZoomIn,
+    /// Slides in (from above; left-aligned styles from the left).
+    Slide,
+    /// Letters appear one by one (about 1 s for a 25 character hook).
+    Typewriter,
+}
+
+/// Colours and flags that make up a style's look (ASS `&HBBGGRR` colours).
+#[derive(Clone, Copy, Debug)]
+struct OverlayLook {
+    /// Text colour on the box.
+    text_on_box: &'static str,
+    /// Box colour.
+    box_colour: &'static str,
+    /// Text colour without a box (drawn with a black outline).
+    text_plain: &'static str,
+    /// Accent colour of "POV:" / "?" ([`OverlayStyle::HookPov`], [`OverlayStyle::HookQuestion`]).
+    accent: &'static str,
+    /// Left-aligned block instead of centred.
+    left: bool,
+    /// Outline thickness of the unboxed text as a fraction of the font size.
+    outline_factor: f64,
+    default_anim: OverlayAnim,
 }
 
 impl OverlayStyle {
@@ -184,6 +228,11 @@ impl OverlayStyle {
             Self::HookTop => 0.12,
             Self::LowerThird => 0.80,
             Self::Plain => 0.50,
+            Self::HookBig => 0.17,
+            Self::HookBoxYellow => 0.14,
+            Self::HookOutline => 0.16,
+            Self::HookPov => 0.15,
+            Self::HookQuestion => 0.15,
         }
     }
     /// Font size = canvas width * factor.
@@ -192,10 +241,86 @@ impl OverlayStyle {
             Self::HookTop => 0.085,
             Self::LowerThird => 0.05,
             Self::Plain => 0.065,
+            Self::HookBig => 0.10,
+            Self::HookBoxYellow => 0.085,
+            Self::HookOutline => 0.09,
+            Self::HookPov => 0.075,
+            Self::HookQuestion => 0.085,
         }
     }
     pub fn default_box(self) -> bool {
-        !matches!(self, Self::Plain)
+        !matches!(self, Self::Plain | Self::HookBig | Self::HookOutline)
+    }
+    /// The five viral hook presets, in `overlay.hook_styles` order.
+    pub const HOOKS: [OverlayStyle; 5] =
+        [Self::HookBig, Self::HookBoxYellow, Self::HookOutline, Self::HookPov, Self::HookQuestion];
+    /// True for the viral hook presets.
+    pub fn is_hook_preset(self) -> bool {
+        Self::HOOKS.contains(&self)
+    }
+    /// Kebab-case name (what `--style` takes).
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::HookTop => "hook-top",
+            Self::LowerThird => "lower-third",
+            Self::Plain => "plain",
+            Self::HookBig => "hook-big",
+            Self::HookBoxYellow => "hook-box-yellow",
+            Self::HookOutline => "hook-outline",
+            Self::HookPov => "hook-pov",
+            Self::HookQuestion => "hook-question",
+        }
+    }
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::HookTop => "Big white hook on a dark box near the top (default).",
+            Self::LowerThird => "Small label on a dark box under the captions.",
+            Self::Plain => "White outlined text without a box, centre of the frame.",
+            Self::HookBig => "Two bold uppercase lines (10% of the width), white with a thick black outline, pops in.",
+            Self::HookBoxYellow => "Black text on an opaque yellow box, slides in from above.",
+            Self::HookOutline => "Yellow text with a thick black outline, typed out letter by letter.",
+            Self::HookPov => "Left-aligned dark box; \"POV:\" (added when missing) in yellow; slides in from the left.",
+            Self::HookQuestion => "Dark box; the closing \"?\" (added when missing) is big and red; zooms in.",
+        }
+    }
+    /// Entry animation when the overlay does not name one.
+    pub fn default_anim(self) -> OverlayAnim {
+        self.look().default_anim
+    }
+
+    fn look(self) -> OverlayLook {
+        const WHITE: &str = "&H00FFFFFF";
+        const DARK: &str = "&H00141414";
+        const YELLOW: &str = "&H0000E0FF"; // #FFE000
+        const RED: &str = "&H004D4DFF"; // #FF4D4D
+        let base = OverlayLook {
+            text_on_box: WHITE,
+            box_colour: DARK,
+            text_plain: WHITE,
+            accent: WHITE,
+            left: false,
+            outline_factor: 0.07,
+            default_anim: OverlayAnim::None,
+        };
+        match self {
+            Self::HookTop | Self::LowerThird | Self::Plain => base,
+            Self::HookBig => OverlayLook { outline_factor: 0.12, default_anim: OverlayAnim::Pop, ..base },
+            Self::HookBoxYellow => OverlayLook {
+                text_on_box: DARK,
+                box_colour: YELLOW,
+                text_plain: YELLOW,
+                default_anim: OverlayAnim::Slide,
+                ..base
+            },
+            Self::HookOutline => OverlayLook {
+                text_plain: YELLOW,
+                outline_factor: 0.13,
+                default_anim: OverlayAnim::Typewriter,
+                ..base
+            },
+            Self::HookPov => OverlayLook { accent: YELLOW, left: true, default_anim: OverlayAnim::Slide, ..base },
+            Self::HookQuestion => OverlayLook { accent: RED, default_anim: OverlayAnim::ZoomIn, ..base },
+        }
     }
 }
 
@@ -229,6 +354,12 @@ pub struct TextOverlay {
     /// Opaque dark box behind the text (white text either way).
     #[serde(rename = "box", default = "default_true")]
     pub boxed: bool,
+    /// Entry animation; `None` = the style's default (hook presets animate, the others do not).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anim: Option<OverlayAnim>,
+    /// Id of the sound effect (`sfx_<n>` in the clip's `sfx`) added with the hook; removed with it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sfx_id: Option<String>,
 }
 
 impl TextOverlay {
@@ -243,7 +374,14 @@ impl TextOverlay {
             position_y: style.default_position_y(),
             font_size_factor: style.default_font_size_factor(),
             boxed: style.default_box(),
+            anim: None,
+            sfx_id: None,
         }
+    }
+
+    /// The entry animation in effect.
+    pub fn effective_anim(&self) -> OverlayAnim {
+        self.anim.unwrap_or_else(|| self.style.default_anim())
     }
 }
 
@@ -425,6 +563,12 @@ pub enum TransitionKind {
     Wiperight,
     Slideup,
     Zoomin,
+    /// Quick white flash at the cut (`xfade=fadewhite`; default 0.1 s).
+    Flash,
+    /// Quick black flash at the cut (`xfade=fadeblack`; default 0.1 s).
+    Flashblack,
+    /// Fast whip: both shots smear horizontally into the cut (`xfade=hblur`; default 0.2 s).
+    Whip,
 }
 
 impl TransitionKind {
@@ -432,12 +576,23 @@ impl TransitionKind {
     pub fn xfade_name(self) -> Option<&'static str> {
         match self {
             Self::Cut => None,
-            Self::Fade => Some("fadeblack"),
+            Self::Fade | Self::Flashblack => Some("fadeblack"),
             Self::Dissolve => Some("fade"),
             Self::Wipeleft => Some("wipeleft"),
             Self::Wiperight => Some("wiperight"),
             Self::Slideup => Some("slideup"),
             Self::Zoomin => Some("zoomin"),
+            Self::Flash => Some("fadewhite"),
+            Self::Whip => Some("hblur"),
+        }
+    }
+
+    /// Overlap in seconds when `transition.set` is not given a duration.
+    pub fn default_duration(self) -> f64 {
+        match self {
+            Self::Flash | Self::Flashblack => 0.1,
+            Self::Whip => 0.2,
+            _ => 0.3,
         }
     }
 }
@@ -1452,6 +1607,28 @@ pub fn clean_overlay_text(text: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// The text as shown: cleaned, then shaped by the style (hook-big is uppercase, hook-pov starts
+/// with "POV:", hook-question ends with "?").
+pub fn display_text(ov: &TextOverlay) -> String {
+    let t = clean_overlay_text(&ov.text);
+    if t.is_empty() {
+        return t;
+    }
+    match ov.style {
+        OverlayStyle::HookBig => t.to_uppercase(),
+        OverlayStyle::HookPov => {
+            let first = t.split(' ').next().unwrap_or("");
+            if first.to_uppercase().starts_with("POV") {
+                format!("{}{}", &t[..first.len()].to_uppercase(), &t[first.len()..])
+            } else {
+                format!("POV: {t}")
+            }
+        }
+        OverlayStyle::HookQuestion if !t.ends_with('?') => format!("{t}?"),
+        _ => t,
+    }
+}
+
 /// Advance width of `c` in units of the ASS font size (Poppins ExtraBold; ASS font size is the
 /// line height, roughly 1.4 em for Poppins). An approximation on the wide side.
 fn char_width(c: char) -> f64 {
@@ -1500,7 +1677,7 @@ fn wrap_two(words: &[&str], size: f64, max_w: f64) -> Option<Vec<String>> {
 /// 86% of the canvas width; the block is kept inside the canvas.
 pub fn overlay_layout(ov: &TextOverlay, canvas: &Canvas) -> OverlayLayout {
     let (cw, ch) = (canvas.width as f64, canvas.height as f64);
-    let text = clean_overlay_text(&ov.text);
+    let text = display_text(ov);
     let words: Vec<&str> = text.split(' ').filter(|w| !w.is_empty()).collect();
     let base = (cw * ov.font_size_factor).round().max(8.0);
     let pad_of = |size: f64| if ov.boxed { (size * 0.28).round() } else { 0.0 };
@@ -1531,6 +1708,19 @@ pub fn overlay_layout(ov: &TextOverlay, canvas: &Canvas) -> OverlayLayout {
         }
         (size, l)
     });
+    // hook-big is always two lines (three or more words): split a one-line text where it balances.
+    let lines = if ov.style == OverlayStyle::HookBig && lines.len() == 1 && words.len() >= 3 {
+        let best = (1..words.len())
+            .map(|k| (words[..k].join(" "), words[k..].join(" ")))
+            .min_by(|a, b| {
+                let w = |p: &(String, String)| text_width(&p.0, size).max(text_width(&p.1, size));
+                w(a).total_cmp(&w(b))
+            })
+            .expect("at least two split points");
+        vec![best.0, best.1]
+    } else {
+        lines
+    };
     let pad = pad_of(size);
     let height = lines.len() as f64 * size + 2.0 * pad;
     let half = height / 2.0;
@@ -1593,15 +1783,17 @@ pub fn overlays_ass(overlays: &[TextOverlay], canvas: &Canvas, duration: f64) ->
     );
     let layouts: Vec<OverlayLayout> = visible.iter().map(|o| overlay_layout(o, canvas)).collect();
     for (i, (o, l)) in visible.iter().zip(&layouts).enumerate() {
-        let (border_style, outline_colour, outline, shadow) = if o.boxed {
+        let look = o.style.look();
+        let (border_style, fill, outline_colour, outline, shadow) = if o.boxed {
             // BorderStyle 3: the "outline" is an opaque box of OutlineColour, `Outline` px of padding.
-            (3, "&H00141414", l.padding as f64, 0.0)
+            (3, look.text_on_box, look.box_colour, l.padding as f64, 0.0)
         } else {
-            (1, "&H00000000", (l.font_size as f64 * 0.07).round().max(2.0), 2.0)
+            let thick = (l.font_size as f64 * look.outline_factor).round().max(2.0);
+            (1, look.text_plain, "&H00000000", thick, if o.style == OverlayStyle::HookBig { 3.0 } else { 2.0 })
         };
         let _ = writeln!(
             out,
-            "Style: ov{i},{OVERLAY_FONT},{},&H00FFFFFF,&H00FFFFFF,{outline_colour},&H80000000,0,0,0,0,\
+            "Style: ov{i},{OVERLAY_FONT},{},{fill},{fill},{outline_colour},&H80000000,0,0,0,0,\
              100,100,0,0,{border_style},{},{},5,0,0,0,1",
             l.font_size,
             num(outline),
@@ -1610,23 +1802,111 @@ pub fn overlays_ass(overlays: &[TextOverlay], canvas: &Canvas, duration: f64) ->
     }
     out.push_str("\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n");
     for (i, (o, l)) in visible.iter().zip(&layouts).enumerate() {
+        let look = o.style.look();
         let start = o.start.max(0.0);
         let end = o.end.min(duration);
         // No fade-in at t=0: the first frame (thumbnail) shows the hook fully.
         let fade_in = if start > 0.05 { 150 } else { 0 };
         let fade_out = if end < duration - 0.05 { 150 } else { 0 };
-        let cx = canvas.width as f64 / 2.0;
+        let anim = o.effective_anim();
+        let (an, x) = if look.left {
+            (4, (canvas.width as f64 * (1.0 - OVERLAY_MAX_WIDTH) / 2.0 + l.padding as f64).round())
+        } else {
+            (5, (canvas.width as f64 / 2.0).round())
+        };
+        let y = l.center_y.round();
+        let (place, motion) = match anim {
+            OverlayAnim::Slide => {
+                let (x0, y0) = if look.left { (x - canvas.width as f64 * 0.6, y) } else { (x, y - 200.0) };
+                (format!("\\move({},{},{},{},0,260)", num(x0.round()), num(y0.round()), num(x), num(y)), String::new())
+            }
+            OverlayAnim::Pop => (
+                format!("\\pos({},{})", num(x), num(y)),
+                "\\fscx70\\fscy70\\t(0,140,\\fscx112\\fscy112)\\t(140,260,\\fscx100\\fscy100)".to_string(),
+            ),
+            OverlayAnim::ZoomIn => {
+                (format!("\\pos({},{})", num(x), num(y)), "\\fscx140\\fscy140\\t(0,300,\\fscx100\\fscy100)".to_string())
+            }
+            OverlayAnim::None | OverlayAnim::Typewriter => (format!("\\pos({},{})", num(x), num(y)), String::new()),
+        };
+        let fill = if o.boxed { look.text_on_box } else { look.text_plain };
+        let body = overlay_body(o, &l.lines, fill, anim);
         let _ = writeln!(
             out,
-            "Dialogue: {i},{},{},ov{i},,0,0,0,,{{\\an5\\pos({},{})\\fad({fade_in},{fade_out})}}{}",
+            "Dialogue: {i},{},{},ov{i},,0,0,0,,{{\\an{an}{place}\\fad({fade_in},{fade_out}){motion}}}{body}",
             ass_time(start),
             ass_time(end),
-            num(cx.round()),
-            num(l.center_y.round()),
-            l.lines.join("\\N")
         );
     }
     Some(out)
+}
+
+/// ASS text of an overlay's lines: accent runs ("POV:" yellow, the closing "?" big and red) and,
+/// for the typewriter, a per-character reveal. Plain styles give the lines joined with `\N`.
+fn overlay_body(o: &TextOverlay, lines: &[String], fill: &str, anim: OverlayAnim) -> String {
+    let look = o.style.look();
+    // (char, accent) per line.
+    let mut glyphs: Vec<Vec<(char, bool)>> = lines.iter().map(|l| l.chars().map(|c| (c, false)).collect()).collect();
+    match o.style {
+        OverlayStyle::HookPov => {
+            if let Some(first) = glyphs.first_mut() {
+                let head: String = first.iter().take(3).map(|(c, _)| *c).collect();
+                if head == "POV" {
+                    for g in first.iter_mut().take_while(|(c, _)| *c != ' ') {
+                        g.1 = true;
+                    }
+                }
+            }
+        }
+        OverlayStyle::HookQuestion => {
+            if let Some(last) = glyphs.last_mut() {
+                for g in last.iter_mut().rev().take_while(|(c, _)| *c == '?') {
+                    g.1 = true;
+                }
+            }
+        }
+        _ => {}
+    }
+    let has_accent = glyphs.iter().flatten().any(|(_, a)| *a);
+    // A bigger "?" would stretch the box of the line; only unboxed text scales it.
+    let accent_on = if o.style == OverlayStyle::HookQuestion && !o.boxed {
+        format!("\\1c{}&\\fscx135\\fscy135", look.accent)
+    } else {
+        format!("\\1c{}&", look.accent)
+    };
+    let accent_off = format!("\\1c{fill}&\\fscx100\\fscy100");
+    let typed = anim == OverlayAnim::Typewriter;
+    let letters = glyphs.iter().flatten().filter(|(c, _)| *c != ' ').count().max(1);
+    let per_ms = (1200.0 / letters as f64).min(45.0);
+    let (hide, show) = if o.boxed {
+        ("\\1a&HFF&", "\\1a&H00&")
+    } else {
+        ("\\1a&HFF&\\3a&HFF&\\4a&HFF&", "\\1a&H00&\\3a&H00&\\4a&H80&")
+    };
+    let mut out = String::new();
+    let (mut n, mut cur) = (0usize, false);
+    for (li, line) in glyphs.iter().enumerate() {
+        if li > 0 {
+            out.push_str("\\N");
+        }
+        for &(c, accent) in line {
+            let mut tags = String::new();
+            if has_accent && accent != cur {
+                tags.push_str(if accent { &accent_on } else { &accent_off });
+                cur = accent;
+            }
+            if typed && c != ' ' {
+                let t0 = (n as f64 * per_ms).round() as i64;
+                tags.push_str(&format!("{hide}\\t({t0},{},{show})", t0 + 1));
+                n += 1;
+            }
+            if !tags.is_empty() {
+                out.push_str(&format!("{{{tags}}}"));
+            }
+            out.push(c);
+        }
+    }
+    out
 }
 
 struct Px {

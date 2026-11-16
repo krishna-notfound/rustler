@@ -12,6 +12,7 @@ pub enum ActiveKind {
     Recolor,
     Box,
     Pop,
+    Static,
 }
 
 impl From<ActiveKind> for ActiveStyle {
@@ -20,6 +21,7 @@ impl From<ActiveKind> for ActiveStyle {
             ActiveKind::Recolor => ActiveStyle::Recolor,
             ActiveKind::Box => ActiveStyle::Box,
             ActiveKind::Pop => ActiveStyle::Pop,
+            ActiveKind::Static => ActiveStyle::Static,
         }
     }
 }
@@ -30,6 +32,7 @@ impl From<ActiveStyle> for ActiveKind {
             ActiveStyle::Recolor => ActiveKind::Recolor,
             ActiveStyle::Box => ActiveKind::Box,
             ActiveStyle::Pop => ActiveKind::Pop,
+            ActiveStyle::Static => ActiveKind::Static,
         }
     }
 }
@@ -62,6 +65,9 @@ pub struct CustomStyle {
     pub active_colour: String,
     #[serde(default)]
     pub box_padding: f64,
+    /// Size factor for words that carry their own colour (keywords); 0 = off.
+    #[serde(default)]
+    pub keyword_scale: f64,
 }
 
 /// `#RRGGBB` / `#RRGGBBAA` (leading `#` optional) to ASS `0xAABBGGRR`.
@@ -117,6 +123,7 @@ impl CustomStyle {
             ("shadow", self.shadow, 20.0),
             ("blur", self.blur, 10.0),
             ("box_padding", self.box_padding, 60.0),
+            ("keyword_scale", self.keyword_scale, 3.0),
         ] {
             if !(0.0..=max).contains(&v) {
                 return Err(format!("{label} {v} must be between 0 and {max}"));
@@ -139,6 +146,7 @@ impl CustomStyle {
             active_colour: col("active_colour", &self.active_colour)?,
             box_padding: self.box_padding,
             active: self.active_kind.into(),
+            keyword_scale: self.keyword_scale,
         })
     }
 
@@ -161,6 +169,7 @@ impl CustomStyle {
             active_kind: p.active.into(),
             active_colour: hex_colour(p.active_colour),
             box_padding: p.box_padding,
+            keyword_scale: p.keyword_scale,
         }
     }
 }

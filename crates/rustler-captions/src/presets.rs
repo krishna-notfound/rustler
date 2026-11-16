@@ -4,7 +4,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Names of the built-in presets (same order as [`PRESET_TABLE`]).
-pub const PRESETS: &[&str] = &["bold-karaoke", "clean-white", "boxed-highlight", "hormozi-pop"];
+pub const PRESETS: &[&str] =
+    &["bold-karaoke", "clean-white", "boxed-highlight", "hormozi-pop", "emoji-karaoke", "keyword-highlight"];
 
 /// How the currently spoken word is emphasised.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -15,6 +16,9 @@ pub enum ActiveStyle {
     Box,
     /// Active word gets another colour plus a short scale pop on its own layer (layer 1).
     Pop,
+    /// No active-word highlight: each chunk is shown as one static line (keyword words keep the
+    /// colour and size set per word with `caption.word` / `caption.keywords`).
+    Static,
 }
 
 /// One preset. Colours are `0xAABBGGRR` (ASS order: alpha, blue, green, red; alpha 0 = opaque).
@@ -40,6 +44,9 @@ pub struct Preset {
     /// Box padding in px (only used by [`ActiveStyle::Box`]).
     pub box_padding: f64,
     pub active: ActiveStyle,
+    /// Size factor given to a word that has its own colour (marked keyword) when it has no
+    /// explicit size (0 = off). Used by `keyword-highlight` (1.15).
+    pub keyword_scale: f64,
 }
 
 pub const PRESET_TABLE: &[Preset] = &[
@@ -59,6 +66,7 @@ pub const PRESET_TABLE: &[Preset] = &[
         active_colour: 0x0000_E0FF, // #FFE000
         box_padding: 0.0,
         active: ActiveStyle::Recolor,
+        keyword_scale: 0.0,
     },
     Preset {
         name: "clean-white",
@@ -76,6 +84,7 @@ pub const PRESET_TABLE: &[Preset] = &[
         active_colour: 0x0000_D7FF, // #FFD700
         box_padding: 0.0,
         active: ActiveStyle::Recolor,
+        keyword_scale: 0.0,
     },
     Preset {
         name: "boxed-highlight",
@@ -93,6 +102,7 @@ pub const PRESET_TABLE: &[Preset] = &[
         active_colour: 0x00FF_2C7B, // box #7B2CFF
         box_padding: 12.0,
         active: ActiveStyle::Box,
+        keyword_scale: 0.0,
     },
     Preset {
         name: "hormozi-pop",
@@ -110,6 +120,43 @@ pub const PRESET_TABLE: &[Preset] = &[
         active_colour: 0x005E_FF2B, // #2BFF5E
         box_padding: 0.0,
         active: ActiveStyle::Pop,
+        keyword_scale: 0.0,
+    },
+    Preset {
+        name: "emoji-karaoke",
+        description: "Poppins ExtraBold white text, the spoken word turns pink; emoji set per word (`caption word --emoji`) follow their word. Emoji are drawn when an emoji font is installed, else dropped with a warning.",
+        font_family: "Poppins ExtraBold",
+        size_factor: 0.090,
+        primary: 0x00FF_FFFF,
+        outline_colour: 0x0000_0000,
+        back_colour: 0x8000_0000,
+        outline: 5.0,
+        shadow: 2.0,
+        blur: 0.0,
+        bold: false,
+        uppercase: false,
+        active_colour: 0x00A6_4DFF, // #FF4DA6
+        box_padding: 0.0,
+        active: ActiveStyle::Recolor,
+        keyword_scale: 0.0,
+    },
+    Preset {
+        name: "keyword-highlight",
+        description: "Poppins ExtraBold white text, plain; only the keywords (words with their own colour, e.g. from `caption keywords`) stand out in colour and 1.15x size.",
+        font_family: "Poppins ExtraBold",
+        size_factor: 0.090,
+        primary: 0x00FF_FFFF,
+        outline_colour: 0x0000_0000,
+        back_colour: 0x8000_0000,
+        outline: 5.0,
+        shadow: 2.0,
+        blur: 0.0,
+        bold: false,
+        uppercase: false,
+        active_colour: 0x0000_E0FF, // #FFE000: default keyword colour
+        box_padding: 0.0,
+        active: ActiveStyle::Static,
+        keyword_scale: 1.15,
     },
 ];
 

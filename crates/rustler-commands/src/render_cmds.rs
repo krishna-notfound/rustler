@@ -131,7 +131,9 @@ async fn prepare(
         warnings.extend(w);
         let colors = crate::speaker_cmds::word_colors_for_clip(store, clip, &words, &mut warnings)?;
         // Word overrides (keyword colour/size, emoji, hidden words) on the edit timeline.
-        let (words, colors, paints) = crate::layer_cmds::apply_word_overrides(store, clip, words, colors, &mut warnings)?;
+        let (mut words, colors, paints) = crate::layer_cmds::apply_word_overrides(store, clip, words, colors, &mut warnings)?;
+        // Emoji are drawn only when an emoji font is installed; otherwise left out with a warning.
+        crate::keyword_cmds::drop_emoji_without_font(paths, store, &mut words, &mut warnings);
         // Captions follow the picture through transitions (edit -> rendered timeline).
         let tmap = fx_cmds::transition_map(store, clip)?;
         let (words, colors, paints) = match paints {
