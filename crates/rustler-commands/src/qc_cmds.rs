@@ -673,6 +673,7 @@ async fn export_clip(ctx: Ctx, input: ExportInput) -> rustler_core::Result<Expor
             "render": render,
             "qc": qc,
             "brief": crate::brief_cmds::brief_status(&store, &clip.id),
+            "score": crate::director_cmds::report_score(&store, &clip.id),
             "source_refs": source_refs,
             "created_at": Utc::now(),
         }),

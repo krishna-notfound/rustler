@@ -6,6 +6,7 @@ pub mod audio_cmds;
 pub mod brief_cmds;
 pub mod clip_cmds;
 pub mod cut_cmds;
+pub mod director_cmds;
 pub mod edit_cmds;
 pub mod extras;
 pub mod fix_cmds;
@@ -52,6 +53,7 @@ pub fn register_all(reg: &mut Registry) {
     layout_cmds::register(reg);
     highlights_cmds::register(reg);
     brief_cmds::register(reg);
+    director_cmds::register(reg);
     variant_cmds::register(reg);
     asset_cmds::register(reg);
     speaker_cmds::register(reg);
