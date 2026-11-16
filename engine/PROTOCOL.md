@@ -180,3 +180,24 @@ Line-delimited JSON-RPC 2.0 over the worker's stdin/stdout. Start with
     reports `rect_source: "edges" | "expansion"`).
   - Errors: `validation` (missing/invalid `near`, `times`, paths), `media` (cannot decode/open, no readable
     frame). Progress: `stage: "overlay.find_box"`.
+- `faces.active {"video_path", "start": 0.0, "end": null|float, "fps": 5.0, "motion": true, "scan": false, "stats_every": 2, "model_path"?}`
+  -> `{"width", "height", "fps", "samples": [{"t", "faces": [{"x","y","w","h","score","lm","mouth"?,"track"}], "g"?: {"flat","edges","x_lo","x_hi"}}], "tracks": [{"id","samples","mean_x","mean_w","mouth_p20"?,"mouth_p80"?}], "peaks"?: [{"t","diff","base"}], "frames"?}`
+  - Lite install only (OpenCV + YuNet; no SFace, no diarization). One sequential pass over `start..end` (one seek),
+    frames analysed at up to 960 px wide; `fps` in (0, 15]; `t` = start + i / fps (source time). Used by
+    `crop.track_active`, `layout.plan` and the smart defaults of `clip.create`.
+  - Faces: YuNet boxes and the five landmarks `lm` (as in `faces.track`), largest first.
+  - `mouth` (when `motion`): three frames about 0.05 s apart (a burst never delays the next sample; at low
+    frame rates the next sample's frame closes the burst). Mean absolute grey difference inside a mouth box
+    placed from the two mouth-corner landmarks (±0.8 mouth widths across, -0.45..+0.75 down), minus the same
+    measure in an eye band of the same face (head motion, codec noise), divided by the mouth box's grey-level
+    std (floor 8) so dark and bright footage compare; clipped at 0, averaged over the burst.
+  - `track`: positional track = one face in one shot (greedy, largest face first: nearest centre within 0.15
+    of the frame width, width ratio <= 1.7, seen within 1.5 s); no identity across cuts.
+  - `scan: true`: every decoded frame is reduced to a 64x36 luma-normalised thumbnail (zero mean, std floored
+    at 6 grey levels, so a cut between two dark shots is as visible as a bright one); the frame-to-frame
+    difference (half histogram distance, half 8x4 grid distance, 0..1) gives `peaks`: local maxima (±3 frames)
+    >= 0.12 with `base` = median difference within ±1 s. The caller decides what is a cut (Rustler: diff >= 0.3
+    and >= 2.5 x base + 0.08). Every `stats_every`-th sample also gets `g`: share of flat 8x8 blocks (std < 3),
+    Canny edge density and the 5 %/95 % horizontal extent of the edges (`x_lo`, `x_hi`), on a 320 px-wide frame.
+  - Errors: `validation` (missing params, video not found, bad range or flags), `media` (cannot open video,
+    cannot load the YuNet model). Progress: `stage: "faces.active"`.
