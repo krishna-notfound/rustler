@@ -1,0 +1,17 @@
+# English filler words removed by the smart defaults of `clip create` (conservative).
+# One entry per line; matching ignores case and punctuation ("Um," matches "um").
+#   word        removed wherever it is a whole transcript word
+#   ~ phrase    removed only when it stands alone between pauses (>= 0.3 s of silence before and
+#               after, or a clip edge), because these words are often meaningful in a sentence
+# Agents remove other words with `rustler edit remove-words`.
+um
+uh
+umm
+uhh
+uhm
+hmm
+hm
+erm
+ah
+~ you know
+~ like

@@ -29,8 +29,10 @@ pub mod reference_cmds;
 pub mod render_cmds;
 pub mod see_cmds;
 pub mod setup_cmds;
+pub mod smart_cmds;
 pub mod source_cmds;
 pub mod speaker_cmds;
+pub mod template_cmds;
 pub mod timeline_cmds;
 pub mod timeline_doc;
 pub mod timeline_edit_cmds;
@@ -70,6 +72,7 @@ pub fn register_all(reg: &mut Registry) {
     variant_cmds::register(reg);
     asset_cmds::register(reg);
     speaker_cmds::register(reg);
+    smart_cmds::register(reg);
     config_cmds::register(reg);
     campaign_cmds::register(reg);
     post_cmds::register(reg);
@@ -78,4 +81,5 @@ pub fn register_all(reg: &mut Registry) {
     cover_cmds::register(reg);
     timeline_cmds::register(reg);
     timeline_edit_cmds::register(reg);
+    template_cmds::register(reg);
 }
