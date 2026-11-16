@@ -491,3 +491,33 @@ Not started (stopped right at launch, nothing saved): **timeline doc + timeline 
 Resume order: finish cards + references → merge; launch timeline + smart defaults; then templates (Opus, needs the
 timeline doc), hooks/captions presets, cleanup/cover; then knowledge refresh, `clips.auto`, release v0.2.0 + trial.
 Before releasing: run `rustler setup run` with the new build so the engine has the landmark output (look-room).
+
+### 2026-11-17 — Timeline v2 document + timeline edit commands (f33, branch `worktree-agent-ae7f9cafc65fc59fc`)
+- `rustler.timeline@2` (`rustler_core::Timeline`, item types in `rustler_core::timeline`): every extras key maps 1:1
+  (`overlays` -> `tracks.text`, `crop_paths`/`segment_speed` -> `tracks.video[].crop_path/speed`, `audio_fx`/`music`/
+  `sfx` -> `tracks.audio`, `caption_word_overrides`/`speaker_colors` -> `tracks.captions`, `meta`/`post`/`variant_*`
+  -> `meta`, ...); unknown keys kept in `tracks.extra`, unknown item fields in each item's `extra`.
+- `timeline_doc` (assemble / disassemble / validate / resolve / diff / content-following re-cut helpers);
+  commands `timeline.show` (document + resolved edit and rendered times + revision), `timeline.schema`,
+  `timeline.apply` (JSON-Patch or document, base_revision -> `revision_conflict`, errors listed by JSON path,
+  dry run, human-readable `changes`). History now snapshots extras.json too (`history/<rev>.extras.json`):
+  `history undo/restore` bring back every layer (edits saved without a snapshot warn).
+- New commands: `edit.insert_segment`, `edit.cold_open` (hook range first, cut out of where it was, flash effect at
+  the cut), `clip.merge` (all layers, times shifted, anchors kept, transition between clips), `clip.duplicate`,
+  `edit.speed` (0.5-2.0, `setpts`+`atempo`), `edit.freeze` (`loop` + silence). Registry: +9 commands.
+- `TransitionMap::with_retime` (compile.rs): edit time -> speeds/freezes -> transitions. `fx_cmds::transition_map`
+  and `apply_to_compile` read speeds and freezes, so captions, layers, preview frames, QC `duration`, retention and
+  `render.run` use the effective duration.
+- Tests: core `timeline` 4, commands `timeline` 9 + `timeline_edit` 8 (incl. real render: cold open + speed 1.5 +
+  freeze 0.6 + dissolve, QC duration pass, frozen frames identical); `cargo test -p rustler-media -p rustler-core
+  -p rustler-commands` all green on the branch.
+- Real check (temp copy of rustler-real1): all 5 clips assemble and dry-run-apply clean. duplicate ten-vs-three ->
+  cold open on unit 5 ("You're as good as you can communicate") -> merge with free-vs-three (dissolve 0.25) ->
+  speed 1.1 on one segment -> freeze 0.5 s at the hook cut. Draft render 60.79 s vs effective 60.77 s, QC duration
+  pass. Frames looked at: hook first with its title, white flash over the frozen frame, clip restarts at "think
+  about", second clip's hook title appears right after the merge point, crop paths intact.
+- Found on real data and fixed: crop-path keys before the segment start are normal (kept for undo), validation no
+  longer rejects them; `clip merge` takes clip ids as positionals; a cold open now keeps a hook-top title that opened
+  the clip at the start (it used to follow its words to after the hook).
+- Not done / open: v1 layer commands (overlay/image/mask/...) still write extras without a revision bump, so undo
+  takes them together with the previous revision; `cut_cmds` (edit refine) saves without an extras snapshot.
