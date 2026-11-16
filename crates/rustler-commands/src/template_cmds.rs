@@ -1776,12 +1776,13 @@ struct ShotInfo {
 /// Shot class from a smart-defaults layout decision (`why` is the shot classifier's reason).
 fn class_from_decision(what: &str, why: &str) -> Option<(ShotClass, bool)> {
     let zoom = what.starts_with("zoom-fit");
+    // Merged shots read "<a>; then <b>" and are multi-face when any part is (active speaker).
     let class = if why.starts_with("graphics") {
         ShotClass::Graphics
-    } else if why.starts_with("one face") {
-        ShotClass::OneFace
     } else if why.contains("active speaker") {
         ShotClass::MultiFace
+    } else if why.starts_with("one face") {
+        ShotClass::OneFace
     } else if why.starts_with("faces in only") || why.starts_with("no frames") {
         ShotClass::NoFace
     } else {
@@ -1798,16 +1799,28 @@ fn shot_infos(store: &ProjectStore, t: &Timeline) -> HashMap<String, ShotInfo> {
         t.tracks.extra.get(SMART_KEY).and_then(|v| v.get("decisions")).and_then(Value::as_array).map(|a| a.iter().collect()).unwrap_or_default();
     let mut faces: HashMap<String, Option<FacesResult>> = HashMap::new();
     let mut out = HashMap::new();
+    // Later edits (split, trim, cold open) give segments new ids; decisions do not name their
+    // source, so they are matched by source time only when the whole clip is one source.
+    let one_source = t.tracks.video.windows(2).all(|w| w[0].source_id == w[1].source_id);
+    let class_of = |d: &&Value| class_from_decision(d.get("what").and_then(Value::as_str).unwrap_or(""), d.get("why").and_then(Value::as_str).unwrap_or(""));
+    let layout_decs: Vec<&&Value> = decisions.iter().filter(|d| d.get("kind").and_then(Value::as_str) == Some("layout")).collect();
     for v in &t.tracks.video {
         let id = v.id.as_str();
-        let dec = decisions.iter().find_map(|d| {
-            let hit = d.get("kind").and_then(Value::as_str) == Some("layout")
-                && d.get("segment_ids").and_then(Value::as_array).is_some_and(|ids| ids.iter().any(|x| x.as_str() == Some(id)));
-            if !hit {
-                return None;
-            }
-            class_from_decision(d.get("what").and_then(Value::as_str).unwrap_or(""), d.get("why").and_then(Value::as_str).unwrap_or(""))
-        });
+        let by_id = layout_decs
+            .iter()
+            .find(|d| d.get("segment_ids").and_then(Value::as_array).is_some_and(|ids| ids.iter().any(|x| x.as_str() == Some(id))))
+            .and_then(|d| class_of(d));
+        let by_span = || {
+            let mid = (v.src_in + v.src_out) / 2.0;
+            layout_decs
+                .iter()
+                .find(|d| {
+                    let num = |k: &str| d.get(k).and_then(Value::as_f64);
+                    matches!((num("source_start"), num("source_end")), (Some(a), Some(b)) if mid >= a && mid < b)
+                })
+                .and_then(|d| class_of(d))
+        };
+        let dec = by_id.or_else(|| if one_source { by_span() } else { None });
         let f = faces.entry(v.source_id.as_str().to_string()).or_insert_with(|| {
             let rel = Path::new("analysis").join(v.source_id.as_str()).join("faces.json");
             store.resolve(&rel).is_file().then(|| store.read_json::<FacesResult>(&rel).ok()).flatten()
@@ -1864,8 +1877,8 @@ fn track_cmd(clip: &ClipId, seg: &str, track: RuleTrack, look_room: bool) -> Opt
     let lr = if look_room { "" } else { " --look-room false" };
     match track {
         RuleTrack::Face => Some(format!("rustler crop track-face {clip} --segment-id {seg}{lr}")),
-        RuleTrack::Active => Some(format!("rustler crop track-active {clip} --segment-id {seg}")),
-        RuleTrack::Speaker => Some(format!("rustler crop track-speaker {clip} --segment-id {seg}")),
+        RuleTrack::Active => Some(format!("rustler crop track-active {clip} --segment-id {seg}{lr}")),
+        RuleTrack::Speaker => Some(format!("rustler crop track-speaker {clip} --segment-id {seg}{lr}")),
         RuleTrack::None => None,
     }
 }
@@ -1910,7 +1923,7 @@ fn pick_keywords(words: &[crate::keyword_cmds::ClipWord], words_per_line: u32, p
 /// Edit-timeline stretches longer than `after` s without a visual change (cuts, layout changes,
 /// transitions, text / image / cutaway starts and ends, freezes, flashes; zoom effects count as
 /// motion), like the retention map's static dead zones.
-fn weak_zones(input: &rustler_media::punchin::PunchInput, after: f64) -> Vec<(f64, f64)> {
+fn weak_zones(input: &rustler_media::punchin::PunchInput, after: f64, covered: &[(f64, f64)]) -> Vec<(f64, f64)> {
     use rustler_media::retention::{VisualChange, merge_change_times};
     let d = input.duration;
     let mut changes: Vec<VisualChange> =
@@ -1926,7 +1939,7 @@ fn weak_zones(input: &rustler_media::punchin::PunchInput, after: f64) -> Vec<(f6
     for w in bounds.windows(2) {
         // Zoom effects are motion: subtract their spans.
         let mut parts = vec![(w[0], w[1])];
-        for &(s, e) in &input.existing {
+        for &(s, e) in input.existing.iter().chain(covered) {
             parts = parts.into_iter().flat_map(|(a, b)| if e <= a || s >= b { vec![(a, b)] } else { vec![(a, s.max(a)), (e.min(b), b)] }).filter(|(a, b)| b > a).collect();
         }
         out.extend(parts.into_iter().filter(|(a, b)| b - a > after));
@@ -2007,6 +2020,15 @@ fn tagged_assets<'a>(rows: &'a [asset_cmds::AssetRow], kind: AssetKind, tag: &st
     v.sort_by(|a, b| a.entry.id.cmp(&b.entry.id));
     v.dedup_by(|a, b| a.entry.id == b.entry.id);
     v
+}
+
+/// A centred-right / centred box of `w` x `h` that keeps clear of the caption band at `cap_y`:
+/// just above it when the captions sit low, just below when they sit high.
+fn default_box(cap_y: f64, w: f64, h: f64) -> Rect {
+    const BAND: f64 = 0.09;
+    let y = if cap_y >= 0.5 { (cap_y - BAND - h).max(0.05) } else { (cap_y + BAND).min(0.95 - h) };
+    let x = if w >= 0.7 { (1.0 - w) / 2.0 } else { 0.96 - w };
+    Rect { x: (x * 1000.0).round() / 1000.0, y: (y * 1000.0).round() / 1000.0, w, h }
 }
 
 /// Stable index for `key` among `n` choices (the same clip gets the same pick on re-apply).
@@ -2376,7 +2398,7 @@ pub fn build(ctx: &Ctx, store: &ProjectStore, tpl: &Template, paths: &HashMap<St
             if end - start < 0.5 {
                 w.push(format!("brand cta_card at {start:.2}s does not fit in the clip ({dur:.2}s); skipped"));
             } else {
-                let rect = c.rect.unwrap_or(Rect { x: 0.1, y: 0.58, w: 0.8, h: 0.16 });
+                let rect = c.rect.unwrap_or_else(|| default_box(t.tracks.captions.settings.position_y, 0.8, 0.12));
                 items.push(("brand_cta", &c.asset, rect, 1.0, Some(start), Some(end), true, 8));
             }
         }
@@ -2556,7 +2578,16 @@ pub fn build(ctx: &Ctx, store: &ProjectStore, tpl: &Template, paths: &HashMap<St
         t.tracks.effects.retain(|x| !tagged(&x.extra, "weak_punch"));
         t.tracks.cutaways.retain(|x| !tagged(&x.extra, "cutaway"));
         let (mut input, pw) = timeline_doc::punch_input(store, &t);
-        let zones = weak_zones(&input, cr.on_weak_visual_after_s);
+        // The hook and the brand CTA / outro cards stay visible: no cutaway or zoom over them.
+        let covered: Vec<(f64, f64)> = t
+            .tracks
+            .text
+            .iter()
+            .filter(|x| x.style.is_hook())
+            .map(|x| (x.start, x.end))
+            .chain(t.tracks.images.iter().filter(|x| tagged(&x.extra, "brand_cta") || tagged(&x.extra, "brand_outro")).map(|x| (x.timing.out_start.unwrap_or(0.0), x.timing.out_end.unwrap_or(dur))))
+            .collect();
+        let zones = weak_zones(&input, cr.on_weak_visual_after_s, &covered);
         match cr.kind {
             CutawayKind::PunchIn => {
                 w.extend(pw.into_iter().filter(|x| !x.contains("no transcript")));
@@ -2596,6 +2627,7 @@ pub fn build(ctx: &Ctx, store: &ProjectStore, tpl: &Template, paths: &HashMap<St
                     ));
                 } else {
                     let first = stable_pick(&clip_key, c.len());
+                    let cap_y = t.tracks.captions.settings.position_y;
                     for (k, &(s, e)) in zones.iter().enumerate() {
                         let len = cr.duration.min(e - s - 0.2);
                         if len < 0.5 {
@@ -2610,7 +2642,7 @@ pub fn build(ctx: &Ctx, store: &ProjectStore, tpl: &Template, paths: &HashMap<St
                             timing: ItemTiming { out_start: Some(start), out_end: Some(((start + len) * 100.0).round() / 100.0), start_word: None, end_word: None },
                             media: CutawayMedia { source_id: None, asset: Some(r.entry.id.clone()), file: r.file.clone(), in_: 0.0, extra: Map::new() },
                             mode,
-                            rect: (mode == CutawayMode::Pip).then(|| cr.rect.unwrap_or(Rect { x: 0.52, y: 0.56, w: 0.44, h: 0.25 })),
+                            rect: (mode == CutawayMode::Pip).then(|| cr.rect.unwrap_or_else(|| default_box(cap_y, 0.44, 0.25))),
                             fit: Fit::Cover,
                             mute: true,
                             extra: tag_map(&tag, "cutaway"),
@@ -3599,6 +3631,8 @@ mod tests {
         assert_eq!(class_from_decision("zoom-fit for source 1-2 s", "graphics (flat 70%, edges 1.2%), faces in 0% of samples; content box ..."), Some((ShotClass::Graphics, true)));
         assert_eq!(class_from_decision("zoom-fit for source", "faces in only 10% of samples; content box x"), Some((ShotClass::NoFace, true)));
         assert_eq!(class_from_decision("blur-fit", "something else"), None);
+        let merged = "one face in 100% of samples -> center-crop + smooth track; then 2 faces in 90% of samples -> center-crop + active speaker";
+        assert_eq!(class_from_decision("center-crop", merged), Some((ShotClass::MultiFace, false)));
         let s = ShotInfo { class: ShotClass::NoFace, face_x: None, zoom_fit: true };
         assert!(shot_matches(ShotWhen::Screen, &s) && shot_matches(ShotWhen::NoFace, &s) && !shot_matches(ShotWhen::Graphics, &s));
         let g = ShotInfo { class: ShotClass::Graphics, face_x: None, zoom_fit: false };

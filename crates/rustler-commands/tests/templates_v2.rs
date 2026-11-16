@@ -127,6 +127,16 @@ async fn layout_rules_apply_per_shot_capture_and_validate() {
     let r = f.apply("rules", &b).await;
     assert!(warnings(&r).contains("no face / shot data"), "{r}");
     assert_eq!(f.doc(&b).await["tracks"]["video"][0]["layout"], before);
+    // Smart-defaults decisions whose segment ids an edit replaced still count, by source time
+    // (one-source clip): a graphics shot matches no_face -> blur-fit.
+    let xp = f.store.root.join("clips").join(&b).join("extras.json");
+    let mut x: Value = serde_json::from_slice(&std::fs::read(&xp).unwrap_or_else(|_| b"{}".to_vec())).unwrap();
+    x["smart_defaults"] = json!({"applied": true, "steps": [], "turn_off": "", "decisions": [{"kind": "layout", "segment_ids": ["seg_gone"], "source_start": 0.0, "source_end": 12.0,
+        "what": "blur-fit for source 0.00-12.00 s", "why": "graphics (flat 71%, edges 5.0%), faces in 100% of samples -> blur-fit"}]});
+    std::fs::write(&xp, serde_json::to_vec(&x).unwrap()).unwrap();
+    let r = f.apply("rules", &b).await;
+    assert!(!warnings(&r).contains("no face / shot data"), "{r}");
+    assert_eq!(f.doc(&b).await["tracks"]["video"][0]["layout"]["preset"], "blur-fit");
 
     // Validation.
     invalid(&f, "bad1", json!({"layout_rules": [{"when": "faces=1", "layout": "blur-fit", "track": "face"}]}), "/layout_rules/0/track").await;
