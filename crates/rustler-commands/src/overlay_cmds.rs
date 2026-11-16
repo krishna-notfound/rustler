@@ -247,6 +247,7 @@ async fn hook_sfx(ctx: &Ctx, stage: &str, spec: &str, at: f64, volume_db: Option
         at: Some(at),
         at_word: None,
         volume_db,
+        extra: Default::default(),
     })
 }
 

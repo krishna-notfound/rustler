@@ -364,6 +364,10 @@ pub struct TextOverlay {
     /// Id of the sound effect (`sfx_<n>` in the clip's `sfx`) added with the hook; removed with it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sfx_id: Option<String>,
+    /// Fields this build does not know (e.g. a template's `by_template` tag), kept on save.
+    #[serde(flatten)]
+    #[schemars(skip)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl TextOverlay {
@@ -380,6 +384,7 @@ impl TextOverlay {
             boxed: style.default_box(),
             anim: None,
             sfx_id: None,
+            extra: Default::default(),
         }
     }
 

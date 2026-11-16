@@ -77,6 +77,20 @@ async fn hook_styles_list_and_add_text_with_style_animation_and_whoosh() {
     call(&reg, &ctx, "overlay.edit", json!({"clip_id": id, "overlay_id": "ovl_1", "style": "hook-big"})).await.unwrap();
     assert!(extras_json(&store, &id)["overlays"][0].get("anim").is_none(), "new style = its default animation");
 
+    // Tags this build does not model (a template's `by_template`) survive overlay/sfx edits, and the
+    // timeline document reads the new hook styles.
+    let xp = store.root.join("clips").join(&id).join("extras.json");
+    let mut x = extras_json(&store, &id);
+    x["overlays"][0]["by_template"] = json!("podcast-viral@1");
+    x["sfx"][0]["by_template"] = json!("podcast-viral@1");
+    std::fs::write(&xp, serde_json::to_vec(&x).unwrap()).unwrap();
+    call(&reg, &ctx, "overlay.edit", json!({"clip_id": id, "overlay_id": "ovl_1", "start": 0.5})).await.unwrap();
+    let x = extras_json(&store, &id);
+    assert_eq!(x["overlays"][0]["by_template"], "podcast-viral@1", "{x}");
+    assert_eq!(x["sfx"][0]["by_template"], "podcast-viral@1", "{x}");
+    let tl = call(&reg, &ctx, "timeline.show", json!({"clip_id": id})).await.unwrap();
+    assert_eq!(tl["document"]["tracks"]["text"][0]["style"], "hook-big", "{}", tl["document"]["tracks"]["text"]);
+
     // Removing the hook removes its whoosh.
     call(&reg, &ctx, "overlay.remove", json!({"clip_id": id, "overlay_id": "ovl_1"})).await.unwrap();
     let x = extras_json(&store, &id);

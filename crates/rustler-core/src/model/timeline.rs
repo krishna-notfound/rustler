@@ -345,6 +345,33 @@ pub enum TextStyle {
     HookTop,
     LowerThird,
     Plain,
+    /// Viral hook styles (`overlay hook-styles`).
+    HookBig,
+    HookBoxYellow,
+    HookOutline,
+    HookPov,
+    HookQuestion,
+}
+
+impl TextStyle {
+    /// The style's wire name (`hook-top`, `hook-big`, ...).
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::HookTop => "hook-top",
+            Self::LowerThird => "lower-third",
+            Self::Plain => "plain",
+            Self::HookBig => "hook-big",
+            Self::HookBoxYellow => "hook-box-yellow",
+            Self::HookOutline => "hook-outline",
+            Self::HookPov => "hook-pov",
+            Self::HookQuestion => "hook-question",
+        }
+    }
+
+    /// True for hook titles (`hook-top` and the viral hook styles).
+    pub fn is_hook(self) -> bool {
+        !matches!(self, Self::LowerThird | Self::Plain)
+    }
 }
 
 fn text_y() -> f64 {

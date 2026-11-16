@@ -354,7 +354,7 @@ async fn cold_open(ctx: Ctx, i: ColdOpenIn) -> Result<TimelineEditOut> {
     // A hook title that opened the clip keeps opening it (it belongs to the start, not to the
     // words it happened to sit on).
     for (old, t) in cur.tracks.text.iter().zip(new.tracks.text.iter_mut()) {
-        if old.id == t.id && old.style == rustler_core::timeline::TextStyle::HookTop && old.start < 0.05 {
+        if old.id == t.id && old.style.is_hook() && old.start < 0.05 {
             t.start = old.start;
             t.end = old.end;
         }

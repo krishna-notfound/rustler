@@ -949,8 +949,8 @@ pub fn capture(ctx: &Ctx, store: &ProjectStore, doc: &Timeline, name: &str, incl
         }
     }
 
-    // Hook: the first hook-top text item.
-    let hook_item = tr.text.iter().find(|x| x.style == TextStyle::HookTop);
+    // Hook: the first hook title (hook-top or a viral hook style).
+    let hook_item = tr.text.iter().find(|x| x.style.is_hook());
     let hook = hook_item.map(|h| TplHook {
         position_y: Some(h.position_y),
         font_size_factor: Some(h.font_size_factor),
@@ -963,12 +963,8 @@ pub fn capture(ctx: &Ctx, store: &ProjectStore, doc: &Timeline, name: &str, incl
     let mut text_styles = BTreeMap::new();
     let mut texts = Vec::new();
     for x in tr.text.iter().filter(|x| Some(*x) != hook_item) {
-        let key = match x.style {
-            TextStyle::LowerThird => "lower-third",
-            TextStyle::Plain => "plain",
-            TextStyle::HookTop => "hook-top",
-        };
-        if key != "hook-top" && !text_styles.contains_key(key) {
+        let key = x.style.name();
+        if !x.style.is_hook() && !text_styles.contains_key(key) {
             text_styles.insert(key.to_string(), TextLook { position_y: Some(x.position_y), font_size_factor: Some(x.font_size_factor), boxed: Some(x.boxed) });
         }
         if include_text {
@@ -1351,10 +1347,12 @@ pub fn build(ctx: &Ctx, store: &ProjectStore, tpl: &Template, paths: &HashMap<St
                     }
                 }
             }
+            // A viral hook style keeps its own look (box) and is never made smaller.
+            let viral = x.style != TextStyle::HookTop;
             if let Some(f) = h.font_size_factor {
-                x.font_size_factor = f;
+                x.font_size_factor = if viral { f.max(x.font_size_factor) } else { f };
             }
-            if let Some(b) = h.boxed {
+            if let Some(b) = h.boxed.filter(|_| !viral) {
                 x.boxed = b;
             }
             if let Some(d) = h.duration {
@@ -1362,7 +1360,7 @@ pub fn build(ctx: &Ctx, store: &ProjectStore, tpl: &Template, paths: &HashMap<St
             }
         };
         let mut n = 0;
-        for x in t.tracks.text.iter_mut().filter(|x| x.style == TextStyle::HookTop) {
+        for x in t.tracks.text.iter_mut().filter(|x| x.style.is_hook()) {
             restyle(x);
             n += 1;
             if let Some(m) = h.max_words {
@@ -1428,9 +1426,9 @@ pub fn build(ctx: &Ctx, store: &ProjectStore, tpl: &Template, paths: &HashMap<St
                 end: x.end.min(dur),
                 style: x.style,
                 position_y: x.position_y.unwrap_or(match x.style {
-                    TextStyle::HookTop => 0.12,
                     TextStyle::LowerThird => 0.80,
                     TextStyle::Plain => 0.50,
+                    _ => 0.12,
                 }),
                 font_size_factor: x.font_size_factor.unwrap_or(0.065),
                 boxed: x.boxed.unwrap_or(x.style != TextStyle::Plain),

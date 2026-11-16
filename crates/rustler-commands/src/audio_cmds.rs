@@ -77,6 +77,10 @@ pub struct SfxEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at_word: Option<WordAnchor>,
     pub volume_db: f64,
+    /// Fields this build does not know (e.g. a template's `by_template` tag), kept on save.
+    #[serde(flatten)]
+    #[schemars(skip)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -443,6 +447,7 @@ async fn add_sfx(ctx: Ctx, mut i: AddSfxIn) -> Result<SfxOut> {
         at: None,
         at_word: None,
         volume_db,
+        extra: Default::default(),
     };
     match (i.at, i.at_word) {
         (Some(_), Some(_)) | (None, None) => {
@@ -681,6 +686,7 @@ mod tests {
             at: None,
             at_word: Some(WordAnchor { source_id: src.clone(), word_index: 1 }),
             volume_db: -6.0,
+            extra: Default::default(),
         };
         // Clip [4, 7]: word 1 starts 1.2 s in.
         let tm = TimeMap::from_segments(&[seg(&src, 4.0, 7.0)]);
