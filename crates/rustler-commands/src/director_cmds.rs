@@ -202,7 +202,7 @@ pub struct RetentionOut {
 
 /// Event kinds that do not change the picture or the sound of a clip.
 const NON_EDIT_PREFIXES: &[&str] =
-    &["qc.", "export.", "render.", "see.", "analyze.", "brief.", "clip.retention", "clip.score_set", "fix.suggest", "variant.", "campaign."];
+    &["qc.", "export.", "render.", "see.", "analyze.", "brief.", "clip.retention", "clip.score_set", "clip.cover", "clip.meta_set", "fix.suggest", "variant.", "campaign."];
 
 /// The latest edit of `clip` logged after `since`, as `"<kind> at <ts>"`.
 fn edited_after(store: &ProjectStore, clip: &ClipId, since: DateTime<Utc>) -> Option<String> {

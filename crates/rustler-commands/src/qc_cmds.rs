@@ -55,7 +55,7 @@ pub fn register(reg: &mut Registry) {
     ));
     reg.register(typed(
         "export.clip",
-        "Copy a QC-passed render to exports/<name>.mp4 with <name>.report.json (and <name>.srt when captions are on). Refuses a failed QC unless --yes.",
+        "Copy a QC-passed render to exports/<name>.mp4 with <name>.report.json (and <name>.srt when captions are on). Refuses a failed QC unless --yes, and a name already exported from another clip unless --overwrite. The srt, post and report describe the clip as that render was made (an older --render-id gets its own captions; a cover picked from another render is left out).",
         &["clip_id"],
         Annotations::default(),
         vec![
@@ -515,6 +515,10 @@ pub struct ExportInput {
     /// Export even though QC failed (same as the global `--yes`).
     #[serde(default)]
     pub allow_fail: bool,
+    /// Replace `exports/<name>.*` even when another clip exported them (default false: refused).
+    /// Re-exporting the same clip under its name never needs this.
+    #[serde(default)]
+    pub overwrite: bool,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -583,6 +587,33 @@ fn srt_words(store: &ProjectStore, clip: &Clip, warnings: &mut Vec<String>) -> V
     words
 }
 
+/// The clip as it was when `render` was made. `render.run` saves the render record as a new
+/// revision on top of the content it rendered, so the earliest revision whose render list holds
+/// the render has that content. `None` when a history snapshot on the way is missing.
+pub(crate) fn rendered_state(store: &ProjectStore, clip: &Clip, render: &RenderRecord) -> Option<Clip> {
+    let mut found = clip.clone();
+    for rev in (1..clip.revision).rev() {
+        match store.load_clip_snapshot(&clip.id, rev) {
+            Ok(s) if s.renders.iter().any(|r| r.id == render.id) => found = s,
+            Ok(_) => return Some(found),
+            Err(_) => return None,
+        }
+    }
+    Some(found)
+}
+
+/// Same cuts, captions, canvas and audio settings (what the srt and the picture depend on).
+fn same_content(a: &Clip, b: &Clip) -> bool {
+    a.segments == b.segments && a.captions == b.captions && a.canvas == b.canvas && a.audio == b.audio
+}
+
+/// The clip id named by `exports/<name>.report.json`, when there is one.
+fn export_owner(dir: &Path, name: &str) -> Option<String> {
+    let text = std::fs::read_to_string(dir.join(format!("{name}.report.json"))).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    v.pointer("/clip/id").and_then(serde_json::Value::as_str).map(String::from)
+}
+
 async fn export_clip(ctx: Ctx, input: ExportInput) -> rustler_core::Result<ExportOutput> {
     let store = ctx.store()?;
     let clip = store.load_clip(&input.clip_id)?;
@@ -593,6 +624,76 @@ async fn export_clip(ctx: Ctx, input: ExportInput) -> rustler_core::Result<Expor
             .hint(format!("re-render: rustler render run {}", clip.id)));
     }
     let mut warnings = Vec::new();
+
+    // Never replace another clip's export without being asked.
+    let name = sanitize_name(input.name.as_deref().unwrap_or(&clip.name), clip.id.as_str());
+    let dir = store.exports_dir();
+    match export_owner(&dir, &name) {
+        Some(other) if other != clip.id.as_str() => {
+            if !input.overwrite {
+                return Err(RustlerError::new(
+                    ErrorCode::Validation,
+                    "export",
+                    format!("exports/{name}.* were exported from clip {other}, not {}; nothing was written", clip.id),
+                )
+                .hint(format!("choose another name (`rustler export clip {} --name <name>`) or replace them with --overwrite true", clip.id)));
+            }
+            warnings.push(format!("replaced exports/{name}.* exported from clip {other} (--overwrite)"));
+        }
+        Some(_) => {}
+        None if dir.join(format!("{name}.mp4")).is_file() => {
+            warnings.push(format!("replaced exports/{name}.mp4 (no {name}.report.json says which clip made it)"));
+        }
+        None => {}
+    }
+
+    // The srt, post and report describe the clip as this render was made.
+    let is_latest = clip.renders.last().is_some_and(|r| r.id == render.id);
+    let state = match rendered_state(&store, &clip, &render) {
+        Some(s) if !same_content(&s, &clip) => {
+            warnings.push(format!(
+                "render {} was made before later edits (recorded at revision {}, the clip is at {}); the srt, post and report describe the clip as rendered",
+                render.id, s.revision, clip.revision
+            ));
+            s
+        }
+        Some(_) => clip.clone(),
+        None if is_latest => clip.clone(),
+        None => {
+            return Err(RustlerError::new(
+                ErrorCode::Validation,
+                "export",
+                format!(
+                    "cannot tell which revision of clip {} render {} was made from (a history snapshot is missing), so its srt and cover could not be made to match the video",
+                    clip.id, render.id
+                ),
+            )
+            .hint(format!("export the latest render (`rustler export clip {}` without --render-id), or restore that state and render it again", clip.id)));
+        }
+    };
+    // The cover only goes with the render it was taken from (or one made from the same cuts and captions).
+    let cover_ok = match crate::cover_cmds::cover_render(&store, &clip) {
+        Some(id) if id == render.id => true,
+        Some(id) => {
+            let same = clip.renders.iter().find(|r| r.id == id).and_then(|o| rendered_state(&store, &clip, o)).is_some_and(|o| same_content(&o, &state));
+            if same {
+                warnings.push(format!("the cover was taken from render {id} (same cuts and captions as {}; overlays may differ)", render.id));
+            } else {
+                warnings.push(format!(
+                    "no cover exported: the cover was taken from render {id}, which does not match render {} (`rustler clip cover` picks from the latest render)",
+                    render.id
+                ));
+            }
+            same
+        }
+        None => {
+            let has_cover = crate::extras::get::<serde_json::Value>(&store, &clip.id, crate::cover_cmds::KEY).ok().flatten().is_some();
+            if has_cover && !is_latest {
+                warnings.push(format!("no cover exported: it cannot be told which render the cover was taken from, and {} is not the latest", render.id));
+            }
+            is_latest
+        }
+    };
 
     // QC gate: use the saved report, or run QC now when there is none.
     let saved = render
@@ -622,20 +723,18 @@ async fn export_clip(ctx: Ctx, input: ExportInput) -> rustler_core::Result<Expor
         warnings.push(format!("exported despite failed QC: {}", qc.verdict));
     }
 
-    let name = sanitize_name(input.name.as_deref().unwrap_or(&clip.name), clip.id.as_str());
-    let dir = store.exports_dir();
     let video = dir.join(format!("{name}.mp4"));
     let report = dir.join(format!("{name}.report.json"));
     let post_path = dir.join(format!("{name}.post.json"));
     let srt_path = dir.join(format!("{name}.srt"));
 
-    let srt_text = if clip.captions.enabled {
-        let words = srt_words(&store, &clip, &mut warnings);
+    let srt_text = if state.captions.enabled {
+        let words = srt_words(&store, &state, &mut warnings);
         if words.is_empty() {
             warnings.push("no srt written: no transcript words inside the clip's segments".to_string());
             None
         } else {
-            Some(write_srt(&words, clip.captions.max_words_per_line))
+            Some(write_srt(&words, state.captions.max_words_per_line))
         }
     } else {
         None
@@ -667,9 +766,12 @@ async fn export_clip(ctx: Ctx, input: ExportInput) -> rustler_core::Result<Expor
             RustlerError::new(ErrorCode::Internal, "export", format!("cannot write {}: {e}", srt_path.display()))
         })?;
         srt_out = Some(srt_path);
+    } else if srt_path.is_file() && std::fs::remove_file(&srt_path).is_ok() {
+        // An srt left by an earlier export of this name would not match this video.
+        warnings.push(format!("removed the old {name}.srt (this export has no srt)"));
     }
 
-    let source_refs: Vec<_> = clip
+    let source_refs: Vec<_> = state
         .segments
         .iter()
         .map(|s| {
@@ -684,15 +786,23 @@ async fn export_clip(ctx: Ctx, input: ExportInput) -> rustler_core::Result<Expor
             })
         })
         .collect();
-    let (mut post_body, post_warnings) = crate::post_cmds::post_json(&store, &clip, &video)?;
+    let (mut post_body, post_warnings) = crate::post_cmds::post_json(&store, &state, &video)?;
     warnings.extend(post_warnings);
     // The cover picked with `clip.cover` goes next to the video as <name>.cover.jpg.
-    crate::cover_cmds::export_cover(&store, &clip, &dir, &name, &mut post_body, &mut warnings);
+    if cover_ok {
+        crate::cover_cmds::export_cover(&store, &state, &dir, &name, &mut post_body, &mut warnings);
+    } else {
+        post_body["cover"] = serde_json::Value::Null;
+        let old = dir.join(format!("{name}.cover.jpg"));
+        if old.is_file() && std::fs::remove_file(&old).is_ok() {
+            warnings.push(format!("removed the old {name}.cover.jpg (it does not match this render)"));
+        }
+    }
     store.write_json(&post_path, &post_body)?;
     store.write_json(
         &report,
         &json!({
-            "clip": clip,
+            "clip": state,
             "render": render,
             "qc": qc,
             "brief": crate::brief_cmds::brief_status(&store, &clip.id),
