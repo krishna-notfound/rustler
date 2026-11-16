@@ -218,6 +218,13 @@ async fn render_batch_continues_on_failure_and_export_batch_skips_failing_clips(
     assert!(stale["skipped"][0]["reasons"][0].as_str().unwrap().contains("edited after its last render"), "{stale}");
     call(&f.reg, &f.ctx, "render.batch", json!({"clip_ids": [good], "quality": "draft"})).await.unwrap();
 
+    // Content, not file times: an edit a moment after the render is caught (no 2 s grace), and
+    // undoing it makes the render current again.
+    call(&f.reg, &f.ctx, "overlay.add_text", json!({"clip_id": good, "text": "x", "style": "plain", "start": 1.0, "end": 1.5})).await.unwrap();
+    let quick = call(&f.reg, &f.ctx, "export.batch", json!({"clip_ids": [good], "require_qc": false})).await.unwrap();
+    assert!(quick["exported"].as_array().unwrap().is_empty(), "{quick}");
+    call(&f.reg, &f.ctx, "history.undo", json!({"clip_id": good})).await.unwrap();
+
     let ex = call(&f.reg, &f.ctx, "export.batch", json!({"clip_ids": [good, bad, ghost], "require_qc": false})).await.unwrap();
     eprintln!("export.batch: {ex}");
     let exported = ex["exported"].as_array().unwrap();

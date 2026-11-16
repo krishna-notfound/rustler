@@ -1113,7 +1113,8 @@ pub async fn caption_speaker_colors(ctx: Ctx, i: SpeakerColorsIn) -> Result<Spea
     if ctx.dry_run {
         return Ok(SpeakerColorsOut { clip_id: clip.id, enabled: i.enabled, colors, speakers: found, dry_run: Some(true), warnings, next });
     }
-    extras::update(&store, &clip.id, COLORS_KEY, |_| Ok(Some(serde_json::to_value(&cfg).expect("serializable"))))?;
+    // Its own revision (history undo takes back exactly this change).
+    extras::update_revision(&store, &clip.id, COLORS_KEY, |_| Ok(Some(serde_json::to_value(&cfg).expect("serializable"))))?;
     log_event(&ctx, &store, "caption.speaker_colors", json!({"clip_id": clip.id, "enabled": i.enabled}))?;
     Ok(SpeakerColorsOut { clip_id: clip.id, enabled: i.enabled, colors, speakers: found, dry_run: None, warnings, next })
 }
@@ -1318,7 +1319,7 @@ pub async fn crop_track_speaker(ctx: Ctx, i: TrackSpeakerIn) -> Result<TrackSpea
         return Err(e);
     }
     // Same storage as crop.track_face: extras.json crop_paths[segment id].
-    extras::update(&store, &clip.id, "crop_paths", |cur| {
+    extras::update_revision(&store, &clip.id, "crop_paths", |cur| {
         let mut map = match cur {
             Some(serde_json::Value::Object(m)) => m,
             _ => serde_json::Map::new(),
