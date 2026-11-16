@@ -33,7 +33,7 @@ v2 capabilities: smart defaults at `clip create` (layout and framing per shot, f
 (`template apply`, starters `podcast-viral` and `streamer-split`, `clip create --template`), the whole-clip timeline document
 (`timeline show/schema/apply`, cold open, insert, speed, freeze, merge), retention/director tools (`clip retention`, campaigns),
 hook styles, keyword captions, flash/whip transitions, `clip cover`, and per-platform post JSON (`clip meta-set`).
-185 commands; `rustler commands list` is the authority.
+187 commands; `rustler commands list` is the authority.
 
 ## Rules that apply to every agent
 

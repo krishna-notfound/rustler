@@ -10,7 +10,7 @@ Per-feature status: `docs/features/README.md`. Plan and scope: `docs/superpowers
 ## Current Phase
 
 - Slice 1 ("First Real Clip") plus the 5-hour extras are built and were run end to end on 2026-11-15.
-- The "complete everything" phase added (all merged): layout regions and webcam detection (f15), overlays/hook titles, transitions, effects, progress bar (f18), cut refinement (f19), highlight helpers (f20), understanding v2 (f07b), QC v2 and fix loop (f21), brief/variants/batches (f22), asset library (f23), the full GUI editor (f25-f27), speakers (f29), project pack/status, audio post (denoise, SFX, two-pass loudnorm). The registry has 185 commands; the knowledge book has 22 guides and 15 prompts (v2 added config, campaigns and posting, director/retention, style references, timeline v2, smart defaults, templates, hooks/captions/cover).
+- The "complete everything" phase added (all merged): layout regions and webcam detection (f15), overlays/hook titles, transitions, effects, progress bar (f18), cut refinement (f19), highlight helpers (f20), understanding v2 (f07b), QC v2 and fix loop (f21), brief/variants/batches (f22), asset library (f23), the full GUI editor (f25-f27), speakers (f29), project pack/status, audio post (denoise, SFX, two-pass loudnorm). The registry has 187 commands; the knowledge book has 22 guides and 15 prompts (v2 added config, campaigns and posting, director/retention, style references, timeline v2, smart defaults, templates, hooks/captions/cover).
 - Phase status per `docs/README.md`: implementation in progress under the 5-hour build window.
 
 ## Current Goal
@@ -28,7 +28,7 @@ Per-feature status: `docs/features/README.md`. Plan and scope: `docs/superpowers
 - See commands: tile grids and frames inspected (f07).
 - Render compiler with NVENC and Devanagari-named source (f08).
 - QC v1 12/12 and export (f09).
-- MCP over stdio: 55 tools, 8 prompts, 14 resources at the time of the check (f10); the registry now has 185 commands, so 185 tools and 15 prompts.
+- MCP over stdio: 55 tools, 8 prompts, 14 resources at the time of the check (f10); the registry now has 187 commands, so 187 tools and 15 prompts.
 - GUI in a real browser: Renders page, QC table, contact sheet (f24).
 - Captions: four presets and SRT (f16); music bed with ducking measured -3.9 dB (f17).
 

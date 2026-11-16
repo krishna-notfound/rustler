@@ -756,3 +756,18 @@ directed 77–94; 10 bugs). Four parallel fix branches (Opus x3, Sonnet x1, buil
 - **v0.2.3** (2026-11-17): caption spacing fix (trial-3 improvement 0: the hormozi pop widened the active word on
   its own layer and covered the neighbouring spaces for 0.16 s; pop is now height-only; re-rendered frame verified).
   Full `cargo test --workspace --no-fail-fast`: 100 targets, 802 passed, 0 failed (covers every merge of the day).
+
+### 2026-11-17 — v0.2.4: content suggestions (f39) and caption placement / layer undo / style template / ranked export (f40)
+- Two Opus agents in parallel (3 jobs each, free-RAM check before every build). f39: `edit.find_bad_takes` (stutters,
+  restarts, false starts, repeated sentences; exact `remove-words` commands; skipped on approximate timings; also in
+  `clip.retention` `take_fixes` and `clips.auto` suggestions), intro-trailer skip in `highlights.candidates` and
+  `clips.auto` (7+-word lines from the first 3 min repeated later; Sam Altman episode: trailer 00:00-02:09, 25
+  candidates skipped, picks moved from 00:25/09:31/56:48 to 06:03/27:27/34:14), hook-line and cold-open suggestions
+  per auto clip (never applied), hyphen fragments rejoined in caption chunking ("chop-up"). f40: `caption.place`
+  (source text bands + faces mapped through layouts; suggests a safe `position_y`, `--apply` saves one revision; trial
+  clip 1: 0.70 covered the mouth in 46-83 % of close-up samples and sat under the source subtitle; 0.19 applied and
+  checked on frames), QC `caption_over_source_text`, every layer write is its own undoable revision, `template create
+  --from-reference`, `export batch` best first (agent score, then retention; `--rank-in-name`), `clip list --sort score`.
+- Full `cargo test --workspace --no-fail-fast`: 102 targets, 831 passed, 0 failed. 187 commands.
+- Open: render freshness uses 2 s file-time slack, so an undo within 2 s of a render can count as fresh;
+  `caption.speaker_colors` still saves without a new revision; captions have one position per clip (frozen model).

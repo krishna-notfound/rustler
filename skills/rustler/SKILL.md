@@ -10,7 +10,7 @@ audio events, faces, speakers), renders frames, compiles one FFmpeg render and r
 transcripts, LOOK at images, pick moments and judge results. Every command prints one JSON envelope on
 stdout (`ok`, `data`, `warnings`, or `error` with `hint`); progress goes to stderr. Exit codes: 0 ok,
 2 usage, 3 not found, 4 missing dependency, 5 network, 6 media, 7 QC failed, 8 cancelled, 9 revision
-conflict, 10 internal. 185 commands; the knowledge book is the manual (`rustler guide list`).
+conflict, 10 internal. 187 commands; the knowledge book is the manual (`rustler guide list`).
 
 ## 1. Bootstrap and discovery
 

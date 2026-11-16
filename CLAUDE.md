@@ -91,7 +91,7 @@ When two sources disagree, the higher one wins:
 | Run the CLI | `cargo run -p rustler-cli -- <args>` or `target/debug/rustler.exe <args>` after building |
 | Install local tools and engine | `rustler setup` (writes to `~/.rustler`, i.e. `RUSTLER_HOME`) |
 | Health check | `rustler doctor` (JSON; `ready: true` means the render path can run) |
-| Command list | `rustler commands list` (185 commands) and `rustler commands describe <group.action>` |
+| Command list | `rustler commands list` (187 commands) and `rustler commands describe <group.action>` |
 | Knowledge book | `rustler guide list`, `rustler guide show start-here`, `rustler prompt list` (embedded from `knowledge/`; `cargo test -p rustler-knowledge` checks it parses) |
 | Docs check | after changing docs, verify every `rustler <group> <action>` you wrote against `commands list` |
 | JSON args on Windows PowerShell 5.1 | quotes inside JSON flags are stripped: use `--input-json @file.json` |
@@ -120,7 +120,7 @@ crates/      Rust workspace (members = crates/*)
   rustler-engine-bridge/ JSON-RPC supervisor and client for the Python engine
   rustler-media/        probe, proxy, frames/tiles, audio analysis, facepath, compile, render, QC
   rustler-captions/     caption presets, ASS writer, chunking
-  rustler-commands/     all 185 registry commands (`*_cmds.rs`: setup, project, config, auto (`clips.auto`), grade, source, analyze, understand, transcript, transcript_import, highlights, see, clip, edit, cut, timeline, timeline_edit, layout, smart, speaker, overlay, keyword, cover, layer (image/cutaway/mask), card (asset render-card, text styles), fx (transition/effect), audio, asset, template, reference, campaign, post, director, brief, variant, render, qc, fix, guide)
+  rustler-commands/     all 187 registry commands (`*_cmds.rs`: setup, project, config, auto (`clips.auto`), grade, source, analyze, understand, transcript, transcript_import, highlights, see, clip, edit, cut, timeline, timeline_edit, layout, smart, speaker, overlay, keyword, cover, layer (image/cutaway/mask), card (asset render-card, text styles), fx (transition/effect), audio, asset, template, reference, campaign, post, director, brief, variant, render, qc, fix, guide)
   rustler-cli/          `rustler` binary (generic CLI over the registry)
   rustler-mcp/          MCP server over stdio
   rustler-gui/          local web GUI and editor (axum server + static page, 14 JS modules, no build step)
@@ -141,7 +141,7 @@ repos/       cloned upstream repos studied in research (gitignored, read-only)
 - **Built since Slice 1** (all merged; per-feature status in `docs/features/README.md`): layout regions and webcam detection (f15),
   overlays/hook titles, transitions, effects, progress bar (f18), cut refinement (f19), highlight helpers (f20), understanding v2 (f07b),
   QC v2 and fix loop (f21), brief/variants/batches (f22), asset library (f23), GUI editor (f25-f27), speakers (f29), project pack/status,
-  audio post (denoise, SFX, two-pass loudnorm). 185 registry commands; `rustler commands list` is the authority.
+  audio post (denoise, SFX, two-pass loudnorm). 187 registry commands; `rustler commands list` is the authority.
 - **v2 (merged, v0.2.0 line):** lite-by-default install and `config.*` settings (f30), campaigns, posting JSON, director/retention
   (f31), style references and transcript import (f32), timeline document and timeline edits: `timeline.*`, cold open, insert, speed,
   freeze, merge/duplicate, image/cutaway/mask layers (f33), smart defaults at `clip.create`, `layout.plan`, `crop.track-active` (f34),
