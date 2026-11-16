@@ -2,6 +2,7 @@
 
 pub mod analyze_cmds;
 pub mod asset_cmds;
+pub mod auto_cmds;
 pub mod audio_cmds;
 pub mod brief_cmds;
 pub mod campaign_cmds;
@@ -78,4 +79,5 @@ pub fn register_all(reg: &mut Registry) {
     timeline_cmds::register(reg);
     timeline_edit_cmds::register(reg);
     template_cmds::register(reg);
+    auto_cmds::register(reg);
 }
