@@ -1,9 +1,9 @@
 ---
 id: layouts-and-framing
 title: "Layouts and framing for 9:16"
-summary: "When to use center-crop, blur-fit or split-vertical, how to measure a streamer's webcam rectangle from a frame, face tracking, when not to crop, and platform UI safe zones."
+summary: "Smart defaults of clip create (per-shot layout, light active speaker, filler and pause trim) and how to override them; when to use center-crop, blur-fit, zoom-fit or split-vertical, face tracking, streamer webcams, when not to crop, and platform UI safe zones."
 order: 6
-tags: [layout, framing, crop, split, streamer, face-tracking, safe-zone]
+tags: [layout, framing, crop, split, streamer, face-tracking, active-speaker, smart-defaults, safe-zone]
 ---
 
 # Layouts and framing
@@ -36,17 +36,60 @@ Without `--segment-id`, `clip set-layout` applies to every segment. Anything bey
 
 ## 2. Choosing a layout (decision rules)
 
+0. `clip create` already applied a per-shot plan (see "Smart defaults" below): check `smart.decisions`
+   and the contact sheet; the rules below are for overriding it or for `--raw` clips.
 1. Look first: `rustler see tiles <src> --start <a> --end <b> --count 12`.
 2. One face visible in ≥ 80 % of tiles, inside a ~30 %-wide column → `center-crop` (+ `crop
    track-face` if it moves).
 3. Webcam overlay + gameplay/screen → `split-vertical`.
-4. Two people both needed and > 35 % of the width apart → `blur-fit` (or a 2-speaker split if
-   available). Do not let a crop swing between them.
+4. Two people in one shot: when only the person talking matters → `center-crop` + `crop track-active`
+   (the smart default); when both must be seen at once and are > 35 % of the width apart → `blur-fit`.
 5. Readable text, slides, code, charts, a whiteboard, a wide establishing shot → `blur-fit`.
 6. **Unsure → `blur-fit`.** A small but complete picture beats a crop that cuts off the important
    thing.
 7. Layouts can change per segment: a podcast clip can be `center-crop` on the speaker and `blur-fit`
    on the 4 seconds where a chart is on screen.
+
+### Smart defaults: what `clip create` already decided
+
+Unless you pass `--raw` (or the setting `clip.smart_defaults` is `false`), `clip create` does the layout and
+framing for you and returns a `smart` report. **Read `smart.decisions` before changing anything**: each entry
+says what was done, why, and `override_with` lists the exact commands that undo or replace it.
+
+- **Per shot** (shots from `scenes.json` plus a frame-difference scan that also finds cuts in dark footage;
+  faces at 5 fps with the YuNet landmarks; lite install, no extra models):
+  - one face → `center-crop` + smooth track with look-room (like `crop track-face`);
+  - two or more faces → `center-crop` + the light active speaker (like `crop track-active`, below);
+  - no face, or graphics (flat areas + sharp edges: title cards, slides) → `blur-fit`, or **`zoom-fit`** when
+    the content sits in the middle (the centred part of the frame scaled up on a blurred fill).
+  - Segments are split only where the layout changes; a change shorter than 1.2 s is absorbed (no flicker).
+  - Skipped (decision `skipped`) when you passed `--layout`/`--layout-params`, the source is already vertical,
+    the media file is missing or the engine is not installed.
+- **Cleanup** (needs exact word timings; captions-based transcripts are left alone): filler words
+  (`um, uh, umm, uhh, uhm, hmm, hm, erm, ah` anywhere; `you know`, `like`, and in Hinglish `matlab, haan, na`
+  only when they stand alone between pauses), then pauses longer than 1.0 s cut down to 0.15 s.
+- Every step is its own clip revision (`smart.steps`): `smart.undo_all` (`rustler history restore <clip>
+  --revision 1`) gives you the raw clip back; restoring a step's revision keeps the earlier steps.
+
+Typical overrides:
+
+```
+rustler clip set-layout clp_X --segment-id seg_Y --preset blur-fit     # crop was wrong for this shot
+rustler crop track-active clp_X --segment-id seg_Y --switch cut        # hard cuts between speakers
+rustler crop track-face clp_X --segment-id seg_Y --style locked        # one framing, follow the largest face
+rustler history restore clp_X --revision 1                             # undo all smart defaults
+rustler clip create --name n --source-id src_X --start 10 --end 40 --raw   # never apply them
+rustler config set clip.smart_defaults false                           # off for this project
+```
+
+### Per-shot plan without applying (`layout plan`)
+
+```
+rustler layout plan clp_X            # proposes: pieces[] with class, faces, layout, tracking, reason, out times
+rustler layout plan clp_X --apply    # applies it (new revision; `undo` in the result restores the old one)
+```
+
+Use it on a clip made with `--raw`, after `clip add-segment`, or to see why a shot got its layout.
 
 ## 3. center-crop: setting focus_x
 
@@ -93,7 +136,33 @@ The result reports `moves` and `cuts` per segment. QC checks the motion (`camera
 direction changes, jitter, moves that start at full speed, top speed); a warning names the fix.
 Check the contact sheet afterwards: face inside the frame in every tile, room in front of a turned face.
 
-### Following the active speaker (podcasts and interviews: `crop track-speaker`)
+### Light active speaker (default for two or more faces: `crop track-active`)
+
+Works in the lite install, needs no speaker analysis:
+
+```
+rustler crop track-active clp_X                         # all center-crop segments
+rustler crop track-active clp_X --segment-id seg_Y --switch cut --style locked
+rustler crop track-active clp_X --look-room false
+```
+
+For each visible face it measures mouth movement (a mouth box placed from the two mouth-corner landmarks,
+head movement subtracted, normalised for dark footage) and compares the faces **while somebody is speaking**
+(transcript words; else the `analyze audio` silences; else motion alone, with a warning). Hysteresis: a new
+face must lead clearly for at least 1 s of its own mouth movement before the camera switches; when the lead is
+ambiguous (both mouths move alike) the current face is kept; a face that moves its mouth only in silence
+(chewing, laughing) counts less. Switches land on a word start after a pause and use the same smooth camera
+as `crop track-speaker` (`--switch auto|cut|pan`, `--style`, look-room). When the framed face leaves the
+picture (a cut) the new shot's best face is taken at once.
+
+Read `segments[].turns[]` (`face_x`, `reason`: `only-face`, `mouth-motion`, `largest-face` = no clear talker,
+`shot-change`) and `switches`. Limits: faces must be visible and roughly frontal (profiles and faces under
+~2.5 % of the frame width give little mouth signal; those turns fall back to the largest face), and people
+who mouth along or nod a lot can steal short turns. When `analyze speakers` has been run, `crop
+track-speaker` uses the voices too and links people across cuts; prefer it for long interviews with many
+close-up/wide-shot cuts.
+
+### Following the active speaker with diarization (`crop track-speaker`)
 
 Two people in one wide shot, both needed, but the 9:16 crop only fits one? Let the crop follow
 whoever is talking. It needs the speaker analysis first, and a `center-crop` segment:

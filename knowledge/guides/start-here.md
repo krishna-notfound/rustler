@@ -90,8 +90,8 @@ Work in this order. Each step has its own guide.
 |---|---|---|---|
 | 1 Understand | Scan the source cheaply, then build the understanding pack for chosen windows | `source info`, `source fetch-transcript`, `source import`, `analyze quick`, `analyze deep`, `transcript get/search` | `workflow-youtube-longform`, `workflow-local-file` |
 | 2 Plan | Let Rustler rank candidate windows, then judge them yourself; choose start/end units | `highlights candidates`, `highlights signals`, `transcript read-window`, `see tiles --around`, `see frame` | `finding-hooks`, `cut-points` |
-| 3 Cut | Create the clip from unit ids, then refine the cut points | `clip create`, `edit refine`, `edit remove-pauses`, `edit remove-words`, `edit trim` | `cut-points` |
-| 4 Frame | Pick the layout; streamers get the webcam split | `clip set-layout`, `crop track-face`, `layout detect-webcam`, `layout from-frame-boxes` | `layouts-and-framing`, `streamer-clips` |
+| 3 Cut | Create the clip from unit ids (smart defaults already trim fillers and pauses > 1 s and set the per-shot layout + framing; read `smart.decisions`), then refine the cut points | `clip create`, `edit refine`, `edit remove-pauses`, `edit remove-words`, `edit trim`, `history restore` | `cut-points`, `layouts-and-framing` |
+| 4 Frame | Check the automatic layout and framing on the contact sheet, override where wrong; streamers get the webcam split | `layout plan`, `clip set-layout`, `crop track-active`, `crop track-face`, `layout detect-webcam`, `layout from-frame-boxes` | `layouts-and-framing`, `streamer-clips` |
 | 5 Style | Captions, hook title, transitions, effects, progress bar | `caption set`, `caption create-style`, `overlay add-text`, `transition set`, `effect add`, `overlay progress-bar` | `captions-and-style`, `editing-toolkit` |
 | 6 Sound | Clean dialogue, music bed, sound effects (library files via `asset:<id>`) | `audio denoise`, `audio add-music`, `audio add-sfx`, `audio volume`, `asset search` | `audio`, `assets` |
 | 7 Preview | Check single frames before spending a full render | `render preview-frame` | `quality-checklist` |
@@ -124,8 +124,10 @@ rustler highlights candidates src_01j... --count 8 # ranked windows with unit id
 rustler transcript read-window src_01j... 600 640  # read a candidate before you cut it
 rustler see tiles src_01j... --around "nobody tells you this"
 rustler clip create --name "nobody-tells-you" --source-id src_01j... \
-    --start-unit 212 --end-unit 219 --expect-text "nobody tells you" --layout center-crop
-rustler crop track-face clp_01j...                 # face-follow the crop (analyze deep says when it helps)
+    --start-unit 212 --end-unit 219 --expect-text "nobody tells you"
+                                                   # smart defaults: per-shot layout + framing (one face: smooth
+                                                   # track; two+: active speaker), fillers, pauses > 1 s;
+                                                   # smart.decisions lists each with its override command
 rustler render run clp_01j...
 rustler qc run clp_01j...                          # exit 7 = failed; then OPEN the contact sheet
 rustler export clip clp_01j... --name "nobody-tells-you"
@@ -141,8 +143,11 @@ rustler highlights candidates src_X --count 10 --platform tiktok      # judge th
 # 3 cut: units from the candidate's create_cmd, then tidy the edges
 rustler clip create --name moment-1 --source-id src_X --start-unit 41 --end-unit 47 --expect-text "nobody tells you"
 rustler edit refine clp_X                                              # weak opener, sentence end, silence trough
-rustler edit remove-pauses clp_X --keep 0.25 && rustler edit remove-words clp_X
-# 4 frame: streamer? find the webcam first
+rustler edit remove-pauses clp_X --keep 0.25                           # smart defaults cut pauses > 1 s and fillers; tighten more only if needed
+# 4 frame: smart defaults chose a layout per shot (smart.decisions); override where the contact sheet says so
+rustler layout plan clp_X                                              # why each shot got its layout
+rustler crop track-active clp_X --switch cut                           # e.g. hard cuts between the two speakers
+# streamer? find the webcam first
 rustler layout detect-webcam src_X --clip-id clp_X                     # prints a ready set-layout line
 rustler clip set-layout clp_X --preset split-vertical --params '{...from detect-webcam...}'
 # 5 style
