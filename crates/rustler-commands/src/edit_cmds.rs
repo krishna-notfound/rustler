@@ -296,6 +296,8 @@ fn finish(
         return Ok(EditOut::Applied { summary: summarize(old), extras });
     }
     let base = old.revision;
+    // Layers (extras.json) of the superseded revision, so history undo/restore covers them too.
+    crate::timeline_doc::snapshot_extras(store, &old.id, base)?;
     store.save_clip(&mut new, base)?;
     // Face-tracked crop paths are keyed by segment id; move them onto the re-cut segments.
     extras.warnings.extend(crate::extras::carry_crop_paths(store, old, &new)?);
@@ -1027,7 +1029,16 @@ fn restore_revision(ctx: &Ctx, stage: &str, store: &ProjectStore, old: &Clip, ta
     let mut new = store.load_clip_snapshot(&old.id, target)?;
     new.renders = old.renders.clone();
     let extras = Extras { restored_from: Some(target), ..Default::default() };
-    finish(ctx, store, kind, old, new, extras, json!({"restored_from": target}))
+    let mut out = finish(ctx, store, kind, old, new, extras, json!({"restored_from": target}))?;
+    // The layers of that revision too (overlays, sfx, effects, images, masks, ...).
+    if let EditOut::Applied { extras, .. } = &mut out
+        && !crate::timeline_doc::restore_extras(store, &old.id, target)?
+    {
+        extras.warnings.push(format!(
+            "revision {target} has no layer snapshot (saved by an older build or a command that does not snapshot layers); extras.json was left as it is"
+        ));
+    }
+    Ok(out)
 }
 
 #[derive(Deserialize, JsonSchema, Debug)]
