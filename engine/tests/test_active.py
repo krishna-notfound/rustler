@@ -257,3 +257,80 @@ def test_low_frame_rate_video_keeps_one_sample_per_period(tmp_path, model_path, 
     right = [max(s["faces"], key=lambda f: f["x"])["mouth"] for s in two]
     assert len(two) >= 15
     assert sum(left) > 3 * sum(right) + 0.05
+
+
+# --- source pop-ups ---------------------------------------------------------------------------------
+
+
+def _scene(t):
+    """A dark set with a moving bright-ish shape (a person), a static white panel at the left
+    edge (never comes or goes), a subscribe card (white, red button) from 1.6 s to 4.6 s at the
+    bottom, a plain white card at the top from 2.0 s to 4.0 s and a white flash card of 0.4 s."""
+    img = np.full((H, W, 3), 18, np.uint8)
+    cx = int(480 + 60 * np.sin(t * 2.0))
+    cv2.ellipse(img, (cx, 260), (110, 150), 0, 0, 360, (150, 170, 190), -1)
+    img[300:520, 0:90] = 240  # a white panel on the set (not a pop-up)
+    if 1.6 <= t < 4.6:
+        cv2.rectangle(img, (300, 455), (660, 515), (250, 250, 250), -1)
+        cv2.circle(img, (330, 485), 18, (60, 60, 60), -1)  # avatar
+        cv2.putText(img, "Channel Name", (360, 495), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (20, 20, 20), 2)
+        cv2.rectangle(img, (560, 470), (645, 500), (0, 0, 220), -1)  # red SUBSCRIBE button (BGR)
+    if 2.0 <= t < 4.0:
+        cv2.rectangle(img, (330, 40), (630, 90), (245, 245, 245), -1)
+        cv2.putText(img, "A TITLE", (400, 75), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (30, 30, 30), 2)
+    if 5.0 <= t < 5.4:
+        cv2.rectangle(img, (300, 455), (660, 515), (250, 250, 250), -1)
+    return img
+
+
+def test_popup_scan_finds_the_subscribe_card_and_not_the_set():
+    scan = active.PopupScan(5.0)
+    for i in range(35):  # 7 s at 5 fps
+        scan.feed(i / 5.0, _scene(i / 5.0))
+    pops = scan.finish(7.0)
+    subs = [p for p in pops if p["kind"] == "subscribe"]
+    cards = [p for p in pops if p["kind"] == "card"]
+    assert len(subs) == 1 and len(cards) == 1, pops
+    s = subs[0]
+    assert 1.0 <= s["start"] <= 1.6 and 4.6 <= s["end"] <= 5.0, s
+    x0, y0, x1, y1 = s["box"]
+    assert x0 <= 300 / W + 0.01 and x1 >= 660 / W - 0.01 and y0 <= 455 / H + 0.01 and y1 >= 515 / H - 0.01, s
+    assert x1 - x0 < 0.5 and s["fill"].startswith("#")
+    assert cards[0]["box"][3] < 0.25  # the plain card at the top: reported as `card`, not `subscribe`
+    # the panel that is there all along and the 0.4 s flash are not pop-ups
+    assert all(p["box"][0] > 0.2 for p in pops)
+    assert not any(4.9 <= p["start"] <= 5.5 for p in pops)
+
+
+def test_popup_already_on_screen_counts_when_it_goes_away():
+    scan = active.PopupScan(5.0)
+    for i in range(15, 35):  # the range starts at 3.0 s, inside the card (1.6-4.6 s)
+        scan.feed(i / 5.0, _scene(i / 5.0))
+    subs = [p for p in scan.finish(7.0) if p["kind"] == "subscribe"]
+    assert len(subs) == 1 and subs[0]["start"] == 3.0 and 4.6 <= subs[0]["end"] <= 5.0, subs
+
+
+def test_popups_and_threads_in_the_pass(tmp_path, model_path, portrait, monkeypatch):
+    base, mouths = two_face_base(portrait, model_path)
+    frames = []
+    for i in range(5 * FPS):
+        f = base.copy()
+        talking(f, mouths[0], i)
+        t = i / FPS
+        if 1.5 <= t < 3.5:
+            cv2.rectangle(f, (300, 455), (660, 515), (250, 250, 250), -1)
+            cv2.rectangle(f, (560, 470), (645, 500), (0, 0, 220), -1)
+        frames.append(f)
+    path = tmp_path / "pop.avi"
+    write(path, frames)
+    params = {"video_path": str(path), "start": 0.0, "end": 5.0, "fps": 5.0, "scan": True, "popups": True}
+    monkeypatch.setenv("RUSTLER_DETECT_THREADS", "1")
+    serial = active.active(params, noop)
+    monkeypatch.setenv("RUSTLER_DETECT_THREADS", "3")
+    threaded = active.active(params, noop)
+    # identical faces, mouths, tracks and cut scan whatever the number of detector threads
+    assert serial == threaded
+    pops = threaded["popups"]
+    assert len(pops) == 1 and pops[0]["kind"] == "subscribe", pops
+    assert 1.0 <= pops[0]["start"] <= 1.6 and 3.4 <= pops[0]["end"] <= 3.9, pops
+    assert "popups" not in active.active(dict(params, popups=False), noop)

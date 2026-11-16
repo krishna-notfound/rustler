@@ -132,10 +132,10 @@ fn iou(a: &CamFace, b: &CamFace) -> f64 {
 pub enum CameraStyle {
     /// One fixed framing per shot (moves only at cuts and speaker switches).
     Locked,
-    /// Hold-or-move: locked until the subject leaves a ±18% safe box, then an eased move.
+    /// Hold-or-move: locked until the subject leaves a Â±18% safe box, then an eased move.
     #[default]
     Smooth,
-    /// Tighter safe box (±7%) and quicker eased moves, for subjects who move a lot.
+    /// Tighter safe box (Â±7%) and quicker eased moves, for subjects who move a lot.
     Follow,
 }
 
@@ -216,6 +216,12 @@ pub struct CameraParams {
     /// over look-room and the safe box; impossible only when the face is wider than the crop
     /// allows or sits at the frame edge).
     pub margin_frac: f64,
+    /// Margin (share of the crop width) that new framings aim for; a move is triggered only below
+    /// `margin_frac`, so the gap between the two keeps box jitter from re-triggering moves.
+    pub comfort_frac: f64,
+    /// Half-window (s) over which the face's box width is taken at its (robust) largest for both
+    /// margins: detection boxes jitter in size from sample to sample.
+    pub margin_window: f64,
 }
 
 impl Default for CameraParams {
@@ -249,6 +255,8 @@ impl CameraParams {
             switch_cut_over: 0.40,
             switch_pan_max: 0.6,
             margin_frac: 0.08,
+            comfort_frac: 0.14,
+            margin_window: 0.5,
         };
         match style {
             CameraStyle::Smooth | CameraStyle::Locked => smooth,
@@ -342,11 +350,11 @@ pub fn plan_detailed(samples: &[CamSample], crop_w: f64, events: &[CamEvent], p:
         yaw: prim.iter().map(|f| f.and_then(|f| f.yaw())).collect(),
     };
     let bounds = boundaries(&times, &cx, &widths, &raw, events, t0, p);
+    let mut edges: Vec<usize> = std::iter::once(0).chain(bounds.iter().map(|b| b.0)).collect();
+    edges.push(n);
     // Look-room per shot: the yaw is smoothed within a shot, never across a cut.
     let mut shift = vec![0.0; n];
     if p.look_room {
-        let mut edges: Vec<usize> = std::iter::once(0).chain(bounds.iter().map(|b| b.0)).collect();
-        edges.push(n);
         for w in edges.windows(2) {
             let (a, b) = (w[0], w[1]);
             if a >= b {
@@ -362,21 +370,35 @@ pub fn plan_detailed(samples: &[CamSample], crop_w: f64, events: &[CamEvent], p:
             }
         }
     }
-    // Where the crop centre may be so the face box keeps the margin inside both crop edges.
-    let margin = p.margin_frac.max(0.0) * crop_w;
-    let allowed: Vec<(f64, f64)> = (0..n)
-        .map(|i| {
-            if prim[i].is_none() {
-                return (f64::NEG_INFINITY, f64::INFINITY);
-            }
-            let (left, right) = (cx[i] - widths[i] / 2.0, cx[i] + widths[i] / 2.0);
-            let (lo_c, hi_c) = (right + margin - crop_w / 2.0, left - margin + crop_w / 2.0);
-            if lo_c > hi_c { (cx[i], cx[i]) } else { (lo_c, hi_c) }
-        })
-        // Inside the frame: a face at the frame edge cannot get its margin.
-        .map(|(a, b)| (clamp_c(a), clamp_c(b)))
-        .collect();
-    let target: Vec<f64> = cx.iter().zip(&shift).zip(&allowed).map(|((c, s), &(a, b))| (c + s * crop_w).clamp(a, b)).collect();
+    // Where the crop centre may be so the face keeps a margin inside both crop edges. Detection
+    // boxes jitter in size from sample to sample, and a head moving toward an edge should be seen
+    // coming, so the face's extent for the checks is its robust envelope over a short window
+    // (`reach`): `allowed` (the hard limit that triggers a move) and `fits` (an old framing carried
+    // over a cut). Framings are aimed (`comfort`, a wider margin) on the face where it is, with its
+    // robust largest width (`aim`), so a lean does not bias the rest position toward where the face
+    // was, and a face that just got its margin back is not at the limit again with the next box.
+    let reach = face_extents(&times, &prim, &cx, &edges, p.margin_window, true);
+    let aim = face_extents(&times, &prim, &cx, &edges, p.margin_window, false);
+    let range = |ext: &[Option<(f64, f64)>], m: f64| -> Vec<(f64, f64)> {
+        let m = m.max(0.0) * crop_w;
+        ext.iter()
+            .map(|e| match *e {
+                None => (f64::NEG_INFINITY, f64::INFINITY),
+                Some((left, right)) => {
+                    let (lo_c, hi_c) = (right + m - crop_w / 2.0, left - m + crop_w / 2.0);
+                    if lo_c > hi_c { ((left + right) / 2.0, (left + right) / 2.0) } else { (lo_c, hi_c) }
+                }
+            })
+            // Inside the frame: a face at the frame edge cannot get its margin.
+            .map(|(a, b)| (clamp_c(a), clamp_c(b)))
+            .collect()
+    };
+    let comfort_frac = p.margin_frac.max(p.comfort_frac);
+    let allowed = range(&reach, p.margin_frac);
+    let rest_range = range(&aim, p.margin_frac);
+    let fits_range = range(&reach, comfort_frac);
+    let comfort = range(&reach, comfort_frac);
+    let target: Vec<f64> = cx.iter().zip(&shift).zip(&comfort).map(|((c, s), &(a, b))| (c + s * crop_w).clamp(a, b)).collect();
     let safe = p.safe_frac * crop_w;
     let hard = p.hard_frac * crop_w;
 
@@ -397,7 +419,9 @@ pub fn plan_detailed(samples: &[CamSample], crop_w: f64, events: &[CamEvent], p:
             CameraStyle::Locked => median(&target[a..b]),
             _ => median(&window(&times, &target, a, b, times[a] + p.lookahead)),
         };
-        let fits = |x: f64| x >= allowed[a].0 - 0.004 && x <= allowed[a].1 + 0.004;
+        // The old framing carries over a cut only when it frames the new shot comfortably (a
+        // reframe at a source cut is free; one shortly after it is a visible move).
+        let fits = |x: f64| x >= fits_range[a].0 - 0.004 && x <= fits_range[a].1 + 0.004;
         // A move still running at a shot cut belongs to the old shot: it stops at the cut, and the
         // new shot starts from where the camera is then (or cuts when that framing does not fit).
         if let (Some(_), Some((te, EventKind::ShotCut))) = (cam, entry) {
@@ -445,7 +469,7 @@ pub fn plan_detailed(samples: &[CamSample], crop_w: f64, events: &[CamEvent], p:
         };
         let mut c = c;
         if p.style != CameraStyle::Locked {
-            hold_or_move(&times, &target, &allowed, a, b, &mut c, &mut busy, &mut moves, p, safe, hard);
+            hold_or_move(&times, &target, (&allowed, &rest_range), a, b, &mut c, &mut busy, &mut moves, p, safe, hard);
         }
         cam = Some(c);
     }
@@ -504,7 +528,8 @@ pub fn plan_detailed(samples: &[CamSample], crop_w: f64, events: &[CamEvent], p:
 fn hold_or_move(
     times: &[f64],
     target: &[f64],
-    allowed: &[(f64, f64)],
+    // (margin limit that triggers a move, margin limit for the new rest position)
+    (allowed, rest_range): (&[(f64, f64)], &[(f64, f64)]),
     a: usize,
     b: usize,
     cam: &mut f64,
@@ -551,7 +576,7 @@ fn hold_or_move(
             i += 1;
             continue;
         }
-        let new = median(&window(times, target, i, b, times[i] + p.lookahead)).clamp(allowed[i].0, allowed[i].1);
+        let new = median(&window(times, target, i, b, times[i] + p.lookahead)).clamp(rest_range[i].0, rest_range[i].1);
         let min_step = if squeezed { MARGIN_TOL } else { safe * 0.5 };
         if (new - *cam).abs() <= min_step {
             i += 1;
@@ -721,6 +746,50 @@ fn primary_faces(samples: &[CamSample]) -> Vec<Option<CamFace>> {
             pick
         })
         .collect()
+}
+
+/// Robust horizontal extent `(left, right)` of the primary face per sample, from the samples of
+/// the same piece (between `edges`) within `half` seconds, each box at its median-filtered centre
+/// `cx` (a detection jump is ignored) with its own width (YuNet's box width jitters by 10-25 %
+/// from sample to sample; a margin measured on the median width leaves the real boxes short of
+/// it). The most extreme value in five is dropped, so a one-sample false size never widens it.
+/// `spread`: the outermost edges of those boxes (where the face goes in the window); else the
+/// face where it is now with the largest width. `None` where the sample has no face.
+fn face_extents(times: &[f64], prim: &[Option<CamFace>], cx: &[f64], edges: &[usize], half: f64, spread: bool) -> Vec<Option<(f64, f64)>> {
+    let mut out = vec![None; prim.len()];
+    for w in edges.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        for i in a..b {
+            if prim[i].is_none() {
+                continue;
+            }
+            // Boxes of the same face: a detection jump (far from the filtered centre) is left out.
+            let near: Vec<usize> = (a..b)
+                .filter(|&j| (times[j] - times[i]).abs() <= half + 1e-9)
+                .filter(|&j| prim[j].is_some_and(|g| (g.cx() - cx[j]).abs() <= 0.5 * g.w))
+                .collect();
+            if near.is_empty() {
+                let w = prim[i].map_or(0.0, |g| g.w);
+                out[i] = Some((cx[i] - w / 2.0, cx[i] + w / 2.0));
+                continue;
+            }
+            let drop = (near.len() / 5).min(near.len() - 1);
+            let half_w = |j: usize| prim[j].map_or(0.0, |g| g.w / 2.0);
+            if spread {
+                // The raw boxes: their position jitters too.
+                let mut ls: Vec<f64> = near.iter().map(|&j| prim[j].map_or(cx[j], |g| g.x)).collect();
+                let mut rs: Vec<f64> = near.iter().map(|&j| prim[j].map_or(cx[j], |g| g.x + g.w)).collect();
+                ls.sort_by(f64::total_cmp);
+                rs.sort_by(|x, y| y.total_cmp(x));
+                out[i] = Some((ls[drop], rs[drop]));
+            } else {
+                let mut ws: Vec<f64> = near.iter().map(|&j| half_w(j)).collect();
+                ws.sort_by(|x, y| y.total_cmp(x));
+                out[i] = Some((cx[i] - ws[drop], cx[i] + ws[drop]));
+            }
+        }
+    }
+    out
 }
 
 /// Gaps hold the last value; leading gaps take the first value; nothing at all -> `default`.

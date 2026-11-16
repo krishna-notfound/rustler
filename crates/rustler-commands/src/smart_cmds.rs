@@ -166,6 +166,26 @@ pub struct ScanResult {
     pub samples: Vec<ScanSample>,
     #[serde(default)]
     pub peaks: Vec<ScanPeak>,
+    /// Source pop-ups (engine `popups: true`).
+    #[serde(default)]
+    pub popups: Vec<ScanPopup>,
+}
+
+/// A pop-up burned into the source (a YouTube subscribe / channel card): engine `faces.active`
+/// with `popups: true`.
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
+pub struct ScanPopup {
+    /// Source time.
+    pub start: f64,
+    pub end: f64,
+    /// `[x0, y0, x1, y1]` (0..1 of the source frame).
+    #[serde(rename = "box")]
+    pub bbox: [f64; 4],
+    /// `subscribe` (holds a YouTube-red button) | `card`.
+    pub kind: String,
+    /// What was there before the card came (`#RRGGBB`): the box mask's colour.
+    #[serde(default)]
+    pub fill: Option<String>,
 }
 
 /// Faces that count in a sample: wide enough in absolute terms and next to the largest face.
@@ -682,6 +702,14 @@ pub fn active_camera(
         .collect();
     let cam = if look_room { camera::attach_landmarks(&face_samples, &with_lm) } else { camera::from_face_samples(&face_samples) };
     let mut events = speaker_events(&act, &choices);
+    // A shot change seen in the faces lies between two samples (its event sits at the midpoint);
+    // the frame-accurate cut between them is where the crop must cut, or the first frames of the
+    // new shot show the old framing (trial-2 clip 05: a half face for two frames at 100.48 s).
+    for e in events.iter_mut().filter(|e| e.kind == EventKind::ShotCut) {
+        if let Some(c) = cuts.iter().copied().filter(|c| (c - e.t).abs() <= 0.12).min_by(|x, y| (x - e.t).abs().total_cmp(&(y - e.t).abs())) {
+            e.t = c;
+        }
+    }
     let (a, b) = (samples[0].t, samples[samples.len() - 1].t);
     for &c in cuts {
         if c > a + 0.05 && c < b && !events.iter().any(|e| e.kind == EventKind::ShotCut && (e.t - c).abs() < 0.3) {
@@ -1200,7 +1228,7 @@ fn video_of(store: &ProjectStore, source: &Source) -> PathBuf {
 }
 
 async fn scan(engine: &EngineClient, ctx: &Ctx, video: &Path, start: f64, end: f64, with_scan: bool) -> Result<ScanResult> {
-    let params = json!({"video_path": video, "start": start, "end": end, "fps": ACTIVE_FPS, "motion": true, "scan": with_scan});
+    let params = json!({"video_path": video, "start": start, "end": end, "fps": ACTIVE_FPS, "motion": true, "scan": with_scan, "popups": with_scan});
     engine.call("faces.active", params, &ctx.progress, &ctx.cancel).await
 }
 
@@ -1435,6 +1463,7 @@ struct SegmentAnalysis {
     samples: Vec<ScanSample>,
     cuts: Vec<f64>,
     shots: Vec<ShotPlan>,
+    popups: Vec<ScanPopup>,
 }
 
 /// Why a segment was not analysed (no layout decision for it).
@@ -1486,7 +1515,7 @@ async fn analyse_segments(
                 let cuts = merge_cuts(cuts);
                 let aspect = frame_aspect(&source, &clip.canvas);
                 let shots = plan_shots(&r.samples, &cuts, seg.start, seg.end, aspect);
-                out.push(SegmentAnalysis { seg, samples: r.samples, cuts, shots });
+                out.push(SegmentAnalysis { seg, samples: r.samples, cuts, shots, popups: r.popups });
             }
             Err(e) => {
                 failure = Some(e);
@@ -1504,7 +1533,7 @@ async fn analyse_segments(
 /// A decision made automatically, with the commands that undo or override it.
 #[derive(Serialize, Deserialize, JsonSchema, Clone, Debug, PartialEq)]
 pub struct Decision {
-    /// layout | framing | filler | pause | fragment | skipped
+    /// layout | framing | filler | pause | fragment | popup | skipped
     pub kind: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub segment_ids: Vec<SegmentId>,
@@ -1690,6 +1719,187 @@ fn remap_ids(decisions: &mut [Decision], clip: &Clip) {
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// Source pop-ups -> masks
+// ---------------------------------------------------------------------------------------------
+
+/// A pop-up's mask window starts this much before the detected start and ends this much after
+/// the detected end (seconds): detection is at 5 fps and cards slide in and out.
+pub const POPUP_PAD_BEFORE: f64 = 0.1;
+pub const POPUP_PAD_AFTER: f64 = 0.2;
+/// Padding around the mask rect (share of the canvas width / height on each side; cards slide
+/// in and out vertically, so more there).
+pub const POPUP_PAD_X: f64 = 0.015;
+pub const POPUP_PAD_Y: f64 = 0.025;
+
+/// A mask planned for one pop-up: edit-timeline window and canvas rect.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PopupMask {
+    pub out_start: f64,
+    pub out_end: f64,
+    pub rect: Rect,
+}
+
+/// Crop left edge range `(min, max)` of a crop path (keys relative to the segment start, linear
+/// between keys like the renderer) over `a..b` (relative seconds).
+fn crop_x_range(keys: &[CropKey], a: f64, b: f64) -> Option<(f64, f64)> {
+    if keys.is_empty() {
+        return None;
+    }
+    let at = |t: f64| -> f64 {
+        let k = keys.partition_point(|k| k.t <= t);
+        if k == 0 {
+            return keys[0].x;
+        }
+        if k >= keys.len() {
+            return keys[keys.len() - 1].x;
+        }
+        let (p, q) = (keys[k - 1], keys[k]);
+        if q.t - p.t < 1e-9 { q.x } else { p.x + (q.x - p.x) * (t - p.t) / (q.t - p.t) }
+    };
+    let mut xs = vec![at(a), at(b)];
+    xs.extend(keys.iter().filter(|k| k.t > a && k.t < b).map(|k| k.x));
+    Some((xs.iter().copied().fold(f64::INFINITY, f64::min), xs.iter().copied().fold(f64::NEG_INFINITY, f64::max)))
+}
+
+/// Where a source pop-up lands in the clip: per segment of `segments` (with the same source)
+/// that shows part of its window, the edit-timeline window and the canvas rect that covers the
+/// card wherever the (moving) crop puts it. Only single-region `center-crop` segments are masked
+/// (graphics layouts are left alone: a card there may be part of the graphic). Consecutive pieces
+/// (pause cuts) become one mask. Pure.
+pub fn popup_masks(popup: &ScanPopup, source: &SourceId, segments: &[Segment], paths: &BTreeMap<String, Vec<CropKey>>) -> Vec<PopupMask> {
+    let (s, e) = (popup.start - POPUP_PAD_BEFORE, popup.end + POPUP_PAD_AFTER);
+    let [bx0, by0, bx1, by1] = popup.bbox;
+    let tm = TimeMap::from_segments(segments);
+    let mut out: Vec<PopupMask> = Vec::new();
+    for seg in segments.iter().filter(|g| &g.source_id == source) {
+        let (a, b) = (s.max(seg.start), e.min(seg.end));
+        if b - a < 0.05 {
+            continue;
+        }
+        if seg.layout.preset.as_deref() != Some("center-crop") || seg.layout.regions.len() != 1 {
+            continue;
+        }
+        let src = seg.layout.regions[0].src;
+        if src.w <= 0.0 || src.h <= 0.0 {
+            continue;
+        }
+        let (xmin, xmax) = paths
+            .get(seg.id.as_str())
+            .and_then(|k| crop_x_range(k, a - seg.start, b - seg.start))
+            .unwrap_or((src.x, src.x));
+        let x0 = ((bx0 - xmax) / src.w - POPUP_PAD_X).clamp(0.0, 1.0);
+        let x1 = ((bx1 - xmin) / src.w + POPUP_PAD_X).clamp(0.0, 1.0);
+        let y0 = ((by0 - src.y) / src.h - POPUP_PAD_Y).clamp(0.0, 1.0);
+        let y1 = ((by1 - src.y) / src.h + POPUP_PAD_Y).clamp(0.0, 1.0);
+        if x1 - x0 < rustler_media::layers::MIN_RECT_SIDE + 1e-6 || y1 - y0 < rustler_media::layers::MIN_RECT_SIDE + 1e-6 {
+            continue; // the card is outside the crop here
+        }
+        let Some(m) = tm.segments().iter().find(|m| m.segment_id == seg.id) else { continue };
+        let (os, oe) = (m.out_start + (a - seg.start), m.out_start + (b - seg.start));
+        let rect = Rect { x: round3(x0), y: round3(y0), w: round3(x1 - x0), h: round3(y1 - y0) };
+        match out.last_mut() {
+            Some(l) if os - l.out_end < 0.05 => {
+                let (lx1, ly1) = (l.rect.x + l.rect.w, l.rect.y + l.rect.h);
+                let (ux0, uy0) = (l.rect.x.min(rect.x), l.rect.y.min(rect.y));
+                l.rect = Rect { x: ux0, y: uy0, w: round3(lx1.max(rect.x + rect.w) - ux0), h: round3(ly1.max(rect.y + rect.h) - uy0) };
+                l.out_end = round3(oe);
+            }
+            _ => out.push(PopupMask { out_start: round3(os), out_end: round3(oe), rect }),
+        }
+    }
+    out
+}
+
+/// Adds box masks over the subscribe pop-ups the scan found (plain white cards without the red
+/// button are only reported: they may be real graphics). Returns the decisions.
+fn mask_popups(ctx: &Ctx, store: &ProjectStore, clip: &Clip, popups: &[(SourceId, ScanPopup)]) -> Result<Vec<Decision>> {
+    use rustler_media::layers::{MaskKind, MaskLayer, Timing};
+    let mut decisions = Vec::new();
+    if popups.is_empty() {
+        return Ok(decisions);
+    }
+    let paths: BTreeMap<String, Vec<CropKey>> = extras::get(store, &clip.id, "crop_paths")?.unwrap_or_default();
+    let mut planned: Vec<(ScanPopup, Vec<PopupMask>)> = Vec::new();
+    for (source, p) in popups {
+        let masks = popup_masks(p, source, &clip.segments, &paths);
+        if masks.is_empty() {
+            continue; // cut out, outside the crop, or on a graphics segment
+        }
+        if p.kind != "subscribe" {
+            decisions.push(Decision {
+                kind: "popup".into(),
+                segment_ids: Vec::new(),
+                source_start: Some(round3(p.start)),
+                source_end: Some(round3(p.end)),
+                what: format!("not masked: a white card appeared at out {:.2}-{:.2} s", masks[0].out_start, masks[masks.len() - 1].out_end),
+                why: "no SUBSCRIBE button in it, so it may be a real on-screen graphic".into(),
+                override_with: masks
+                    .iter()
+                    .map(|m| {
+                        format!(
+                            "rustler mask add {} --kind box --rect '{{\"x\":{},\"y\":{},\"w\":{},\"h\":{}}}' --start {:.2} --end {:.2}",
+                            clip.id, m.rect.x, m.rect.y, m.rect.w, m.rect.h, m.out_start, m.out_end
+                        )
+                    })
+                    .collect(),
+            });
+            continue;
+        }
+        planned.push((p.clone(), masks));
+    }
+    if planned.is_empty() {
+        return Ok(decisions);
+    }
+    let mut added: Vec<Vec<String>> = Vec::new();
+    extras::update(store, &clip.id, rustler_media::layers::MASKS_KEY, |cur| {
+        let mut list: Vec<MaskLayer> = match cur {
+            Some(v) => serde_json::from_value(v).map_err(|e| verr("clip.smart_defaults", format!("masks in extras.json: {e}")))?,
+            None => Vec::new(),
+        };
+        let ids = &mut added;
+        for (p, masks) in &planned {
+            let mut these = Vec::new();
+            for m in masks {
+                let id = crate::audio_cmds::next_id("msk", list.iter().map(|x| x.id.as_str()));
+                list.push(MaskLayer {
+                    id: id.clone(),
+                    timing: Timing { out_start: Some(m.out_start), out_end: Some(m.out_end), start_word: None, end_word: None },
+                    rect: m.rect,
+                    kind: MaskKind::Box,
+                    strength: None,
+                    color: Some(p.fill.clone().filter(|c| c.len() == 7 && c.starts_with('#')).unwrap_or_else(|| "#000000".into())),
+                });
+                these.push(id);
+            }
+            ids.push(these);
+        }
+        Ok(Some(serde_json::to_value(&list).expect("serializable")))
+    })?;
+    for ((p, masks), ids) in planned.iter().zip(added) {
+        decisions.push(Decision {
+            kind: "popup".into(),
+            segment_ids: Vec::new(),
+            source_start: Some(round3(p.start)),
+            source_end: Some(round3(p.end)),
+            what: format!(
+                "masked a source subscribe card with a solid {} box ({}) at out {:.2}-{:.2} s",
+                p.fill.as_deref().unwrap_or("#000000"),
+                ids.join(", "),
+                masks[0].out_start,
+                masks[masks.len() - 1].out_end
+            ),
+            why: "a YouTube subscribe card is burned into the source here (white card with a red SUBSCRIBE button that appears, stays put and goes)".into(),
+            override_with: ids
+                .iter()
+                .flat_map(|id| [format!("rustler mask remove {} {id}", clip.id), format!("rustler mask edit {} {id} --kind blur", clip.id)])
+                .collect(),
+        });
+    }
+    log_event(ctx, store, "clip.smart_defaults", json!({"clip_id": clip.id, "stage": "popups", "masks": decisions.len()}))?;
+    Ok(decisions)
+}
+
 /// What the smart defaults may do.
 #[derive(Clone, Copy, Debug)]
 pub struct SmartOptions {
@@ -1706,6 +1916,8 @@ pub async fn apply_smart_defaults(ctx: &Ctx, store: &ProjectStore, clip: Clip, o
     };
     let raw_revision = clip.revision;
     let mut clip = clip;
+    // Source pop-ups the scan found (masked at the end, on the final segments).
+    let mut popups: Vec<(SourceId, ScanPopup)> = Vec::new();
 
     // 1. Layout + framing.
     if opts.layout {
@@ -1713,6 +1925,7 @@ pub async fn apply_smart_defaults(ctx: &Ctx, store: &ProjectStore, clip: Clip, o
         let segs = clip.segments.clone();
         match analyse_segments(ctx, store, &clip, &segs, &mut skipped).await {
             Ok(analyses) if !analyses.is_empty() => {
+                popups.extend(analyses.iter().flat_map(|a| a.popups.iter().map(|p| (a.seg.source_id.clone(), p.clone()))));
                 let (segments, paths, decisions, warnings) = apply_layout_plan(store, &clip, &analyses)?;
                 report.warnings.extend(warnings);
                 let changed = segments != clip.segments;
@@ -1885,8 +2098,13 @@ pub async fn apply_smart_defaults(ctx: &Ctx, store: &ProjectStore, clip: Clip, o
         }
     }
 
+    // 5. Source pop-ups (subscribe cards): a solid box over them, on the final timeline.
+    let popup_decisions = mask_popups(ctx, store, &clip, &popups)?;
+    let masked = popup_decisions.iter().any(|d| d.what.starts_with("masked"));
+    report.decisions.extend(popup_decisions);
+
     remap_ids(&mut report.decisions, &clip);
-    report.applied = !report.steps.is_empty() || report.decisions.iter().any(|d| d.kind == "layout");
+    report.applied = !report.steps.is_empty() || masked || report.decisions.iter().any(|d| d.kind == "layout");
     if report.applied {
         report.undo_all = Some(format!("rustler history restore {} --revision {raw_revision}", clip.id));
     }
@@ -2117,6 +2335,62 @@ mod tests {
         assert!(inside(1.5, 0.19), "{:?}", plan.keys);
         assert!(inside(4.8, 0.79), "{:?}", plan.keys);
         assert!(inside(8.0, 0.19), "{:?}", plan.keys);
+    }
+
+    #[test]
+    fn the_crop_cuts_on_the_frame_accurate_shot_cut() {
+        // a wide shot, then the other camera's close-up from the frame at 3.92 s (between the
+        // samples at 3.8 and 4.0): the crop cuts at 3.92, not at the samples' midpoint 3.9
+        let mut s: Vec<ScanSample> = (0..20).map(|i| ScanSample { t: i as f64 / 5.0, faces: vec![face(0, 0.35, 0.12, 0.02)], g: None }).collect();
+        s.extend((20..45).map(|i| ScanSample { t: i as f64 / 5.0, faces: vec![face(3, 0.7, 0.2, 0.02)], g: None }));
+        let turns = decide_active(&s, &vec![true; s.len()], 9.0, &ActiveParams::default());
+        let plan = active_camera(&s, &turns, &[3.92], 0.0, 0.3164, CameraStyle::Smooth, SwitchStyle::Auto, false);
+        let cut_t: Vec<f64> = plan.keys.windows(2).filter(|w| w[0].t == w[1].t && w[0].x != w[1].x).map(|w| w[0].t).collect();
+        assert_eq!(cut_t, vec![3.92], "{:?}", plan.keys);
+    }
+
+    fn crop_seg(src: &SourceId, s: f64, e: f64, preset: &str, x: f64) -> Segment {
+        let region = Region {
+            id: "main".into(),
+            src: Rect { x, y: 0.0, w: 0.3164, h: 1.0 },
+            dst: Rect { x: 0.0, y: 0.0, w: 1.0, h: 1.0 },
+            z: 0,
+            fit: Fit::Cover,
+        };
+        Segment {
+            id: SegmentId::new(),
+            source_id: src.clone(),
+            start: s,
+            end: e,
+            layout: Layout { preset: Some(preset.into()), regions: vec![region], background: Background::Black },
+        }
+    }
+
+    #[test]
+    fn popup_masks_follow_the_crop_and_the_cuts() {
+        let src = SourceId::new();
+        let a = crop_seg(&src, 10.0, 20.0, "center-crop", 0.30);
+        let b = crop_seg(&src, 21.0, 30.0, "center-crop", 0.30); // a pause cut 20-21
+        let c = crop_seg(&src, 30.0, 40.0, "zoom-fit", 0.30);
+        // the crop of `a` pans right during the pop-up
+        let mut paths = BTreeMap::new();
+        paths.insert(a.id.as_str().to_string(), vec![CropKey { t: 0.0, x: 0.30 }, CropKey { t: 9.0, x: 0.30 }, CropKey { t: 9.5, x: 0.40 }]);
+        let segs = vec![a, b, c];
+        let card = |s: f64, e: f64, x0: f64, x1: f64| ScanPopup { start: s, end: e, bbox: [x0, 0.85, x1, 0.95], kind: "subscribe".into(), fill: Some("#705E52".into()) };
+        let m = popup_masks(&card(18.0, 22.0, 0.40, 0.50), &src, &segs, &paths);
+        // one mask over both pieces (consecutive on the edit timeline), padded in time
+        assert_eq!(m.len(), 1, "{m:?}");
+        assert_eq!((m[0].out_start, m[0].out_end), (7.9, 11.2));
+        // wherever the crop is (left edge 0.30..0.40), the card is inside the rect
+        let r = m[0].rect;
+        assert!(r.x <= 0.0 + 1e-9 && (r.x + r.w - ((0.50 - 0.30) / 0.3164 + POPUP_PAD_X)).abs() < 2e-3, "{r:?}");
+        assert!((r.y - (0.85 - POPUP_PAD_Y)).abs() < 2e-3 && (r.y + r.h - (0.95 + POPUP_PAD_Y)).abs() < 2e-3, "{r:?}");
+        // a card outside the crop window, one in a cut-out span and one on a graphics shot: none
+        assert!(popup_masks(&card(12.0, 15.0, 0.80, 0.95), &src, &segs, &paths).is_empty());
+        assert!(popup_masks(&card(20.2, 20.7, 0.40, 0.50), &src, &segs, &paths).is_empty());
+        assert!(popup_masks(&card(32.0, 36.0, 0.40, 0.50), &src, &segs, &paths).is_empty());
+        // another source: none
+        assert!(popup_masks(&card(18.0, 22.0, 0.40, 0.50), &SourceId::new(), &segs, &paths).is_empty());
     }
 
     fn g(flat: f64, edges: f64, x_lo: f64, x_hi: f64) -> Option<GraphicsStats> {

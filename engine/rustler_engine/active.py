@@ -17,7 +17,14 @@ Lite install only (OpenCV headless + the YuNet model, no diarization, no face re
   content bounding box (``box``: textured/edged blocks as connected components, corner logos and
   specks left out) that smart layouts crop graphics to.
 
-Frames are read sequentially (one seek to ``start``), so the burst frames and the scan are cheap.
+* **Pop-ups** (``popups: true``): source pop-ups burned into the video (subscribe / channel cards):
+  a white, card-shaped rectangle that appears from one sample to the next in the lower or upper part
+  of the frame, stays put for 1-12 s and goes away (``popups``: start, end, box, kind
+  ``subscribe`` when it holds YouTube-red pixels else ``card``, and the colour that was there before).
+
+Frames are read sequentially (one seek to ``start``), so the burst frames and the scan are cheap:
+frames that only feed the scan are taken as the decoder's luma plane (no colour conversion), and
+YuNet runs in a few threads (``RUSTLER_DETECT_THREADS``; default up to 3) while decoding goes on.
 """
 
 from __future__ import annotations
@@ -167,17 +174,27 @@ def thumb(gray):
     return (t - float(t.mean())) / max(THUMB_STD_FLOOR, float(t.std()))
 
 
-def thumb_diff(a, b) -> float:
-    """0..1 difference of two normalised thumbnails: half histogram distance, half grid distance."""
+def thumb_feats(a):
+    """(normalised 24-bin histogram over -3..3, 4x8 grid of means) of a normalised thumbnail."""
     import numpy as np
 
-    ha, _ = np.histogram(np.clip(a, -3, 3), bins=24, range=(-3, 3))
-    hb, _ = np.histogram(np.clip(b, -3, 3), bins=24, range=(-3, 3))
-    hist = 0.5 * float(np.abs(ha / max(1, ha.sum()) - hb / max(1, hb.sum())).sum())
-    ga = a.reshape(4, THUMB_H // 4, 8, THUMB_W // 8).mean(axis=(1, 3))
-    gb = b.reshape(4, THUMB_H // 4, 8, THUMB_W // 8).mean(axis=(1, 3))
-    grid = min(1.0, float(np.abs(ga - gb).mean()) / 1.5)
+    idx = np.minimum(((np.clip(a, -3, 3) + 3.0) * 4.0).astype(np.int64), 23)  # = np.histogram's bins
+    h = np.bincount(idx.ravel(), minlength=24).astype(np.float64)
+    h /= max(1.0, float(h.sum()))
+    return h, a.reshape(4, THUMB_H // 4, 8, THUMB_W // 8).mean(axis=(1, 3))
+
+
+def feats_diff(fa, fb) -> float:
+    import numpy as np
+
+    hist = 0.5 * float(np.abs(fa[0] - fb[0]).sum())
+    grid = min(1.0, float(np.abs(fa[1] - fb[1]).mean()) / 1.5)
     return 0.5 * hist + 0.5 * grid
+
+
+def thumb_diff(a, b) -> float:
+    """0..1 difference of two normalised thumbnails: half histogram distance, half grid distance."""
+    return feats_diff(thumb_feats(a), thumb_feats(b))
 
 
 def peaks_of(diffs: List[Tuple[float, float]]) -> List[Dict[str, float]]:
@@ -267,6 +284,334 @@ def content_box(block_std, edges, bh: int, bw: int) -> Optional[List[float]]:
     ]
 
 
+def detect_workers() -> int:
+    """Threads for YuNet (OpenCV releases the GIL while detecting): up to 3, half the CPUs."""
+    try:
+        env = int(os.environ.get("RUSTLER_DETECT_THREADS", "0"))
+    except ValueError:
+        env = 0
+    if env > 0:
+        return min(env, 8)
+    return max(1, min(3, (os.cpu_count() or 2) // 2))
+
+
+# --- source pop-ups ------------------------------------------------------------------------------
+
+#: Pop-up analysis width (px).
+POP_W = 480
+#: A pop-up pixel: bright and unsaturated (white card) ...
+POP_V_MIN = 200
+POP_S_MAX = 40
+#: ... that is new (absent this long before, s) and stays (at least this long, s).
+POP_BACK_S = 0.4
+POP_PERSIST_S = 0.6
+#: Cards slide out over up to this long (s): a card going away is compared with how it was before.
+POP_SLIDE_S = 1.0
+#: Card size (share of the frame) and shape.
+POP_MIN_W, POP_MAX_W = 0.10, 0.60
+POP_MIN_H, POP_MAX_H = 0.035, 0.25
+POP_MIN_ASPECT = 1.6
+POP_MIN_FILL = 0.75
+POP_MIN_WHITE = 0.45
+#: Lower band starts / upper band ends here (share of the height).
+POP_LOWER = 0.55
+POP_UPPER = 0.35
+#: A card counts when it stays this long (s).
+POP_MIN_S, POP_MAX_S = 1.0, 12.0
+#: Share of YouTube-red pixels (the SUBSCRIBE button) that makes a card a subscribe card.
+POP_RED_MIN = 0.01
+
+
+def popup_masks(bgr):
+    """(white, red) boolean masks of a frame at ``POP_W`` px wide, plus the small BGR frame."""
+    import cv2
+    import numpy as np
+
+    h0, w0 = bgr.shape[:2]
+    sh = max(8, round(h0 * POP_W / w0))
+    small = cv2.resize(bgr, (POP_W, sh), interpolation=cv2.INTER_AREA)
+    hsv = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)
+    white = (hsv[..., 2] >= POP_V_MIN) & (hsv[..., 1] <= POP_S_MAX)
+    red = ((hsv[..., 0] < 8) | (hsv[..., 0] > 172)) & (hsv[..., 1] > 120) & (hsv[..., 2] > 110)
+    return white, red, small
+
+
+def card_boxes(new, white) -> List[Tuple[int, int, int, int]]:
+    """Card-shaped components ``(x, y, w, h)`` (px) of the ``new`` mask: a filled, wide rectangle of
+    card size in the lower or upper band, mostly white inside."""
+    import cv2
+    import numpy as np
+
+    sh, sw = new.shape
+    m = cv2.morphologyEx(new.astype(np.uint8), cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+    cnts, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    out = []
+    for c in cnts:
+        x, y, w, h = cv2.boundingRect(c)
+        if not (POP_MIN_W * sw <= w <= POP_MAX_W * sw and POP_MIN_H * sh <= h <= POP_MAX_H * sh):
+            continue
+        if w < POP_MIN_ASPECT * h:
+            continue
+        if cv2.contourArea(c) < POP_MIN_FILL * w * h:
+            continue
+        if not (y + h >= POP_LOWER * sh or y <= POP_UPPER * sh):
+            continue
+        if float(white[y : y + h, x : x + w].mean()) < POP_MIN_WHITE:
+            continue
+        out.append((x, y, w, h))
+    return out
+
+
+class PopupScan:
+    """Streaming detector of source pop-ups (subscribe / channel cards burned into the video): a
+    white, card-shaped rectangle that appears from one moment to the next in the lower or upper
+    part of the frame, stays put for ``POP_MIN_S``..``POP_MAX_S`` and goes away. Fed one sample
+    frame at a time (``fps``)."""
+
+    def __init__(self, fps: float):
+        self.fps = fps
+        self.back = max(1, round(POP_BACK_S * fps))
+        self.persist = max(2, round(POP_PERSIST_S * fps) + 1)
+        self.slide = max(1, round(POP_SLIDE_S * fps))
+        self.hist: List[Tuple[float, Any, Any, Any]] = []  # (t, white, red, small bgr)
+        self.open: List[Dict[str, Any]] = []
+        self.done: List[Dict[str, Any]] = []
+        self.size: Optional[Tuple[int, int]] = None
+        self.first: Optional[Tuple[float, Any]] = None
+
+    def feed(self, t: float, bgr) -> None:
+        import numpy as np
+
+        white, red, small = popup_masks(bgr)
+        self.size = white.shape
+        self.hist.append((t, white, red, small))
+        keep = max(self.back + self.persist + 1, self.slide + self.persist + 2)
+        if len(self.hist) > keep:
+            self.hist.pop(0)
+        # Open cards: still there?
+        for c in list(self.open):
+            x, y, w, h = c["px"]
+            share = float(white[y : y + h, x : x + w].mean())
+            if share < 0.6 * c["white"]:
+                c["miss"] += 1
+                if c["miss"] == 1:
+                    c["gone_t"] = t
+                if c["miss"] >= 2:
+                    c["end"] = c["gone_t"] + 1.0 / self.fps  # covers the slide-out
+                    self.open.remove(c)
+                    self.done.append(c)
+            else:
+                c["miss"] = 0
+                c["red"] = max(c["red"], float(red[y : y + h, x : x + w].mean()))
+                if t - c["start"] <= POP_SLIDE_S + POP_BACK_S:
+                    # Still sliding in when it was first seen: follow it to where it settles.
+                    c["px"] = _union(c["px"], _grow(c["px"], white, most_x=0.03, most_y=0.04))
+        if self.first is None:
+            self.first = (t, white)
+        # A card already on screen when the range starts: its appearance is not seen, but its
+        # going away is (white for `persist` samples, then gone for two). Kept when it was there
+        # from the first sample on and is a subscribe card (`finish`).
+        g = len(self.hist) - 2
+        pre_end = g - self.slide  # compared with how it was before it started to slide out
+        if pre_end >= 2:
+            pre = np.logical_and.reduce([h[1] for h in self.hist[max(0, pre_end - self.persist) : pre_end]])
+            gone = pre & ~self.hist[g][1] & ~self.hist[g + 1][1]
+            self._find(pre_end - 1, gone, gone_at=g)
+        # New cards: white now and for `persist` samples, not white `back` samples earlier.
+        if len(self.hist) < self.back + self.persist:
+            return
+        j = len(self.hist) - self.persist
+        run = self.hist[j:]
+        self._find(j, np.logical_and.reduce([h[1] for h in run]) & ~self.hist[j - self.back][1])
+
+    def _red(self, px, j: int) -> float:
+        """Most YouTube-red share in box ``px`` over the samples up to ``j`` (a SUBSCRIBE button
+        turns grey once it is clicked)."""
+        x, y, w, h = px
+        return max(float(r[y : y + h, x : x + w].mean()) for _, _, r, _ in self.hist[: j + 1])
+
+    def _find(self, j: int, new, gone_at: Optional[int] = None) -> None:
+        """Cards in mask ``new`` measured on sample ``j``: appearing ones (opened), or with
+        ``gone_at`` (the first sample without it) ones that were there from the start (closed)."""
+        import numpy as np
+
+        from_start = gone_at is not None
+        tj, wj, rj, _ = self.hist[j]
+        for px in card_boxes(new, wj):
+            # Parts of the card over something that was already white (a mug, a shirt) are not
+            # "new": grow the box over the white columns/rows that continue it.
+            px = _grow(px, wj)
+            x, y, w, h = px
+            # Part of a card already followed (or one that just went: its slide-out)?
+            recent = self.open + [c for c in self.done if c["end"] >= tj - 1.0]
+            hit = [c for c in recent if _overlap(px, c["px"]) > 0.5]
+            if from_start and hit and all(c["from_start"] for c in hit):
+                # The same card seen going away a sample later, often whole where it was first
+                # seen in pieces (something white behind it): one card, the union of the boxes.
+                c = hit[0]
+                c["px"] = _union(c["px"], px)
+                c["red"] = max(c["red"], self._red(px, j))
+                continue
+            if hit:
+                continue
+            share = float(wj[y : y + h, x : x + w].mean())
+            card = {
+                "px": px,
+                # Absent `back` samples before `j`: it came in (slid in) after that.
+                "start": self.hist[max(0, j - self.back)][0],
+                "from_start": from_start,
+                "white": share,
+                "red": float(rj[y : y + h, x : x + w].mean()),
+                "miss": 0,
+            }
+            if from_start:
+                # `j` is its last sample: it was there from the first sample on, else it is not a
+                # card this pass can place in time.
+                t0, w0 = self.first
+                if float(w0[y : y + h, x : x + w].mean()) < 0.6 * share:
+                    continue
+                under = self.hist[gone_at][3][y : y + h, x : x + w].reshape(-1, 3)  # after it went
+                card.update(
+                    start=t0,
+                    end=self.hist[gone_at][0] + 1.0 / self.fps,  # covers the slide-out
+                    red=self._red(px, j),
+                    fill=[int(v) for v in np.median(under, axis=0)][::-1],
+                )
+                self.done.append(card)
+                continue
+            under = self.hist[j - self.back][3][y : y + h, x : x + w].reshape(-1, 3)  # before it came
+            card["fill"] = [int(v) for v in np.median(under, axis=0)][::-1]  # RGB
+            self.open.append(card)
+
+    def finish(self, end_t: float) -> List[Dict[str, Any]]:
+        for c in self.open:
+            c["end"] = end_t
+            c["open_end"] = True
+        cards = self.done + self.open
+        self.open = []
+        out = []
+        if self.size is None:
+            return out
+        sh, sw = self.size
+        for c in sorted(cards, key=lambda c: c["start"]):
+            dur = c["end"] - c["start"]
+            subscribe = c["red"] >= POP_RED_MIN
+            if c["from_start"]:
+                # Seen only going away: a subscribe card that leaves inside the range (any length
+                # up to the usual maximum; its start is the range start).
+                if c.get("open_end") or not subscribe or dur > POP_MAX_S:
+                    continue
+            elif not (POP_MIN_S <= dur <= POP_MAX_S):
+                continue
+            elif c.get("open_end") and not subscribe:
+                continue  # appears and stays until the range ends: only a subscribe card counts
+            x, y, w, h = c["px"]
+            out.append(
+                {
+                    "start": round(c["start"], 3),
+                    "end": round(c["end"], 3),
+                    "box": [round(x / sw, 4), round(y / sh, 4), round((x + w) / sw, 4), round((y + h) / sh, 4)],
+                    "kind": "subscribe" if subscribe else "card",
+                    "red": round(c["red"], 4),
+                    "white": round(c["white"], 3),
+                    "fill": "#%02X%02X%02X" % tuple(c["fill"]),
+                    "open_end": bool(c.get("open_end", False)),
+                    "from_start": bool(c["from_start"]),
+                }
+            )
+        return out
+
+
+def _reach(profile) -> int:
+    """How many entries of ``profile`` (white shares going outward from a box side) still belong
+    to the card: the farthest point where the running mean is >= 0.5 and the share itself
+    >= 0.3 (an avatar or a line of text inside the card lowers single columns, the background
+    beyond the card's edge does not come back)."""
+    best, total = 0, 0.0
+    for k, v in enumerate(profile, 1):
+        total += v
+        if total / k >= 0.5 and v >= 0.3:
+            best = k
+    return best
+
+
+def _grow(px, white, most_x: float = 0.12, most_y: float = 0.04) -> Tuple[int, int, int, int]:
+    """Extends box ``px`` (``x, y, w, h``) over the white columns/rows that continue it, by at
+    most ``most_x`` / ``most_y`` of the frame per side."""
+    sh, sw = white.shape
+    x0, y0, x1, y1 = px[0], px[1], px[0] + px[2], px[1] + px[3]
+    lx, ly = int(most_x * sw), int(most_y * sh)
+    col = white[y0:y1].mean(axis=0)
+    x0 -= _reach(col[max(0, x0 - lx) : x0][::-1])
+    x1 += _reach(col[x1 : min(sw, x1 + lx)])
+    row = white[:, x0:x1].mean(axis=1)
+    y0 -= _reach(row[max(0, y0 - ly) : y0][::-1])
+    y1 += _reach(row[y1 : min(sh, y1 + ly)])
+    return (x0, y0, x1 - x0, y1 - y0)
+
+
+def _union(a, b) -> Tuple[int, int, int, int]:
+    x0, y0 = min(a[0], b[0]), min(a[1], b[1])
+    x1, y1 = max(a[0] + a[2], b[0] + b[2]), max(a[1] + a[3], b[1] + b[3])
+    return (x0, y0, x1 - x0, y1 - y0)
+
+
+def _overlap(a, b) -> float:
+    """Intersection over the smaller of two ``(x, y, w, h)`` boxes."""
+    ax, ay, aw, ah = a
+    bx, by, bw, bh = b
+    ix = max(0, min(ax + aw, bx + bw) - max(ax, bx))
+    iy = max(0, min(ay + ah, by + bh) - max(ay, by))
+    small = min(aw * ah, bw * bh)
+    return ix * iy / small if small > 0 else 0.0
+
+
+# --- the pass ------------------------------------------------------------------------------------
+
+
+def _scan_cuts(video_path: str, start: float, end: float, size: Tuple[int, int], diffs: List[Tuple[float, float]], box: Dict[str, Any]) -> None:
+    """Frame-difference scan over ``start..end`` with its own capture, run in a thread next to the
+    sample pass (decoding, colour conversion and resizing release the GIL): every frame's grey
+    thumbnail, exactly as the single pass made it. Appends ``(t, diff)`` to ``diffs``.
+    (The decoder's raw luma plane would be cheaper, but OpenCV hands it out without reordering
+    B-frames, which moved cuts by a few frames.)"""
+    import cv2
+
+    try:
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            raise RpcError("media", f"cannot open video: {video_path}")
+        try:
+            src_fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+            cap.set(cv2.CAP_PROP_POS_MSEC, start * 1000.0)
+            prev = None
+            first_t: Optional[float] = None
+            frame_i = 0
+            while not box.get("stop"):
+                if not cap.grab():
+                    break
+                pos = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
+                if first_t is None:
+                    first_t = pos if pos > 0 or start == 0 else start
+                t = pos if pos > 0 else (first_t + frame_i / src_fps)
+                frame_i += 1
+                if t >= end + 1e-6:
+                    break
+                ok, img = cap.retrieve()
+                if not ok or img is None:
+                    break
+                if (img.shape[1], img.shape[0]) != size:
+                    img = cv2.resize(img, size, interpolation=cv2.INTER_AREA)
+                th = thumb_feats(thumb(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)))
+                if prev is not None:
+                    diffs.append((t, feats_diff(prev, th)))
+                prev = th
+        finally:
+            cap.release()
+    except Exception as e:  # reported by the caller
+        box["error"] = e
+
+
 def active(params: Dict[str, Any], progress: Callable[..., None]) -> Dict[str, Any]:
     from . import faces as faces_mod
 
@@ -278,9 +623,10 @@ def active(params: Dict[str, Any], progress: Callable[..., None]) -> Dict[str, A
     fps = faces_mod._num(params, "fps", 5.0)
     motion = params.get("motion", True)
     scan = params.get("scan", False)
+    popups = params.get("popups", False)
     stats_every = params.get("stats_every", 2)
-    if not isinstance(motion, bool) or not isinstance(scan, bool):
-        raise RpcError("validation", "motion and scan must be booleans")
+    if not isinstance(motion, bool) or not isinstance(scan, bool) or not isinstance(popups, bool):
+        raise RpcError("validation", "motion, scan and popups must be booleans")
     if isinstance(stats_every, bool) or not isinstance(stats_every, int) or stats_every < 1:
         raise RpcError("validation", "stats_every must be a positive integer")
     if start < 0:
@@ -292,6 +638,10 @@ def active(params: Dict[str, Any], progress: Callable[..., None]) -> Dict[str, A
     if not os.path.isfile(video_path):
         raise RpcError("validation", f"video not found: {video_path}")
 
+    import threading
+    from collections import deque
+    from concurrent.futures import ThreadPoolExecutor
+
     import cv2
 
     model = faces_mod.ensure_model(params.get("model_path"), progress)
@@ -300,6 +650,9 @@ def active(params: Dict[str, Any], progress: Callable[..., None]) -> Dict[str, A
         raise RpcError("media", f"cannot open video: {video_path}")
     samples: List[Dict[str, Any]] = []
     diffs: List[Tuple[float, float]] = []
+    pool: Optional[ThreadPoolExecutor] = None
+    pop = PopupScan(fps) if popups else None
+    scan_box: Dict[str, Any] = {}
     try:
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -316,25 +669,66 @@ def active(params: Dict[str, Any], progress: Callable[..., None]) -> Dict[str, A
             raise RpcError("validation", f"range yields {n} samples (allowed 1..{MAX_SAMPLES})")
         scale = min(1.0, MAX_WIDTH / width)
         dw, dh = max(1, round(width * scale)), max(1, round(height * scale))
-        try:
-            detector = cv2.FaceDetectorYN.create(
+
+        def new_detector():
+            return cv2.FaceDetectorYN.create(
                 str(model), "", (dw, dh), faces_mod.SCORE_THRESHOLD, faces_mod.NMS_THRESHOLD, faces_mod.TOP_K
             )
+
+        try:
+            detector = new_detector()
         except cv2.error as e:
             raise RpcError("media", f"cannot load YuNet model {model}: {e}") from e
+        workers = detect_workers()
+        local = threading.local()
+
+        def detect_in_thread(frame):
+            d = getattr(local, "det", None)
+            if d is None:
+                d = local.det = new_detector()
+            return _detect(d, frame, faces_mod)
+
+        if workers > 1:
+            pool = ThreadPoolExecutor(workers, thread_name_prefix="yunet")
+        max_pending = 4 * workers
         burst_gap = max(1, round(src_fps * 0.05))
         burst_len = 3 if motion else 1
 
+        # The cut scan reads every frame through its own capture in a thread; this pass only
+        # converts the sample and burst frames.
+        scan_thread = None
+        if scan:
+            scan_thread = threading.Thread(target=_scan_cuts, args=(video_path, start, end, (dw, dh), diffs, scan_box), daemon=True)
+            scan_thread.start()
+
+        pend: deque = deque()  # samples waiting for their faces and burst, in order
+        open_rec: Optional[Dict[str, Any]] = None
+
+        def finish(rec: Dict[str, Any]) -> None:
+            faces = rec["fut"].result() if rec["fut"] is not None else rec["faces"]
+            rec["sample"]["faces"] = faces
+            if motion and faces:
+                _finish_sample(rec["sample"], rec["burst"], dw, dh, motion)
+            rec["burst"] = None
+
+        def drain(force: bool = False) -> None:
+            while pend:
+                head = pend[0]
+                if head is open_rec and not force:
+                    return
+                done = head["fut"] is None or head["fut"].done()
+                if not (done or force or len(pend) > max_pending):
+                    return
+                finish(pend.popleft())
+
         cap.set(cv2.CAP_PROP_POS_MSEC, start * 1000.0)
         frame_i = 0
-        prev_thumb = None
         sample_i = 0
-        pending: Optional[Dict[str, Any]] = None  # sample collecting its burst
-        burst: List[Any] = []
         next_burst_frame = 0
         first_t: Optional[float] = None
+        last_t = start
         while True:
-            if pending is None and sample_i >= n and not scan:
+            if open_rec is None and sample_i >= n:
                 break
             if not cap.grab():
                 break
@@ -342,11 +736,10 @@ def active(params: Dict[str, Any], progress: Callable[..., None]) -> Dict[str, A
             if first_t is None:
                 first_t = pos if pos > 0 or start == 0 else start
             t = pos if pos > 0 else (first_t + frame_i / src_fps)
-            if t >= end - 1e-6 and pending is None and sample_i >= n:
-                break
+            last_t = t
             want_sample = sample_i < n and t + 0.5 / src_fps >= start + sample_i / fps
-            want_burst = pending is not None and frame_i >= next_burst_frame
-            if not (scan or want_sample or want_burst):
+            want_burst = open_rec is not None and frame_i >= next_burst_frame
+            if not (want_sample or want_burst):
                 frame_i += 1
                 continue
             ok, frame = cap.retrieve()
@@ -355,42 +748,52 @@ def active(params: Dict[str, Any], progress: Callable[..., None]) -> Dict[str, A
             if scale < 1.0:
                 frame = cv2.resize(frame, (dw, dh), interpolation=cv2.INTER_AREA)
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            if scan and t < end + 1e-6:
-                th = thumb(gray)
-                if prev_thumb is not None:
-                    diffs.append((t, thumb_diff(prev_thumb, th)))
-                prev_thumb = th
             if want_burst:
-                burst.append(gray)
+                open_rec["burst"].append(gray)
                 next_burst_frame = frame_i + burst_gap
-                if len(burst) >= burst_len:
-                    _finish_sample(pending, burst, frame.shape[1], frame.shape[0], motion)
-                    pending, burst = None, []
+                if len(open_rec["burst"]) >= burst_len:
+                    open_rec = None
             if want_sample:
-                if pending is not None:  # the next sample is due: close the burst with what it has
-                    _finish_sample(pending, burst, frame.shape[1], frame.shape[0], motion)
-                    pending, burst = None, []
+                open_rec = None  # the next sample is due: the burst closes with what it has
                 tq = start + sample_i / fps
-                sample = {"t": round(tq, 4), "faces": _detect(detector, frame, faces_mod)}
+                sample: Dict[str, Any] = {"t": round(tq, 4), "faces": []}
+                rec: Dict[str, Any] = {"sample": sample, "burst": [gray] if motion else [], "fut": None, "faces": None}
+                if pool is not None:
+                    rec["fut"] = pool.submit(detect_in_thread, frame)
+                else:
+                    rec["faces"] = _detect(detector, frame, faces_mod)
                 if scan and sample_i % stats_every == 0:
                     sample["g"] = graphics_stats(gray)
+                if pop is not None:
+                    pop.feed(tq, frame)
                 samples.append(sample)
+                pend.append(rec)
                 sample_i += 1
-                if motion and sample["faces"]:
-                    pending, burst = sample, [gray]
+                if motion and burst_len > 1:
+                    open_rec = rec
                     next_burst_frame = frame_i + burst_gap
                 if sample_i % 8 == 0 or sample_i == n:
                     progress("faces.active", round(sample_i / n * 100, 1))
+            drain()
             frame_i += 1
-        if pending is not None:
-            _finish_sample(pending, burst, dw, dh, motion)
+        open_rec = None
+        drain(force=True)
+        if scan_thread is not None:
+            scan_thread.join()
+            if "error" in scan_box:
+                raise scan_box["error"]
     finally:
+        scan_box["stop"] = True
         cap.release()
+        if pool is not None:
+            pool.shutdown(wait=True)
     tracks = assign_tracks(samples)
     out: Dict[str, Any] = {"width": width, "height": height, "fps": fps, "samples": samples, "tracks": tracks}
     if scan:
         out["peaks"] = peaks_of(diffs)
         out["frames"] = len(diffs) + (1 if diffs else 0)
+    if pop is not None:
+        out["popups"] = pop.finish(min(end, last_t + 1.0 / fps))
     return out
 
 

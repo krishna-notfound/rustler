@@ -69,7 +69,7 @@ fn a_lean_is_one_eased_move_under_the_limits() {
     assert_eq!(plan.moves, 1, "{keys:?}");
     assert_eq!(plan.cuts, 0);
     assert!((centre(&keys[0]) - 0.40).abs() < 1e-3);
-    assert!((centre(keys.last().unwrap()) - 0.55).abs() < 1e-3);
+    assert!((centre(keys.last().unwrap()) - 0.55).abs() < 1e-3, "{keys:?}");
     // velocity from the dense keys: ~0 at both ends, never above the limits
     let moving: Vec<&[CropKey]> = keys.windows(2).filter(|w| w[1].t > w[0].t).collect();
     let v: Vec<f64> = moving.iter().map(|w| (w[1].x - w[0].x) / (w[1].t - w[0].t)).collect();
@@ -286,6 +286,33 @@ fn a_close_up_keeps_its_margin_inside_the_crop() {
     let st = motion_stats(&pl.keys);
     assert_eq!(st.abrupt_starts, 0, "{st:?}");
     // without the margin rule the camera would have held (face edge 2.5% from the crop edge)
-    let no_margin = plan_detailed(&s, CROP_W, &[], &CameraParams { margin_frac: 0.0, ..p });
+    let no_margin = plan_detailed(&s, CROP_W, &[], &CameraParams { margin_frac: 0.0, comfort_frac: 0.0, ..p });
     assert_eq!(no_margin.moves, 0, "{:?}", no_margin.keys);
+}
+
+#[test]
+fn jittery_boxes_and_look_room_keep_the_face_off_the_crop_edge() {
+    // Trial-2 clip 05: a speaker in profile (look-room puts the crop centre ahead of the face)
+    // leans 0.06 toward the back of the head, inside the hold box; YuNet's box width jitters
+    // 0.105..0.135 from sample to sample. The camera used to park exactly at the 8% limit of the
+    // median box, so the real boxes sat 2-4% from the crop edge. Now: every box keeps >= 6.5%.
+    let widths = [0.11, 0.135, 0.12, 0.105, 0.13, 0.115, 0.125];
+    let s = series(20.0, |t| {
+        let i = (t * FPS).round() as usize;
+        let cx = 0.44 + 0.06 * ((t - 5.0) / 1.5).clamp(0.0, 1.0);
+        let w = widths[i % widths.len()];
+        Some(CamFace { x: cx - w / 2.0, w, ..turned(cx, -0.6) })
+    });
+    let pl = plan_detailed(&s, CROP_W, &[], &CameraParams::default());
+    let mut worst = f64::INFINITY;
+    for smp in &s {
+        let f = smp.faces[0];
+        let x = at(&pl.keys, smp.t - 10.0);
+        worst = worst.min((f.x - x).min(x + CROP_W - (f.x + f.w)) / CROP_W);
+    }
+    assert!(worst >= 0.065, "worst margin {worst:.3}, keys {:?}", pl.keys);
+    assert!(pl.moves <= 2 && pl.cuts == 0, "{:?}", pl.keys);
+    let st = motion_stats(&pl.keys);
+    assert_eq!((st.reversals, st.abrupt_starts), (0, 0), "{st:?}");
+    assert!(st.jitter < 1e-3, "{st:?}");
 }
