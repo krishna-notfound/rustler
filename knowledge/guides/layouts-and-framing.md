@@ -75,6 +75,13 @@ says what was done, why, and `override_with` lists the exact commands that undo 
     the piece before the cut (the shot's last moment, framed the same way).
   - Skipped (decision `skipped`) when you passed `--layout`/`--layout-params`, the source is already vertical,
     the media file is missing or the engine is not installed.
+- **Source pop-ups** (YouTube subscribe / channel cards burned into the source: a white card with a red
+  SUBSCRIBE button that slides in at the bottom or top, stays a few seconds and goes): covered with a solid box
+  in the colour that was under the card (decision `popup`), only on `center-crop` segments. A plain white card
+  without the red button is listed but not masked (it may be a real graphic: the decision's `override_with`
+  has the `mask add` command). Undo: `rustler mask remove clp_X msk_N`; softer look:
+  `rustler mask edit clp_X msk_N --kind blur`. Masks are not part of the revision history, so `history restore`
+  leaves them in place.
 - **Cleanup** (needs exact word timings; captions-based transcripts are left alone): filler words
   (`um, uh, umm, uhh, uhm, hmm, hm, erm, ah` anywhere; `you know`, `like`, and in Hinglish `matlab, haan, na`
   only when they stand alone between pauses), then pauses longer than 1.0 s cut down to 0.15 s.
@@ -141,10 +148,11 @@ their head, the framing shifts toward the side they face by up to 10 % of the cr
 nose against the eyes, smoothed over ~2 s; a frontal face stays centred). A profile speaker then has space
 in front of the face instead of the nose touching the crop edge. The result's `look_room_shift` says how much
 was used (> 0 = room on the right). Look-room never pushes the face to the edge: the face box keeps at
-least 8 % of the crop width inside both crop edges (a face drifting that close starts an eased move even
-inside the hold box). Only a face at the very edge of the source frame can come closer. A move still
-running at a source shot cut stops there; the new shot keeps that framing only when it fits, else the crop
-cuts.
+least 8 % of the crop width inside both crop edges, measured on the box at its largest over half a second
+(detection boxes jitter in size), and a face drifting that close starts an eased move even inside the hold
+box, to a framing with 14 % to spare. Only a face at the very edge of the source frame can come closer. A
+move still running at a source shot cut stops there; the new shot keeps that framing only when it fits with
+14 % to spare, else the crop cuts with the source (exactly on the cut frame).
 
 The result reports `moves` and `cuts` per segment. QC checks the motion (`camera_motion`: moves per minute,
 direction changes, jitter, moves that start at full speed, top speed); a warning names the fix.

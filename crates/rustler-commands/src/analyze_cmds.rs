@@ -551,7 +551,8 @@ fn reuse_fetched_captions(
     }
     let (lo, hi) = section.map_or((0.0, f64::INFINITY), |s| (s.start, s.end));
     let duration = source.probe.duration.max(0.0);
-    let words: Vec<Word> = t
+    // Captions fetched before markup stripping still carry `[cues]` and `>>`: strip them here too.
+    let words: Vec<Word> = crate::source_cmds::strip_caption_markup(t
         .words
         .iter()
         .filter(|w| w.end > lo && w.start < hi)
@@ -563,12 +564,7 @@ fn reuse_fetched_captions(
             conf: w.conf,
             speaker: None,
         })
-        .enumerate()
-        .map(|(i, mut w)| {
-            w.i = i as u32;
-            w
-        })
-        .collect();
+        .collect());
     let own_t = Transcript {
         schema: t.schema.clone(),
         source_id: source.id.clone(),

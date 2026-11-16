@@ -180,11 +180,14 @@ Line-delimited JSON-RPC 2.0 over the worker's stdin/stdout. Start with
     reports `rect_source: "edges" | "expansion"`).
   - Errors: `validation` (missing/invalid `near`, `times`, paths), `media` (cannot decode/open, no readable
     frame). Progress: `stage: "overlay.find_box"`.
-- `faces.active {"video_path", "start": 0.0, "end": null|float, "fps": 5.0, "motion": true, "scan": false, "stats_every": 2, "model_path"?}`
-  -> `{"width", "height", "fps", "samples": [{"t", "faces": [{"x","y","w","h","score","lm","mouth"?,"track"}], "g"?: {"flat","edges","x_lo","x_hi","box"?}}], "tracks": [{"id","samples","mean_x","mean_w","mouth_p20"?,"mouth_p80"?}], "peaks"?: [{"t","diff","base"}], "frames"?}`
+- `faces.active {"video_path", "start": 0.0, "end": null|float, "fps": 5.0, "motion": true, "scan": false, "popups": false, "stats_every": 2, "model_path"?}`
+  -> `{"width", "height", "fps", "samples": [{"t", "faces": [{"x","y","w","h","score","lm","mouth"?,"track"}], "g"?: {"flat","edges","x_lo","x_hi","box"?}}], "tracks": [{"id","samples","mean_x","mean_w","mouth_p20"?,"mouth_p80"?}], "peaks"?: [{"t","diff","base"}], "frames"?, "popups"?: [{"start","end","box","kind","red","white","fill","open_end","from_start"}]}`
   - Lite install only (OpenCV + YuNet; no SFace, no diarization). One sequential pass over `start..end` (one seek),
     frames analysed at up to 960 px wide; `fps` in (0, 15]; `t` = start + i / fps (source time). Used by
     `crop.track_active`, `layout.plan` and the smart defaults of `clip.create`.
+  - Speed (2026-11-17): YuNet runs in up to 3 threads (half the CPUs; env `RUSTLER_DETECT_THREADS` overrides,
+    1 = serial) while decoding goes on, and the `scan` reads every frame through its own capture in a second
+    thread. Results are identical to the single-threaded pass (tested). 99 s of a 960x540 proxy: 11.6 s -> 6.0 s.
   - Faces: YuNet boxes and the five landmarks `lm` (as in `faces.track`), largest first.
   - `mouth` (when `motion`): three frames about 0.05 s apart (a burst never delays the next sample; at low
     frame rates the next sample's frame closes the burst). Mean absolute grey difference inside a mouth box
@@ -204,6 +207,20 @@ Line-delimited JSON-RPC 2.0 over the worker's stdin/stdout. Start with
     with std >= 4 or >= 3 edge pixels, closed by one block, as connected components; components under 2 % of
     the content and small ones (< 25 % of the largest) inside the outer 18 % band (channel logos) are left out.
     Absent when the frame has no content.
+  - `popups: true`: pop-ups burned into the source (YouTube subscribe / channel cards), from the sample frames
+    at 480 px wide. A pop-up pixel is bright and unsaturated (V >= 200, S <= 40). A card **appears**: pixels
+    white in the next 0.6 s of samples and not 0.4 s before, forming a filled (>= 75 %), wide (w >= 1.6 h)
+    rectangle of 10-60 % x 3.5-25 % of the frame in the lower (bottom edge below 55 %) or upper (top above 35 %)
+    band, >= 45 % white inside; the box then grows over the white columns/rows that continue it (parts over
+    something already white) and follows the slide-in for 1.4 s. It **ends** when the box is under 60 % of its
+    white share for two samples (`end` = first such sample + one period, covering the slide-out). A card already
+    on screen at `start` is found when it goes away (white for 0.6 s, compared 1 s before it disappears, then gone
+    for two samples) and was there in the first sample (`from_start: true`, `start` = range start). Kept when
+    1-12 s long; `kind`: `subscribe` when YouTube-red pixels (the SUBSCRIBE button; max over the card's life,
+    the button turns grey once clicked) cover >= 1 % of the box, else `card`. Cards seen only going away, or
+    still on screen at `end` (`open_end`), are kept only as `subscribe`. `box` `[x0, y0, x1, y1]` (0..1);
+    `fill` `#RRGGBB`: median colour of the box area before the card came (after it went, for `from_start`).
+    Rustler masks only `subscribe` cards (a plain white card may be a real graphic).
   - Errors: `validation` (missing params, video not found, bad range or flags), `media` (cannot open video,
     cannot load the YuNet model). Progress: `stage: "faces.active"`.
 - `reference.measure {"video_path", "audio_path": null|string, "max_seconds": 180, "faces": true}`

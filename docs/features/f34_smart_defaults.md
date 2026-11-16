@@ -46,8 +46,16 @@ YuNet), no diarization or recognition model.
   peak between them counts from 0.15; `scenes.json` cuts snap to the strongest peak within 0.4 s.
 - After cleanup, pieces < 0.6 s join the segment that continues them in the source (decision `fragment`),
   unless their layout carries on from the piece across the cut.
-- Camera: the face box keeps >= 8 % of the crop width inside both crop edges (`CameraParams.margin_frac`);
-  a move running at a shot cut stops there.
+- Camera: the face box keeps >= 8 % of the crop width inside both crop edges (`CameraParams.margin_frac`),
+  measured on the face's robust extent (box size and position jitter over ±0.5 s, one outlier in five dropped);
+  new framings aim at 14 % (`comfort_frac`), and an old framing carries over a shot cut only when it frames the
+  new shot with that 14 %; a move running at a shot cut stops there. Speaker shot-change events snap to the
+  frame-accurate cut between the two samples.
+- Pop-ups: `faces.active` with `popups: true` finds subscribe / channel cards burned into the source; only
+  `subscribe` cards (red button) are masked, with a solid box in the colour that was under the card, on
+  single-region `center-crop` segments (the rect covers the card wherever the crop path puts it, pause-cut
+  pieces joined), decision `popup` with `mask remove` / `mask edit --kind blur`. A plain white card is listed,
+  not masked. Masks live in extras: `history restore` does not remove them (the decision's commands do).
 - `override_with` lists have no repeated commands.
 - The report is stored in extras `smart_defaults` only when something was applied.
 
@@ -72,3 +80,19 @@ YuNet), no diarization or recognition model.
   02 0.275 s piece is kept on purpose (merging it into the centre crop showed the wide shot cropped for 7 frames;
   verified on a preview frame). Face margin: 05 samples with the framed face < 6.5 % from a crop edge 19 -> 15;
   a margin move crossing a shot cut made 02 worse until moves stop at cuts (fixed, 0 cut-off faces).
+- 2026-11-17: framing, speed and pop-ups (copy of the trial-3 project, the five trial ranges re-created with
+  `clip create`, before = v0.2.1 binary, same engine home). **Face at the edge** (5 fps YuNet samples, face box
+  < 6.5 % of the crop width from a crop edge): 05 15 -> 2, 01 1 -> 0, 03 1 -> 0, 02/04 0 -> 0; at 10 fps on 05
+  26 -> 4 (worst -17 % -> +1.4 %). Causes: the margin was met on the median box while YuNet's box width jitters
+  10-25 % (the camera parked exactly at the limit: real boxes 2-4 % from the edge); framings carried over shot
+  cuts at the limit; a speaker shot change cut the crop at the samples' midpoint, 2 frames late (half a face at
+  100.48 s). The 2 left are the last 0.3 s before a source cut. Motion: 05 moves/min 2.9 -> 4.4 (crop-path runs)
+  / QC 2.19, jitter 0 -> 0, `camera_motion` pass; 03 2.5 -> 0, 02 11.8 -> 9.4, 01 9.9 -> 9.9.
+  **Speed**: `faces.active` on 05 (99 s, 960x540 proxy) 11.6 s -> 6.0 s with identical samples, mouths, tracks
+  and peaks (YuNet in 3 threads, cut scan in its own capture/thread, histogram once per thumbnail). The
+  decoder's raw luma plane was tried for the scan and dropped: OpenCV returns it without B-frame reordering
+  (cuts moved by 2-3 frames). `clip create` 05 on an idle machine 16.0 s -> 7.0 s.
+  **Pop-ups**: whole sources: 6 cards found (02 0-2.8, 03 33.8-38.2, 05 0-3.4 / 36.8-41.0 / 75.6-80.0), all
+  real subscribe cards (checked on frames), 0 false positives (01-05, incl. the 02/04 infographics); cards
+  already on screen at the range start are found when they leave. In the trial ranges: 03 one card and 05 two
+  cards masked (renders checked: card hidden, solid box in the set's colour; no card frame left at the edges).

@@ -123,11 +123,48 @@ pub fn parse_json3(s: &str) -> rustler_core::Result<Vec<Word>> {
             raw[i].2 = next_start.max(raw[i].1);
         }
     }
-    Ok(raw
-        .into_iter()
-        .enumerate()
-        .map(|(i, (text, start, end))| Word { i: i as u32, text, start, end: end.max(start), conf: None, speaker: None })
-        .collect())
+    Ok(strip_caption_markup(
+        raw.into_iter()
+            .enumerate()
+            .map(|(i, (text, start, end))| Word { i: i as u32, text, start, end: end.max(start), conf: None, speaker: None })
+            .collect(),
+    ))
+}
+
+/// Longest bracketed cue (in words) that is removed; a longer `[` … `]` span is kept as text.
+const CUE_MAX_WORDS: usize = 6;
+
+/// Removes caption markup that is not speech from YouTube captions: bracketed cues (`[Music]`,
+/// `[ Laughter ]`, `[snorts]`), `>>` speaker-change marks and a dash that opens a line (`- Yeah`,
+/// `-Yeah`). Hyphenated words and negative numbers are kept. Word indices are renumbered.
+pub fn strip_caption_markup(words: Vec<Word>) -> Vec<Word> {
+    let mut out: Vec<Word> = Vec::with_capacity(words.len());
+    let mut k = 0;
+    while k < words.len() {
+        let t = words[k].text.trim();
+        if t.starts_with('[') {
+            // The cue ends at the first word that closes it (within a few words).
+            if let Some(end) = (k..words.len().min(k + CUE_MAX_WORDS)).find(|&j| words[j].text.trim_end_matches(|c: char| ",.!?;:".contains(c)).ends_with(']')) {
+                k = end + 1;
+                continue;
+            }
+        }
+        let mut text = t.trim_start_matches(">>").trim_start().to_string();
+        if let Some(rest) = text.strip_prefix('-') {
+            let rest = rest.trim_start_matches('-');
+            if rest.is_empty() || rest.chars().next().is_some_and(char::is_alphabetic) {
+                text = rest.to_string();
+            }
+        }
+        if !text.is_empty() {
+            out.push(Word { text, ..words[k].clone() });
+        }
+        k += 1;
+    }
+    for (i, w) in out.iter_mut().enumerate() {
+        w.i = i as u32;
+    }
+    out
 }
 
 /// Picks a caption track. `requested` is `"auto"` or a language code. Returns the yt-dlp
@@ -1315,6 +1352,27 @@ mod tests {
         assert_eq!(choose_caption(&[], &s(&["fr-orig"]), "auto"), Some(("fr-orig".into(), false)));
         assert_eq!(choose_caption(&s(&["en-GB"]), &[], "en"), Some(("en-GB".into(), true)));
         assert_eq!(choose_caption(&s(&["en"]), &[], "ja"), None);
+    }
+
+    #[test]
+    fn caption_markup_is_stripped() {
+        let ev = |t: u64, text: &str| json!({"tStartMs": t, "dDurationMs": 900, "segs": [{"utf8": text}]});
+        let doc = json!({"events": [
+            ev(0, ">> So once [snorts] again,"),
+            ev(1000, "[ Laughter ]"),
+            ev(2000, "- Yeah, a well-known -5 degrees"),
+            ev(3000, "-Right. >> [Music]"),
+            ev(4000, "[this bracket never closes in time so it stays as text"),
+        ]});
+        let words = parse_json3(&doc.to_string()).unwrap();
+        let text: Vec<&str> = words.iter().map(|w| w.text.as_str()).collect();
+        assert_eq!(
+            text,
+            ["So", "once", "again,", "Yeah,", "a", "well-known", "-5", "degrees", "Right.", "[this", "bracket", "never", "closes", "in", "time", "so", "it", "stays", "as", "text"]
+        );
+        assert!(words.iter().enumerate().all(|(i, w)| w.i == i as u32));
+        // "once" keeps its own timing (the cue's time is simply dropped)
+        assert!(words[1].start < 0.5 && words[3].start >= 2.0);
     }
 
     #[test]
