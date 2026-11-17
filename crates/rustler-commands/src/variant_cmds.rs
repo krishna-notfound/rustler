@@ -27,7 +27,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
@@ -50,8 +49,6 @@ const MAX_PARALLEL: usize = 4;
 pub fn default_parallel(nvenc: bool, cores: usize) -> usize {
     if nvenc { NVENC_PARALLEL } else { (cores / 4).clamp(1, 2) }
 }
-/// Slack when comparing file times against the render time.
-const FRESH_SLACK: Duration = Duration::from_secs(2);
 
 fn validation(stage: &str, msg: impl Into<String>) -> RustlerError {
     RustlerError::new(ErrorCode::Validation, stage, msg)
@@ -481,10 +478,6 @@ pub(crate) fn rank_by_score(store: &ProjectStore, ids: &[ClipId]) -> Vec<(ClipId
     v.into_iter().map(|(_, id, a, r)| (id, a, r)).collect()
 }
 
-fn mtime(p: &Path) -> Option<SystemTime> {
-    std::fs::metadata(p).ok()?.modified().ok()
-}
-
 /// True when the clip's latest render (of `quality` when given) exists on disk and neither the clip
 /// definition nor its extras changed after the render (or its QC, which re-saves the clip).
 pub fn render_is_fresh(store: &ProjectStore, clip: &Clip, quality: Option<RenderQuality>) -> bool {
@@ -492,17 +485,10 @@ pub fn render_is_fresh(store: &ProjectStore, clip: &Clip, quality: Option<Render
     if !store.resolve(&r.path).is_file() {
         return false;
     }
-    let mut reference = SystemTime::from(r.created_at);
-    if let Some(q) = r.qc.as_ref().and_then(|q| mtime(&store.resolve(q))) {
-        reference = reference.max(q);
-    }
-    let dir = store.clip_dir(&clip.id);
-    let newer = |f: &str| mtime(&dir.join(f)).is_some_and(|t| t > reference + FRESH_SLACK);
-    if newer("clip.json") {
-        return false;
-    }
-    // A newer sidecar only matters when its picture/sound keys changed (cover, copy and scores do not).
-    !newer("extras.json") || extras::render_extras_unchanged(store, &clip.id, &r.id) == Some(true)
+    // Content, not file times: the clip as rendered (its history snapshot) against the clip now, and
+    // the picture/sound layers the render recorded against the layers now. An edit undone a second
+    // after the render is caught too.
+    crate::project_cmds::stale_reason(store, clip, r).is_none()
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -1039,7 +1039,7 @@ fn mtime(p: &Path) -> Option<DateTime<Utc>> {
 /// Why the clip no longer matches its last render, if it doesn't. `save_clip` snapshots the previous
 /// state into `history/` on every save, so the earliest snapshot written after the render record
 /// was created holds the clip as it was rendered; that is compared with the current clip.
-fn stale_reason(store: &ProjectStore, clip: &rustler_core::Clip, render: &rustler_core::RenderRecord) -> Option<String> {
+pub(crate) fn stale_reason(store: &ProjectStore, clip: &rustler_core::Clip, render: &rustler_core::RenderRecord) -> Option<String> {
     let hist = store.clip_dir(&clip.id).join("history");
     let first_after = std::fs::read_dir(&hist)
         .into_iter()
