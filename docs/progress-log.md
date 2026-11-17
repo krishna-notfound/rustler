@@ -771,3 +771,7 @@ directed 77–94; 10 bugs). Four parallel fix branches (Opus x3, Sonnet x1, buil
 - Full `cargo test --workspace --no-fail-fast`: 102 targets, 831 passed, 0 failed. 187 commands.
 - Open: render freshness uses 2 s file-time slack, so an undo within 2 s of a render can count as fresh;
   `caption.speaker_colors` still saves without a new revision; captions have one position per clip (frozen model).
+- **v0.2.5** (2026-11-17): per-segment caption positions (`caption set --segment-id`, `caption place --per-segment true`,
+  ASS margin per event, QC caption checks per segment; trial clip 1: stage shot 0.73 below the source subtitle, close-ups
+  0.20/0.17 above the head, verified on frames); `export batch` freshness compares content (no 2 s grace);
+  `caption.speaker_colors` and `crop.track_speaker` are their own undo steps.
