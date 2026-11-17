@@ -15,7 +15,7 @@
 //! | `effects` / `transitions` / `progress_bar` | same names under `tracks` |
 //! | `meta` (`score`, `retention`, …), `post`, `variant_of`, `variant_info` | `meta` |
 //! | `template_ref` | `template_ref` |
-//! | anything else | `tracks.extra` (verbatim) |
+//! | anything else | `tracks.extra` (verbatim; `grade` and `caption_positions` are shape-checked) |
 //!
 //! [`disassemble`] writes both files under the clip's revision check: it snapshots the extras of
 //! the revision it supersedes to `history/<rev>.extras.json` (next to the clip snapshot
@@ -385,6 +385,15 @@ fn check_owner_types(m: &Map<String, Value>) -> Result<()> {
     chk::<ProgressBar>(m, PROGRESS_BAR_KEY)?;
     // `grade` stays in tracks.extra (grade.* commands own it); check its shape all the same.
     chk::<rustler_media::grade::GradeDoc>(m, crate::grade_cmds::GRADE_KEY)?;
+    // `caption_positions` (a segment's own caption baseline) stays in tracks.extra too.
+    use crate::caption_place_cmds::{POSITIONS_KEY, SegmentPositions};
+    chk::<SegmentPositions>(m, POSITIONS_KEY)?;
+    if let Some(v) = m.get(POSITIONS_KEY)
+        && let Ok(p) = serde_json::from_value::<SegmentPositions>(v.clone())
+        && let Some((seg, y)) = p.iter().find(|(_, y)| !(0.0..=1.0).contains(*y))
+    {
+        return Err(verr(format!("/tracks/extra/{POSITIONS_KEY}/{seg}: position_y {y} must be between 0 (top) and 1 (bottom)")));
+    }
     Ok(())
 }
 

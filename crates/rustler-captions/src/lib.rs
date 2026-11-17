@@ -7,9 +7,9 @@ pub mod emoji;
 pub mod presets;
 
 pub use ass::{
-    WordPaint, parse_hex_colour, write_ass, write_ass_colored, write_ass_colored_with, write_ass_painted_with, write_ass_with,
-    write_srt,
+    PositionSpan, WordLooks, WordPaint, parse_hex_colour, position_at, write_ass, write_ass_colored, write_ass_colored_with,
+    write_ass_painted_with, write_ass_placed, write_ass_with, write_srt,
 };
 pub use custom::{ActiveKind, CustomStyle, find_preset_in, list_presets_with, load_custom_presets};
-pub use chunk::{CaptionWord, chunk_words, is_continuation, join_fragments};
+pub use chunk::{CaptionWord, chunk_words, chunk_words_split, is_continuation, join_fragments};
 pub use presets::{PRESETS, Preset, PresetInfo, list_presets};

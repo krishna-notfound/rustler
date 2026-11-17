@@ -100,6 +100,7 @@ largest, before a full render.
 ```
 rustler caption place clp_X                 # measure + suggest, changes nothing
 rustler caption place clp_X --apply true    # set the suggestion (one revision; history undo reverts it)
+rustler caption place clp_X --per-segment true --apply true   # keep the clip-wide spot, move only the shots it does not suit
 ```
 
 Per segment it maps onto the 9:16 canvas (through the layout, fit and crop path): the source's own
@@ -108,14 +109,43 @@ changing, `static` = title/logo/watermark; plus the `analyze ocr` caption band w
 **faces** (`analyze faces` data, else the engine's face detector on the segment). Then it scores every
 `position_y` from 0.10 to 0.85 and suggests the closest one to the current spot that clears subtitles and
 faces, weighted by segment length. Read `segments[].at_current` (what the current spot covers),
-`at_suggested`, `safe_ranges` and `best_y`; `remaining_conflicts` lists segments no single position can
-clear (captions are one position per clip). Then **look**: `render preview-frame` at the segment with source
-text. If the source subtitles sit where ours must go, hide them instead with `mask add` (a blur box on the
-canvas band listed in `source_text`). The scan reads no text; a busy shelf or table edge can show up as
-`static` text, so trust the frame over the number.
+`at_suggested`, `safe_ranges` and `best_y`; `remaining_conflicts` lists what the suggestion still covers.
+Then **look**: `render preview-frame` at the segment with source text. If the source subtitles sit where ours
+must go, hide them instead with `mask add` (a blur box on the canvas band listed in `source_text`). The scan
+reads no text; a busy shelf or table edge can show up as `static` text, so trust the frame over the number.
+
+### A segment's own caption position
+
+When shots need different spots (a wide stage shot with the source's subtitles under the middle, then
+close-ups where 0.70 lands on the mouth), give a segment its own position. The clip-wide `position_y` stays
+for every other segment.
+
+```
+rustler caption set clp_X --segment-id seg_S --position-y 0.19              # one undoable revision
+rustler caption set clp_X --segment-id seg_S --clear-segment-position true  # back to the clip-wide spot
+```
+
+`caption place` suggests these for you:
+
+- `suggested_segment_positions`: when no single position clears every segment, the segments the clip-wide
+  suggestion still leaves on subtitles or a face, with their own best spot. `--apply true` sets the clip-wide
+  suggestion and these together.
+- `per_segment_positions` (`--per-segment true`): keep the current clip-wide spot and move only the segments
+  it does not suit. Use it when one shot type is the exception; prefer one clip-wide spot when it clears
+  everything, because captions that jump between shots are harder to follow.
+
+Either `--apply` replaces earlier per-segment positions and is one revision (`history undo` reverts both the
+clip-wide and the per-segment change). `segments[].current_y` shows the position each segment uses now.
+Words take the position of the segment they are spoken in, and a caption line never spans two positions
+(it is split at the cut). The positions are stored in `extras.json` `caption_positions`
+(`{segment_id: position_y}`, shown in `timeline show` under `tracks.extra`). When `edit split`,
+`remove-pauses` or `remove-words` re-cut a segment, the new pieces keep its position; when the segment is
+deleted the position is dropped with a warning (`history undo` brings it back).
 
 QC repeats the subtitle part as `caption_over_source_text` (warn when our caption band overlaps, or sits within 0.03 of, the
-source's burned-in subtitles for 0.5 s or more; fix hint `caption place`).
+source's burned-in subtitles for 0.5 s or more; fix hint `caption place`). It, `caption_over_face` and
+`caption_safe_zone` judge each segment at its own position; when the covered face is in a segment with its
+own position, the hint names that segment (`caption set ... --segment-id`).
 
 ## 4. Words per line
 

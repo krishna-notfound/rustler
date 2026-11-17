@@ -151,9 +151,29 @@ fn suggest_from_report(clip_id: &ClipId, v: &QcView) -> Vec<(Suggestion, Vec<Op>
                 auto_safe = true;
             }
             "caption_safe_zone" => {
-                commands = vec![format!("rustler clip set-captions {cid} --position-y 0.70"), render.clone()];
-                ops = vec![Op::SetCaptionY(0.70), Op::Rerender];
-                auto_safe = true;
+                let wide_ok = c.value.get("position_y").and_then(Value::as_f64).is_some_and(|y| (0.10..=0.85).contains(&y));
+                // A segment's own position outside the zone: suggest moving that segment (no auto fix).
+                let seg = c.value.get("segment_positions").and_then(Value::as_array).and_then(|a| {
+                    a.iter().find(|p| p.get("position_y").and_then(Value::as_f64).is_some_and(|y| !(0.10..=0.85).contains(&y)))
+                });
+                match seg.and_then(|p| p.get("segment_id")).and_then(Value::as_str) {
+                    Some(s) if wide_ok => {
+                        commands = vec![format!("rustler caption set {cid} --segment-id {s} --position-y 0.70"), render.clone()];
+                    }
+                    _ => {
+                        commands = vec![format!("rustler clip set-captions {cid} --position-y 0.70"), render.clone()];
+                        ops = vec![Op::SetCaptionY(0.70), Op::Rerender];
+                        auto_safe = true;
+                    }
+                }
+            }
+            "caption_over_face" if c.value.get("suggestion_for_segment").and_then(Value::as_str).is_some() => {
+                // The face is covered where a segment has its own position: move that segment's
+                // captions (suggested, not applied automatically).
+                let seg = c.value["suggestion_for_segment"].as_str().unwrap_or_default();
+                if let Some(y) = c.value.get("suggested_position_y").and_then(Value::as_f64) {
+                    commands = vec![format!("rustler caption set {cid} --segment-id {seg} --position-y {y:.2}"), render.clone()];
+                }
             }
             "caption_over_face" => {
                 if let Some(y) = c.value.get("suggested_position_y").and_then(Value::as_f64) {

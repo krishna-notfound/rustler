@@ -595,14 +595,25 @@ pub async fn run_qc_with(
     // caption_safe_zone (platform UI covers the very top and bottom)
     {
         let y = clip.captions.position_y;
-        let bad = clip.captions.enabled && !(SAFE_ZONE_MIN_Y..=SAFE_ZONE_MAX_Y).contains(&y);
+        let outside = |y: f64| !(SAFE_ZONE_MIN_Y..=SAFE_ZONE_MAX_Y).contains(&y);
+        // Segments with their own caption position are judged at that position.
+        let seg_bad: Vec<&CaptionPosition> = extras.caption_positions.iter().filter(|p| outside(p.position_y)).collect();
+        let bad = clip.captions.enabled && (outside(y) || !seg_bad.is_empty());
+        let mut value = json!({ "captions_enabled": clip.captions.enabled, "position_y": y });
+        if !extras.caption_positions.is_empty() {
+            value["segment_positions"] = json!(extras.caption_positions.iter().map(|p| json!({"segment_id": p.segment_id, "position_y": p.position_y})).collect::<Vec<_>>());
+        }
         checks.push(check(
             "caption_safe_zone",
             if bad { QcStatus::Warn } else { QcStatus::Pass },
-            json!({ "captions_enabled": clip.captions.enabled, "position_y": y }),
+            value,
             &format!("caption position_y between {SAFE_ZONE_MIN_Y} and {SAFE_ZONE_MAX_Y} (outside the platform UI zones)"),
-            bad.then(|| {
-                format!("captions sit under platform UI; move them: rustler clip set-captions {cid} --position-y 0.70")
+            bad.then(|| match seg_bad.first() {
+                Some(p) if !outside(y) => format!(
+                    "captions of segment {} sit under platform UI (position_y {:.2}); move them: rustler caption set {cid} --segment-id {} --position-y 0.70",
+                    p.segment_id, p.position_y, p.segment_id
+                ),
+                _ => format!("captions sit under platform UI; move them: rustler clip set-captions {cid} --position-y 0.70"),
             }),
         ));
     }
@@ -704,6 +715,32 @@ pub struct QcExtras {
     /// Burned-in source subtitles as they land on the canvas (`caption.place` scan):
     /// `None` = not measured (no check), `Some(Err(reason))` = the scan could not run.
     pub source_text: Option<std::result::Result<Vec<SourceTextSpan>, String>>,
+    /// Segments whose captions sit at their own position (extras `caption_positions`), with their
+    /// span on the rendered timeline. Empty = every segment uses `captions.position_y`.
+    pub caption_positions: Vec<CaptionPosition>,
+}
+
+/// A segment's own caption position during its span of the render.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CaptionPosition {
+    pub segment_id: String,
+    /// Rendered-timeline seconds (the face samples' timeline).
+    pub out_start: f64,
+    pub out_end: f64,
+    pub position_y: f64,
+}
+
+/// The caption position of segment `segment_id` (its own, else the clip-wide one).
+pub fn caption_y_for_segment(clip: &Clip, extras: &QcExtras, segment_id: &str) -> f64 {
+    extras.caption_positions.iter().find(|p| p.segment_id == segment_id).map_or(clip.captions.position_y, |p| p.position_y)
+}
+
+/// The caption position at render time `t` and the segment that sets it (`None` = clip-wide).
+pub fn caption_y_at<'a>(clip: &Clip, extras: &'a QcExtras, t: f64) -> (f64, Option<&'a str>) {
+    match extras.caption_positions.iter().find(|p| t >= p.out_start && t < p.out_end) {
+        Some(p) => (p.position_y, Some(p.segment_id.as_str())),
+        None => (clip.captions.position_y, None),
+    }
 }
 
 /// Gap (fraction of the frame height) kept between our caption band and a source subtitle band.
@@ -742,25 +779,37 @@ pub fn source_text_check(clip: &Clip, extras: &QcExtras) -> Option<QcCheck> {
     };
     let y = clip.captions.position_y;
     let (lo, hi) = caption_band(y);
-    // Right next to each other reads as stacked double captions too.
+    // Right next to each other reads as stacked double captions too. Each span is judged at the
+    // caption position of its own segment.
     let m = SOURCE_TEXT_MARGIN;
-    let hits: Vec<&SourceTextSpan> = spans.iter().filter(|s| s.y0 - m < hi && s.y1 + m > lo).collect();
-    let secs: f64 = hits.iter().map(|s| (s.out_end - s.out_start).max(0.0)).sum();
+    let hits: Vec<(&SourceTextSpan, f64)> = spans
+        .iter()
+        .map(|s| (s, caption_y_for_segment(clip, extras, &s.segment_id)))
+        .filter(|(s, y)| {
+            let (lo, hi) = caption_band(*y);
+            s.y0 - m < hi && s.y1 + m > lo
+        })
+        .collect();
+    let secs: f64 = hits.iter().map(|(s, _)| (s.out_end - s.out_start).max(0.0)).sum();
     let warn = secs >= 0.5;
+    let mut value = json!({
+        "position_y": y,
+        "band": [r2(lo), r2(hi)],
+        "source_subtitle_spans": spans.len(),
+        "overlap_s": r2(secs),
+        "overlaps": hits.iter().map(|(s, y)| json!({"segment_id": s.segment_id, "out_start": r2(s.out_start), "out_end": r2(s.out_end), "source_text_band": [r2(s.y0), r2(s.y1)], "position_y": y})).collect::<Vec<_>>(),
+    });
+    if !extras.caption_positions.is_empty() {
+        value["segment_positions"] = json!(extras.caption_positions.iter().map(|p| json!({"segment_id": p.segment_id, "position_y": p.position_y})).collect::<Vec<_>>());
+    }
     Some(check(
         "caption_over_source_text",
         if warn { QcStatus::Warn } else { QcStatus::Pass },
-        json!({
-            "position_y": y,
-            "band": [r2(lo), r2(hi)],
-            "source_subtitle_spans": spans.len(),
-            "overlap_s": r2(secs),
-            "overlaps": hits.iter().map(|s| json!({"segment_id": s.segment_id, "out_start": r2(s.out_start), "out_end": r2(s.out_end), "source_text_band": [r2(s.y0), r2(s.y1)]})).collect::<Vec<_>>(),
-        }),
+        value,
         expected,
         warn.then(|| {
             format!(
-                "our captions sit on the source's own burned-in subtitles for {secs:.1} s (double captions); see where they can go: rustler caption place {cid} (apply its suggestion with --apply true), or hide the source text with a mask: rustler mask add {cid} ..."
+                "our captions sit on the source's own burned-in subtitles for {secs:.1} s (double captions); see where they can go: rustler caption place {cid} (--apply true sets the suggestion, per segment when the segments need different spots), or hide the source text with a mask: rustler mask add {cid} ..."
             )
         }),
     ))
@@ -904,42 +953,65 @@ pub fn face_checks(clip: &Clip, extras: &QcExtras) -> Vec<QcCheck> {
     if caps {
         let y = clip.captions.position_y;
         let (lo, hi) = caption_band(y);
-        // the largest face overlapping the band, per sample
-        let hits: Vec<&FaceBox> = samples
+        // the largest face overlapping the band at that moment's caption position (a segment's
+        // own position, else the clip-wide one), per sample
+        let hits: Vec<(&FaceBox, Option<&str>)> = samples
             .iter()
             .filter_map(|s| {
+                let (y, seg) = caption_y_at(clip, extras, s.t);
+                let (lo, hi) = caption_band(y);
                 s.faces
                     .iter()
                     .filter(|f| f.y < hi && f.y + f.h > lo)
                     .max_by(|a, b| (a.w * a.h).partial_cmp(&(b.w * b.h)).unwrap_or(std::cmp::Ordering::Equal))
+                    .map(|f| (f, seg))
             })
             .collect();
         let r = ratio(hits.len(), n);
         let warn = r > CAPTION_OVER_FACE_WARN_RATIO;
+        // The suggestion is for where most hits are: the clip-wide position or one segment's own.
+        let mut groups: Vec<(Option<&str>, usize)> = Vec::new();
+        for (_, seg) in &hits {
+            match groups.iter_mut().find(|(g, _)| g == seg) {
+                Some(g) => g.1 += 1,
+                None => groups.push((*seg, 1)),
+            }
+        }
+        let worst = groups.iter().max_by_key(|(_, k)| *k).and_then(|(g, _)| *g);
         let suggestion = if hits.is_empty() {
             None
         } else {
-            let top = median(hits.iter().map(|f| f.y).collect());
-            let bottom = median(hits.iter().map(|f| f.y + f.h).collect());
+            let top = median(hits.iter().filter(|(_, g)| *g == worst).map(|(f, _)| f.y).collect());
+            let bottom = median(hits.iter().filter(|(_, g)| *g == worst).map(|(f, _)| f.y + f.h).collect());
             suggest_caption_y(top, bottom)
         };
+        let mut value = json!({
+            "samples": n,
+            "overlap_ratio": r2(r),
+            "position_y": y,
+            "band": [r2(lo), r2(hi)],
+            "suggested_position_y": suggestion,
+        });
+        if !extras.caption_positions.is_empty() {
+            value["segment_positions"] = json!(extras.caption_positions.iter().map(|p| json!({"segment_id": p.segment_id, "position_y": p.position_y})).collect::<Vec<_>>());
+            value["suggestion_for_segment"] = json!(worst);
+        }
         out.push(check(
             "caption_over_face",
             if warn { QcStatus::Warn } else { QcStatus::Pass },
-            json!({
-                "samples": n,
-                "overlap_ratio": r2(r),
-                "position_y": y,
-                "band": [r2(lo), r2(hi)],
-                "suggested_position_y": suggestion,
-            }),
+            value,
             &exp_caption,
-            warn.then(|| match suggestion {
-                Some(s) => format!(
+            warn.then(|| match (suggestion, worst) {
+                (Some(s), Some(seg)) => format!(
+                    "captions cover the speaker's face in {:.0}% of samples, mostly in segment {seg} (its own position {:.2}); move them: rustler caption set {cid} --segment-id {seg} --position-y {s:.2} (then re-render: rustler render run {cid})",
+                    r * 100.0,
+                    caption_y_for_segment(clip, extras, seg)
+                ),
+                (Some(s), None) => format!(
                     "captions cover the speaker's face in {:.0}% of samples; move them: rustler clip set-captions {cid} --position-y {s:.2} (then re-render: rustler render run {cid})",
                     r * 100.0
                 ),
-                None => format!(
+                (None, _) => format!(
                     "captions cover the speaker's face in {:.0}% of samples and no position clears it; reframe so the face sits higher or smaller: rustler crop track-face {cid} (or pick another layout: rustler clip set-layout {cid} --preset blur-fit)",
                     r * 100.0
                 ),
@@ -1348,6 +1420,37 @@ mod tests {
         assert_eq!(suggest_caption_y(0.60, 0.82), Some(0.54));
         // face fills the frame: nothing clears it
         assert_eq!(suggest_caption_y(0.05, 0.95), None);
+    }
+
+    #[test]
+    fn per_segment_caption_positions_are_used_by_face_and_source_text_checks() {
+        let clip = clip_with("blur-fit", true, 0.70);
+        let seg = "seg_00000000000000000000000002";
+        // Samples 0..10 at 0.5 s: a face at 0.62-0.82 in the first 2.5 s (clip-wide 0.70 band
+        // 0.62-0.74 covers it), none later. The segment covering 0..2.5 s has its own 0.40.
+        let hit = samples(10, |i| if i < 5 { vec![face(0.3, 0.62, 0.3, 0.2)] } else { vec![] });
+        let own = CaptionPosition { segment_id: seg.into(), out_start: 0.0, out_end: 2.5, position_y: 0.40 };
+        let plain = QcExtras { faces: Some(hit.clone()), ..QcExtras::default() };
+        assert_eq!(by_name(&face_checks(&clip, &plain), "caption_over_face").status, QcStatus::Warn);
+        let placed = QcExtras { faces: Some(hit.clone()), caption_positions: vec![own.clone()], ..QcExtras::default() };
+        let c = by_name(&face_checks(&clip, &placed), "caption_over_face").clone();
+        assert_eq!(c.status, QcStatus::Pass, "{c:?}");
+        assert_eq!(c.value["segment_positions"][0]["position_y"], json!(0.40));
+        // The segment's own position on the face: the hint names the segment.
+        let low = CaptionPosition { position_y: 0.72, ..own.clone() };
+        let ex = QcExtras { faces: Some(hit), caption_positions: vec![low], ..QcExtras::default() };
+        let c = by_name(&face_checks(&clip, &ex), "caption_over_face").clone();
+        assert_eq!(c.status, QcStatus::Warn);
+        assert!(c.fix_hint.as_deref().unwrap().contains(&format!("caption set clp_00000000000000000000000001 --segment-id {seg} --position-y")), "{c:?}");
+
+        // Source subtitles at 0.61-0.64 in that segment: under 0.70, clear of its own 0.40.
+        let spans = vec![SourceTextSpan { segment_id: seg.into(), out_start: 0.0, out_end: 2.5, y0: 0.61, y1: 0.64 }];
+        let ex = QcExtras { source_text: Some(Ok(spans.clone())), ..QcExtras::default() };
+        assert_eq!(source_text_check(&clip, &ex).unwrap().status, QcStatus::Warn);
+        let ex = QcExtras { source_text: Some(Ok(spans)), caption_positions: vec![own], ..QcExtras::default() };
+        let c = source_text_check(&clip, &ex).unwrap();
+        assert_eq!(c.status, QcStatus::Pass, "{c:?}");
+        assert_eq!(c.value["overlap_s"], json!(0.0));
     }
 
     #[test]

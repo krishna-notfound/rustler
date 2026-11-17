@@ -285,6 +285,21 @@ fn registry_has(name: &str) -> bool {
     reg.describe(name).is_some()
 }
 
+/// Segments with their own caption position, on the rendered timeline (the face samples' one).
+fn caption_positions(store: &ProjectStore, clip: &Clip) -> Vec<rustler_media::qc::CaptionPosition> {
+    let Ok(pos) = crate::caption_place_cmds::load_positions(store, &clip.id) else { return Vec::new() };
+    let spans = crate::caption_place_cmds::position_spans(clip, &pos);
+    if spans.is_empty() {
+        return Vec::new();
+    }
+    let tmap = crate::fx_cmds::transition_map(store, clip).ok();
+    let map = |t: f64| tmap.as_ref().map_or(t, |m| m.map_time(t));
+    spans
+        .into_iter()
+        .map(|(segment_id, a, b, position_y)| rustler_media::qc::CaptionPosition { segment_id, out_start: map(a), out_end: map(b), position_y })
+        .collect()
+}
+
 async fn gather_extras(ctx: &Ctx, store: &ProjectStore, clip: &Clip, render_path: &Path, paths: &ToolPaths, want_faces: bool) -> QcExtras {
     let raw: serde_json::Value = store
         .read_json(&crate::clip_cmds::extras_rel(&clip.id))
@@ -298,6 +313,7 @@ async fn gather_extras(ctx: &Ctx, store: &ProjectStore, clip: &Clip, render_path
         None
     };
     QcExtras {
+        caption_positions: caption_positions(store, clip),
         source_text,
         faces,
         faces_off: !want_faces,

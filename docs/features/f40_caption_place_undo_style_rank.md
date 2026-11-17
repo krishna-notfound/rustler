@@ -34,8 +34,18 @@ suggests; the agent decides** — nothing here changes a clip unless the agent p
    `<name>.report.json` (`rank`), optionally in the file name (`--rank-in-name true` -> `01-<name>`).
    `clip.list --sort score` lists clips the same way with `rank`, `agent_score`, `retention_score`.
 
-**Out (explicitly):** per-segment caption positions (the frozen caption model has one `position_y`; conflicts
-are reported per segment), OCR in the lite install, automatic masking of source subtitles (suggested as a
+5. Per-segment caption positions (added 2026-11-17, see Status Log): extras `caption_positions`
+   (`{segment_id: position_y}`) next to the frozen clip-wide `position_y`. `caption set <clip> --segment-id S
+   --position-y Y` / `--clear-segment-position true` (one revision each); `caption place` reports
+   `suggested_segment_positions` (segments the clip-wide suggestion leaves blocked) and `per_segment_positions`
+   (`--per-segment true`: keep the clip-wide spot, move only the segments it does not suit); `--apply` sets
+   clip-wide + per-segment as one revision. The ASS writer gives each caption event the position of the segment
+   its words fall in (a chunk is split at a position change); QC `caption_over_source_text`,
+   `caption_over_face` and `caption_safe_zone` judge each segment at its own position; re-cut segments inherit
+   the position (deleted ones drop it with a warning); `timeline show` lists it under `tracks.extra`
+   (shape-checked on apply).
+
+**Out (explicitly):** OCR in the lite install, automatic masking of source subtitles (suggested as a
 command only), music track choice in learned templates.
 
 ## User-facing Behavior
@@ -93,3 +103,20 @@ rustler history undo clp_X                    # removes exactly the last layer c
   `clip list --sort score` / `export batch --all true --rank-in-name true`: 01 clip 3 (agent 78), 02 clip 2 (61),
   03 clip 1 (retention 86 only); `rank` in each report.json.
   Seen, not fixed: `render_is_fresh` allows 2 s slack, so an undo within 2 s of a render still counts as fresh.
+- 2026-11-17 — Per-segment caption positions (worktree `agent-ab0f642b53e5b69ed`). Files: `rustler-captions`
+  `ass.rs` (`write_ass_placed`, `PositionSpan`, `WordLooks`, per-event MarginV), `chunk.rs` (`chunk_words_split`);
+  `caption_place_cmds.rs` (`caption_positions` key, spans, carry, `--per-segment`, per-segment plan on apply),
+  `clip_cmds.rs` (`caption.set --segment-id / --clear-segment-position`), `render_cmds.rs`, `qc_cmds.rs`,
+  `rustler-media/src/qc.rs` (`CaptionPosition`, per-segment band in the three caption checks), `edit_cmds.rs`
+  (carry after re-cuts), `fix_cmds.rs` (segment hints are suggested, not auto-applied), `timeline_doc.rs` (shape
+  check). Tests: captions `tests/ass.rs` +2 (split at the boundary, MarginV on every preset and layer, colours and
+  paints), media `qc::` +1, commands lib `caption_place_cmds` +1, `tests/f40.rs` +3 (set/validate/no-op/undo/
+  timeline/re-cut/delete; `caption place --apply` with segments that need different spots; real ffmpeg render
+  with per-event MarginV). Real check on a copy of the trial-raj project (debug build), clip 1: `caption place`
+  still finds one clip-wide spot (0.19) that clears everything, so `suggested_segment_positions` is empty;
+  `--per-segment true --apply true` kept 0.70 clip-wide and set the stage shot to 0.73 and the two close-ups to
+  0.20 / 0.17 (one revision). Draft render frames: 6.3 s stage shot, our captions below the source's
+  "kind of an example of that" with no overlap; 15.2 s and 25.7 s close-ups, captions above the head; 2.0 s first
+  close-up, captions at 0.70 below the face. `qc run --faces true`: `caption_over_source_text` pass (0 s),
+  `caption_over_face` pass (10 % of samples), `caption_safe_zone` pass, each with `segment_positions`.
+  `history undo` removed all three positions in one step.

@@ -1,6 +1,6 @@
 //! ASS (Advanced SubStation Alpha) writer and SRT export. (Task 7)
 
-use crate::chunk::{CaptionWord, chunk_words};
+use crate::chunk::{CaptionWord, chunk_words, chunk_words_split};
 use crate::custom::find_preset_in;
 use crate::presets::{ActiveStyle, PRESETS, Preset};
 use rustler_core::{Canvas, CaptionTrack, ErrorCode, RustlerError};
@@ -76,7 +76,7 @@ pub fn write_ass_with(
     font_family: &str,
     custom: &[Preset],
 ) -> rustler_core::Result<String> {
-    write_ass_impl(words, None, track, canvas, font_family, custom)
+    write_ass_impl(words, None, track, canvas, font_family, custom, &[])
 }
 
 /// `#RRGGBB` (or `RRGGBB`) to an ASS `0x00BBGGRR` colour; `None` for anything else.
@@ -112,6 +112,11 @@ pub fn write_ass_colored_with(
     font_family: &str,
     custom: &[Preset],
 ) -> rustler_core::Result<String> {
+    let paints = parse_colors(colors)?;
+    write_ass_impl(words, Some(&paints), track, canvas, font_family, custom, &[])
+}
+
+fn parse_colors(colors: &[Option<String>]) -> rustler_core::Result<Vec<Paint>> {
     let parsed = colors
         .iter()
         .map(|c| match c {
@@ -122,8 +127,7 @@ pub fn write_ass_colored_with(
             }),
         })
         .collect::<rustler_core::Result<Vec<Option<u32>>>>()?;
-    let paints: Vec<Paint> = parsed.into_iter().map(|colour| Paint { colour, scale: None }).collect();
-    write_ass_impl(words, Some(&paints), track, canvas, font_family, custom)
+    Ok(parsed.into_iter().map(|colour| Paint { colour, scale: None }).collect())
 }
 
 /// Per-word look for [`write_ass_painted_with`] (keyword captions): text colour `#RRGGBB` and a
@@ -145,7 +149,12 @@ pub fn write_ass_painted_with(
     font_family: &str,
     custom: &[Preset],
 ) -> rustler_core::Result<String> {
-    let parsed = paints
+    let parsed = parse_paints(paints)?;
+    write_ass_impl(words, Some(&parsed), track, canvas, font_family, custom, &[])
+}
+
+fn parse_paints(paints: &[WordPaint]) -> rustler_core::Result<Vec<Paint>> {
+    paints
         .iter()
         .map(|p| {
             let colour = match &p.colour {
@@ -164,8 +173,64 @@ pub fn write_ass_painted_with(
             };
             Ok(Paint { colour, scale })
         })
-        .collect::<rustler_core::Result<Vec<Paint>>>()?;
-    write_ass_impl(words, Some(&parsed), track, canvas, font_family, custom)
+        .collect::<rustler_core::Result<Vec<Paint>>>()
+}
+
+/// A stretch of output time whose captions sit at their own `position_y` (a segment with its own
+/// caption position). Times are on the same timeline as the caption words.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PositionSpan {
+    pub out_start: f64,
+    pub out_end: f64,
+    /// Caption baseline, 0 (top) .. 1 (bottom).
+    pub position_y: f64,
+}
+
+/// The caption position at output time `t`: the first span containing it, else `default`.
+pub fn position_at(spans: &[PositionSpan], t: f64, default: f64) -> f64 {
+    spans.iter().find(|s| t >= s.out_start && t < s.out_end).map_or(default, |s| s.position_y)
+}
+
+/// Per-word look for [`write_ass_placed`]: none, speaker colours, or keyword paints.
+#[derive(Clone, Copy, Debug, Default)]
+pub enum WordLooks<'a> {
+    #[default]
+    Plain,
+    /// `#RRGGBB` per word, as [`write_ass_colored_with`].
+    Colors(&'a [Option<String>]),
+    /// Colour + size per word, as [`write_ass_painted_with`].
+    Paints(&'a [WordPaint]),
+}
+
+/// The full writer: per-word looks and per-segment caption positions. A word takes the position
+/// of the span its middle falls in (`track.position_y` outside every span); a chunk never spans
+/// two positions (it is split at the boundary), and the events of a chunk at a position other
+/// than `track.position_y` carry their own MarginV. With no spans the output is byte-identical to
+/// [`write_ass_with`] / [`write_ass_colored_with`] / [`write_ass_painted_with`].
+pub fn write_ass_placed(
+    words: &[CaptionWord],
+    looks: WordLooks,
+    track: &CaptionTrack,
+    canvas: &Canvas,
+    font_family: &str,
+    custom: &[Preset],
+    positions: &[PositionSpan],
+) -> rustler_core::Result<String> {
+    if let Some(s) = positions.iter().find(|s| !(s.position_y.is_finite() && (0.0..=1.0).contains(&s.position_y))) {
+        return Err(RustlerError::new(ErrorCode::Validation, "captions", format!("invalid caption position_y {}", s.position_y))
+            .hint("a position is 0 (top) .. 1 (bottom)"));
+    }
+    let paints = match looks {
+        WordLooks::Plain => None,
+        WordLooks::Colors(c) => Some(parse_colors(c)?),
+        WordLooks::Paints(p) => Some(parse_paints(p)?),
+    };
+    write_ass_impl(words, paints.as_deref(), track, canvas, font_family, custom, positions)
+}
+
+/// ASS MarginV (pixels above the bottom edge) of a caption baseline at `position_y`.
+fn margin_of(canvas: &Canvas, position_y: f64) -> u32 {
+    (f64::from(canvas.height) * (1.0 - position_y)).round().max(0.0) as u32
 }
 
 /// Parsed per-word look: ASS colour and size factor.
@@ -188,6 +253,7 @@ fn write_ass_impl(
     canvas: &Canvas,
     font_family: &str,
     custom: &[Preset],
+    positions: &[PositionSpan],
 ) -> rustler_core::Result<String> {
     let p = find_preset_in(&track.preset, custom).ok_or_else(|| {
         let mut names: Vec<&str> = PRESETS.to_vec();
@@ -201,7 +267,7 @@ fn write_ass_impl(
     })?;
     let font = if font_family.trim().is_empty() { p.font_family } else { font_family.trim() };
     let size = (f64::from(canvas.width) * p.size_factor).round() as u32;
-    let margin_v = (f64::from(canvas.height) * (1.0 - track.position_y)).round().max(0.0) as u32;
+    let margin_v = margin_of(canvas, track.position_y);
 
     // Keyword presets: a word with its own colour and no explicit size gets the preset's keyword size.
     let keyword_paints: Option<Vec<Paint>> = (p.keyword_scale > 0.0).then(|| {
@@ -225,7 +291,13 @@ fn write_ass_impl(
     }
     out.push_str("\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n");
 
-    let chunks = chunk_words(words, track.max_words_per_line, MAX_GAP);
+    // Per-segment positions: the word's middle decides; a chunk never spans two positions.
+    let pos_of = |w: &CaptionWord| position_at(positions, (w.out_start + w.out_end) / 2.0, track.position_y);
+    let chunks = if positions.is_empty() {
+        chunk_words(words, track.max_words_per_line, MAX_GAP)
+    } else {
+        chunk_words_split(words, track.max_words_per_line, MAX_GAP, |a, b| (pos_of(a) - pos_of(b)).abs() > 1e-6)
+    };
     let blur = if p.blur > 0.0 { format!(r"\blur{}", p.blur) } else { String::new() };
     let reset = format!(r"{{\r{blur}}}");
     let lead = if blur.is_empty() { String::new() } else { format!("{{{blur}}}") };
@@ -235,6 +307,11 @@ fn write_ass_impl(
     for (ci, chunk) in chunks.iter().enumerate() {
         let chunk_base = base_index;
         base_index += chunk.len();
+        // Event MarginV: 0 = the style's (clip-wide position); else this chunk's own position.
+        let mv = match chunk.first().map(pos_of) {
+            Some(y) if (y - track.position_y).abs() > 1e-6 => margin_of(canvas, y).max(1),
+            _ => 0,
+        };
         let paint_of = |j: usize| -> Paint { colors.and_then(|c| c.get(chunk_base + j)).copied().unwrap_or_default() };
         // Word j at its own size only (hidden layers keep the same line layout).
         let sized = |j: usize, d: &str| -> String {
@@ -282,8 +359,7 @@ fn write_ass_impl(
                 .collect::<Vec<_>>()
                 .join(" ");
             if !line.is_empty() {
-                out.push_str(&format!("Dialogue: 0,{},{},Default,,0,0,0,,{lead}{line}
-", ass_time(start), ass_time(end)));
+                out.push_str(&format!("Dialogue: 0,{},{},Default,,0,0,{mv},,{lead}{line}\n", ass_time(start), ass_time(end)));
             }
             continue;
         }
@@ -309,7 +385,7 @@ fn write_ass_impl(
             };
             let ac = tag_colour(p.active_colour);
             let mut ev = |layer: u8, style: &str, text: String| {
-                out.push_str(&format!("Dialogue: {layer},{s},{e},{style},,0,0,0,,{text}\n"));
+                out.push_str(&format!("Dialogue: {layer},{s},{e},{style},,0,0,{mv},,{text}\n"));
             };
             match p.active {
                 ActiveStyle::Static => unreachable!("static captions are written per chunk above"),

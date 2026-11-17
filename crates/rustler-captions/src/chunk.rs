@@ -58,6 +58,17 @@ pub fn join_fragments(words: Vec<CaptionWord>, join_gap: f64) -> Vec<CaptionWord
 /// New chunk at `max_words`, a gap > `max_gap` (typically 0.6 s), or sentence-final punctuation.
 /// Marker tokens with no readable characters (`>>`, `-`) are left out.
 pub fn chunk_words(words: &[CaptionWord], max_words: u32, max_gap: f64) -> Vec<Vec<CaptionWord>> {
+    chunk_words_split(words, max_words, max_gap, |_, _| false)
+}
+
+/// [`chunk_words`] that also starts a new chunk wherever `apart(prev, word)` is true (per-segment
+/// caption positions: a chunk never spans two positions).
+pub fn chunk_words_split(
+    words: &[CaptionWord],
+    max_words: u32,
+    max_gap: f64,
+    apart: impl Fn(&CaptionWord, &CaptionWord) -> bool,
+) -> Vec<Vec<CaptionWord>> {
     let max_words = max_words.max(1) as usize;
     let mut out: Vec<Vec<CaptionWord>> = Vec::new();
     let mut cur: Vec<CaptionWord> = Vec::new();
@@ -65,7 +76,8 @@ pub fn chunk_words(words: &[CaptionWord], max_words: u32, max_gap: f64) -> Vec<V
         if let Some(prev) = cur.last() {
             let split = cur.len() >= max_words
                 || w.out_start - prev.out_end > max_gap
-                || ends_sentence(&prev.text);
+                || ends_sentence(&prev.text)
+                || apart(prev, w);
             if split {
                 out.push(std::mem::take(&mut cur));
             }
