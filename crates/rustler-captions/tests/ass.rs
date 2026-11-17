@@ -219,3 +219,72 @@ fn render_preset_frames_with_real_ffmpeg() {
     }
     eprintln!("frames written to {}", dir.display());
 }
+
+// ---------------------------------------------------------------------------------------------
+// Per-segment caption positions
+// ---------------------------------------------------------------------------------------------
+
+fn margin_v(dialogue: &str) -> u32 {
+    // Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+    dialogue.trim_start_matches("Dialogue: ").split(',').nth(7).unwrap().parse().unwrap()
+}
+
+#[test]
+fn per_segment_positions_split_chunks_and_set_event_margins() {
+    use rustler_captions::{PositionSpan, WordLooks, write_ass_placed};
+    // Words 0..3 in the first segment (0..1.5 s, clip-wide 0.70), words 3..6 in the second
+    // (1.5..3 s) at 0.19. Four words per line would otherwise put "hello big world this" together.
+    let t = CaptionTrack { max_words_per_line: 4, ..track("bold-karaoke") };
+    let spans = [PositionSpan { out_start: 1.5, out_end: 3.0, position_y: 0.19 }];
+    let plain = write_ass(&six(), &t, &Canvas::default(), "Anton").unwrap();
+    let ass = write_ass_placed(&six(), WordLooks::Plain, &t, &Canvas::default(), "Anton", &[], &spans).unwrap();
+    // The style keeps the clip-wide position.
+    assert!(ass.contains(",2,40,40,576,1"), "{ass}"); // round(1920 * 0.30)
+    let d = dialogues(&ass);
+    assert_eq!(d.len(), 6);
+    for (i, line) in d.iter().enumerate() {
+        let want = if i < 3 { 0 } else { (1920.0_f64 * 0.81).round() as u32 };
+        assert_eq!(margin_v(line), want, "event {i}: {line}");
+    }
+    // The chunk is split at the boundary: event 2 ("world", the last word of the first chunk)
+    // shows only the first three words, event 3 starts a new line with "THIS".
+    assert!(d[2].contains("WORLD") && !d[2].contains("THIS"), "{}", d[2]);
+    assert!(d[3].contains("THIS") && !d[3].contains("WORLD"), "{}", d[3]);
+    // Without the split the plain writer puts four words on the first line.
+    assert!(dialogues(&plain)[0].contains("THIS"));
+
+    // No spans: byte-identical to the plain writer; a span at the clip-wide position changes nothing.
+    assert_eq!(write_ass_placed(&six(), WordLooks::Plain, &t, &Canvas::default(), "Anton", &[], &[]).unwrap(), plain);
+    let same = [PositionSpan { out_start: 1.5, out_end: 3.0, position_y: 0.70 }];
+    let a = write_ass_placed(&six(), WordLooks::Plain, &t, &Canvas::default(), "Anton", &[], &same).unwrap();
+    assert!(dialogues(&a).iter().all(|l| margin_v(l) == 0), "{a}");
+    // An invalid position is a validation error.
+    let bad = [PositionSpan { out_start: 0.0, out_end: 1.0, position_y: 1.5 }];
+    let e = write_ass_placed(&six(), WordLooks::Plain, &t, &Canvas::default(), "", &[], &bad).unwrap_err();
+    assert_eq!(e.code, ErrorCode::Validation);
+}
+
+#[test]
+fn per_segment_positions_cover_every_layer_and_static_presets() {
+    use rustler_captions::{PositionSpan, WordLooks, WordPaint, write_ass_placed};
+    let spans = [PositionSpan { out_start: 0.0, out_end: 1.5, position_y: 0.40 }];
+    let mv = (1920.0_f64 * 0.60).round() as u32;
+    for name in PRESETS {
+        let ass = write_ass_placed(&six(), WordLooks::Plain, &track(name), &Canvas::default(), "", &[], &spans).unwrap();
+        let d = dialogues(&ass);
+        assert!(!d.is_empty(), "{name}");
+        // Every event that starts inside the span (box/pop layers included) is moved; later ones are not.
+        for line in &d {
+            let start = line.split(',').nth(1).unwrap();
+            let in_span = start < "0:00:01.50";
+            assert_eq!(margin_v(line), if in_span { mv } else { 0 }, "{name}: {line}");
+        }
+    }
+    // Speaker colours and keyword paints go through the same writer.
+    let colors = vec![Some("#FF0000".to_string()); 6];
+    let ass = write_ass_placed(&six(), WordLooks::Colors(&colors), &track("bold-karaoke"), &Canvas::default(), "", &[], &spans).unwrap();
+    assert!(ass.contains(r"\c&H000000FF&") && margin_v(dialogues(&ass)[0]) == mv, "{ass}");
+    let paints = vec![WordPaint { colour: None, scale: Some(1.3) }; 6];
+    let ass = write_ass_placed(&six(), WordLooks::Paints(&paints), &track("bold-karaoke"), &Canvas::default(), "", &[], &spans).unwrap();
+    assert!(ass.contains(r"\fscx130") && margin_v(dialogues(&ass)[0]) == mv, "{ass}");
+}

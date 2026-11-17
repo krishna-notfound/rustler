@@ -262,3 +262,200 @@ async fn clip_list_and_export_batch_rank_by_agent_then_retention_score() {
     assert_eq!(g["skipped"][0]["clip_id"], d.as_str());
     assert_eq!(g["order"], "given");
 }
+
+// ---------------------------------------------------------------------------------------------
+// Per-segment caption positions
+// ---------------------------------------------------------------------------------------------
+
+/// `(id, source start, source end)` of each segment.
+fn segments(store: &rustler_core::ProjectStore, id: &str) -> Vec<(String, f64, f64)> {
+    let c = store.load_clip(&id.parse::<ClipId>().unwrap()).unwrap();
+    c.segments.iter().map(|s| (s.id.to_string(), s.start, s.end)).collect()
+}
+
+#[tokio::test]
+async fn segment_caption_position_set_undo_follows_recuts_and_shows_in_the_timeline() {
+    let (proj, store, ctx) = new_project();
+    let media = proj.path().join("v.mp4");
+    std::fs::write(&media, b"x").unwrap();
+    let src = add_source(&store, &media, probe_1080p(10.0, true, true));
+    write_transcript(&store, &src.id, sample_words());
+    let reg = registry();
+    let id = clip_on(&reg, &ctx, &src, "seg", "center-crop").await;
+    call(&reg, &ctx, "edit.split", json!({"clip_id": id, "out_t": 2.0})).await.unwrap();
+    let s = segments(&store, &id);
+    assert_eq!(s.len(), 2);
+    let (a, b) = (s[0].0.clone(), s[1].0.clone());
+
+    // Validation: only position_y with a segment, a real segment, a value in 0..1.
+    let e = call(&reg, &ctx, "caption.set", json!({"clip_id": id, "segment_id": b, "style": "hormozi-pop", "position_y": 0.3})).await.unwrap_err();
+    assert_eq!(e.code, ErrorCode::Validation);
+    let e = call(&reg, &ctx, "caption.set", json!({"clip_id": id, "segment_id": b})).await.unwrap_err();
+    assert_eq!(e.code, ErrorCode::Validation);
+    let e = call(&reg, &ctx, "caption.set", json!({"clip_id": id, "segment_id": "seg_nope", "position_y": 0.3})).await.unwrap_err();
+    assert_eq!(e.code, ErrorCode::NotFound, "{e:?}");
+    let e = call(&reg, &ctx, "caption.set", json!({"clip_id": id, "segment_id": b, "position_y": 1.3})).await.unwrap_err();
+    assert_eq!(e.code, ErrorCode::Validation);
+
+    // Set: one new revision, the clip-wide position untouched.
+    let r0 = revision(&store, &id);
+    let out = call(&reg, &ctx, "caption.set", json!({"clip_id": id, "segment_id": b, "position_y": 0.3})).await.unwrap();
+    assert_eq!(revision(&store, &id), r0 + 1);
+    assert_eq!(out["captions"]["position_y"], 0.7, "{out}");
+    assert_eq!(extras(&store, &id)["caption_positions"], json!({b.as_str(): 0.3}));
+    // The same value again is a no-op.
+    call(&reg, &ctx, "caption.set", json!({"clip_id": id, "segment_id": b, "position_y": 0.3})).await.unwrap();
+    assert_eq!(revision(&store, &id), r0 + 1);
+    // A clip-wide change keeps it and says so.
+    let w = call(&reg, &ctx, "caption.set", json!({"clip_id": id, "position_y": 0.66})).await.unwrap();
+    assert!(w["warnings"].to_string().contains("keep their own caption position"), "{w}");
+    assert_eq!(extras(&store, &id)["caption_positions"][b.as_str()], 0.3);
+
+    // The timeline document carries it in tracks.extra; a bad value there is refused.
+    let t = call(&reg, &ctx, "timeline.show", json!({"clip_id": id})).await.unwrap();
+    assert_eq!(t["document"]["tracks"]["extra"]["caption_positions"][b.as_str()], 0.3, "{}", t["document"]["tracks"]);
+    let rev = t["revision"].as_u64().unwrap();
+    let bad = json!([{"op": "replace", "path": format!("/tracks/extra/caption_positions/{b}"), "value": 2.0}]);
+    let e = call(&reg, &ctx, "timeline.apply", json!({"clip_id": id, "base_revision": rev, "patch": bad})).await.unwrap_err();
+    assert!(e.message.contains("caption_positions"), "{e:?}");
+
+    // Undo the clip-wide change, then the segment position: exactly one step each.
+    call(&reg, &ctx, "history.undo", json!({"clip_id": id})).await.unwrap();
+    assert_eq!(extras(&store, &id)["caption_positions"][b.as_str()], 0.3);
+    call(&reg, &ctx, "history.undo", json!({"clip_id": id})).await.unwrap();
+    assert!(extras(&store, &id).get("caption_positions").is_none(), "{}", extras(&store, &id));
+    let c = store.load_clip(&id.parse::<ClipId>().unwrap()).unwrap();
+    assert_eq!(c.captions.position_y, 0.7);
+
+    // Clear: back to the clip-wide position, its own revision.
+    call(&reg, &ctx, "caption.set", json!({"clip_id": id, "segment_id": b, "position_y": 0.25})).await.unwrap();
+    call(&reg, &ctx, "caption.set", json!({"clip_id": id, "segment_id": a, "position_y": 0.4})).await.unwrap();
+    call(&reg, &ctx, "caption.set", json!({"clip_id": id, "segment_id": a, "clear_segment_position": true})).await.unwrap();
+    assert_eq!(extras(&store, &id)["caption_positions"], json!({b.as_str(): 0.25}));
+
+    // A re-cut segment keeps its picture's position: both halves of b inherit 0.25.
+    call(&reg, &ctx, "edit.split", json!({"clip_id": id, "out_t": 4.0})).await.unwrap();
+    let s = segments(&store, &id);
+    assert_eq!(s.len(), 3);
+    let pos = extras(&store, &id)["caption_positions"].clone();
+    assert_eq!(pos.as_object().unwrap().len(), 2, "{pos}");
+    assert_eq!(pos[s[1].0.as_str()], 0.25);
+    assert_eq!(pos[s[2].0.as_str()], 0.25);
+    assert!(pos.get(s[0].0.as_str()).is_none());
+    // Deleting a segment with its own position drops it with a warning.
+    let d = call(&reg, &ctx, "edit.delete_segment", json!({"clip_id": id, "segment_id": s[2].0})).await.unwrap();
+    assert!(d["warnings"].to_string().contains("had its own caption position"), "{d}");
+    assert_eq!(extras(&store, &id)["caption_positions"], json!({s[1].0.as_str(): 0.25}));
+    call(&reg, &ctx, "history.undo", json!({"clip_id": id})).await.unwrap();
+    assert_eq!(extras(&store, &id)["caption_positions"][s[2].0.as_str()], 0.25, "undo brings it back");
+}
+
+#[tokio::test]
+async fn caption_place_apply_sets_per_segment_positions_when_segments_differ() {
+    let (proj, store, ctx) = new_project();
+    let media = proj.path().join("v.mp4");
+    std::fs::write(&media, b"x").unwrap();
+    let src = add_source(&store, &media, probe_1080p(10.0, true, true));
+    write_transcript(&store, &src.id, sample_words());
+    let reg = registry();
+    let id = clip_on(&reg, &ctx, &src, "two", "center-crop").await;
+    call(&reg, &ctx, "edit.split", json!({"clip_id": id, "out_t": 2.0})).await.unwrap();
+    let s = segments(&store, &id);
+    // Segment A: source text over the top 60 % (captions only fit low); segment B (longer): text
+    // over the bottom half (captions only fit high). No single position clears both.
+    let band = |y0: f64, y1: f64, a: f64, b: f64| json!({"kind": "subtitles", "y0": y0, "y1": y1, "x0": 0.0, "x1": 1.0, "presence": 0.9, "change": 0.6, "first_t": a, "last_t": b});
+    let cache = json!({"entries": [
+        {"start": s[0].1, "end": s[0].2, "every": 0.5, "frames": 4, "bands": [band(0.10, 0.60, s[0].1, s[0].2)]},
+        {"start": s[1].1, "end": s[1].2, "every": 0.5, "frames": 8, "bands": [band(0.45, 0.95, s[1].1, s[1].2)]},
+    ]});
+    store.write_json(&Path::new("analysis").join(src.id.as_str()).join("text_bands.json"), &cache).unwrap();
+    let r0 = revision(&store, &id);
+
+    let p = call(&reg, &ctx, "caption.place", json!({"clip_id": id, "faces": false})).await.unwrap();
+    let y = p["suggested_position_y"].as_f64().unwrap();
+    assert!(y <= 0.38, "the longer segment B wins the clip-wide spot: {y}");
+    let plan = p["suggested_segment_positions"].as_object().unwrap().clone();
+    assert_eq!(plan.keys().collect::<Vec<_>>(), [&s[0].0], "{p}");
+    let own = plan[&s[0].0].as_f64().unwrap();
+    assert!(own >= 0.71, "segment A gets a low spot of its own: {own}");
+    assert!(p["remaining_conflicts"].as_array().unwrap().is_empty(), "{p}");
+    assert_eq!(p["strategy"], "clip-wide");
+    // The --per-segment alternative keeps 0.70 clip-wide: both segments need their own spot.
+    assert_eq!(p["per_segment_positions"].as_object().unwrap().len(), 2, "{p}");
+    assert!(p["next"].to_string().contains(&format!("--segment-id {}", s[0].0)), "{p}");
+    assert_eq!(revision(&store, &id), r0, "measuring changes nothing");
+    assert!(extras(&store, &id).get("caption_positions").is_none());
+
+    // --apply: clip-wide + per-segment as ONE revision; measuring again finds nothing to change.
+    let a = call(&reg, &ctx, "caption.place", json!({"clip_id": id, "faces": false, "apply": true})).await.unwrap();
+    assert_eq!(a["applied"], true);
+    assert_eq!(revision(&store, &id), r0 + 1);
+    assert_eq!(extras(&store, &id)["caption_positions"], json!({s[0].0.as_str(): own}));
+    let c = store.load_clip(&id.parse::<ClipId>().unwrap()).unwrap();
+    assert!((c.captions.position_y - y).abs() < 1e-9);
+    let again = call(&reg, &ctx, "caption.place", json!({"clip_id": id, "faces": false})).await.unwrap();
+    assert_eq!(again["current_ok"], true, "{again}");
+    assert_eq!(again["segments"][0]["current_y"], own);
+
+    // QC's check judges each segment at its own position.
+    let spans: Vec<rustler_media::qc::SourceTextSpan> = again["segments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|g| {
+            let t = &g["source_text"][0];
+            rustler_media::qc::SourceTextSpan {
+                segment_id: g["segment_id"].as_str().unwrap().into(),
+                out_start: g["out_start"].as_f64().unwrap(),
+                out_end: g["out_end"].as_f64().unwrap(),
+                y0: t["y0"].as_f64().unwrap(),
+                y1: t["y1"].as_f64().unwrap(),
+            }
+        })
+        .collect();
+    let positions = vec![rustler_media::qc::CaptionPosition { segment_id: s[0].0.clone(), out_start: 0.0, out_end: 2.0, position_y: own }];
+    let ex = rustler_media::qc::QcExtras { source_text: Some(Ok(spans.clone())), caption_positions: positions, ..Default::default() };
+    assert_eq!(rustler_media::qc::source_text_check(&c, &ex).unwrap().status, rustler_core::QcStatus::Pass);
+    let ex = rustler_media::qc::QcExtras { source_text: Some(Ok(spans)), ..Default::default() };
+    assert_eq!(rustler_media::qc::source_text_check(&c, &ex).unwrap().status, rustler_core::QcStatus::Warn, "one position for both is wrong");
+
+    // One undo puts both back.
+    call(&reg, &ctx, "history.undo", json!({"clip_id": id})).await.unwrap();
+    assert!(extras(&store, &id).get("caption_positions").is_none(), "{}", extras(&store, &id));
+    assert_eq!(store.load_clip(&id.parse::<ClipId>().unwrap()).unwrap().captions.position_y, 0.7);
+}
+
+#[tokio::test]
+async fn render_moves_captions_of_a_segment_with_its_own_position() {
+    let Some((_tmp, home)) = tools_home() else { return };
+    let (proj, store, mut ctx) = new_project();
+    ctx.home = home.clone();
+    let paths = rustler_tools::ToolPaths::from_home(&home);
+    let video = proj.path().join("v.mp4");
+    make_video(&ffmpeg_in(&home), &video, 10, 1920, 1080, true);
+    let probe = rustler_media::probe(&paths, &video).await.unwrap();
+    let src = add_source(&store, &video, probe);
+    write_transcript(&store, &src.id, sample_words());
+    let reg = registry();
+    let id = clip_on(&reg, &ctx, &src, "r", "center-crop").await;
+    call(&reg, &ctx, "edit.split", json!({"clip_id": id, "out_t": 2.0})).await.unwrap();
+    let s = segments(&store, &id);
+    call(&reg, &ctx, "caption.set", json!({"clip_id": id, "segment_id": s[1].0, "position_y": 0.25})).await.unwrap();
+    let r = call(&reg, &ctx, "render.run", json!({"clip_id": id, "quality": "draft", "prefer_gpu": false})).await.unwrap();
+    let work = Path::new(r["path"].as_str().unwrap()).with_extension("");
+    let ass = std::fs::read_to_string(work.join("captions.ass")).unwrap();
+    let mv = |l: &str| -> u32 { l.trim_start_matches("Dialogue: ").split(',').nth(7).unwrap().parse().unwrap() };
+    let start = |l: &str| -> String { l.split(',').nth(1).unwrap().to_string() };
+    let d: Vec<&str> = ass.lines().filter(|l| l.starts_with("Dialogue:")).collect();
+    assert!(!d.is_empty(), "{ass}");
+    // Words before 2.0 s (segment 1) use the style's margin; later ones sit at 0.25.
+    let own = (1920.0_f64 * 0.75).round() as u32;
+    for l in &d {
+        let want = if start(l).as_str() < "0:00:02.00" { 0 } else { own };
+        assert_eq!(mv(l), want, "{l}");
+    }
+    assert!(d.iter().any(|l| mv(l) == own) && d.iter().any(|l| mv(l) == 0), "{ass}");
+    // A preview frame of the moved segment renders too.
+    let pf = call(&reg, &ctx, "render.preview_frame", json!({"clip_id": id, "out_t": 3.0})).await.unwrap();
+    assert!(Path::new(pf["image"].as_str().unwrap()).is_file());
+}

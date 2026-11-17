@@ -12,8 +12,10 @@
 //! Then it scores every caption baseline `position_y` 0.10..0.85 (the platform safe zone) per
 //! segment and over the clip (weighted by segment length) and suggests the best one. Nothing
 //! changes unless the agent passes `--apply true` (then one new clip revision; `history undo`).
-//! Captions are one clip-wide position (the frozen caption model), so segments whose own best
-//! position differs are listed with what still collides there.
+//! The clip-wide position lives in the frozen caption model; a segment that needs a different
+//! spot gets its own position in extras `caption_positions` ([`POSITIONS_KEY`], set by
+//! `caption set --segment-id` or `--apply true`), which the ASS writer, QC and timeline edits
+//! (re-cut segments inherit it) honour.
 //!
 //! [`subtitle_spans`] gives QC (`caption_over_source_text`) the same subtitle bands.
 
@@ -51,6 +53,118 @@ fn r2(x: f64) -> f64 {
 
 fn r3(x: f64) -> f64 {
     (x * 1000.0).round() / 1000.0 + 0.0
+}
+
+// ---------------------------------------------------------------------------------------------
+// Per-segment caption positions (extras `caption_positions`)
+// ---------------------------------------------------------------------------------------------
+
+/// extras key: a segment's own caption baseline, `{segment_id: position_y}`. Segments not listed
+/// use the clip-wide `captions.position_y` (the frozen `Clip` model has one per clip).
+pub const POSITIONS_KEY: &str = "caption_positions";
+
+/// `{segment_id: position_y}`.
+pub type SegmentPositions = BTreeMap<String, f64>;
+
+/// The stored per-segment positions (empty when none).
+pub fn load_positions(store: &ProjectStore, clip: &ClipId) -> Result<SegmentPositions> {
+    Ok(crate::extras::get(store, clip, POSITIONS_KEY)?.unwrap_or_default())
+}
+
+/// Edit-timeline spans `(segment id, out_start, out_end, position_y)` of the clip's segments
+/// whose own position differs from the clip-wide one (ids no longer in the clip are ignored).
+pub fn position_spans(clip: &Clip, positions: &SegmentPositions) -> Vec<(String, f64, f64, f64)> {
+    if positions.is_empty() {
+        return Vec::new();
+    }
+    let tm = TimeMap::from_segments(&clip.segments);
+    clip.segments
+        .iter()
+        .zip(tm.segments())
+        .filter_map(|(seg, m)| {
+            let y = *positions.get(seg.id.as_str())?;
+            ((y - clip.captions.position_y).abs() > 1e-6).then(|| (seg.id.to_string(), m.out_start, m.out_end, y))
+        })
+        .collect()
+}
+
+/// Spans of [`position_spans`] moved onto the rendered timeline (transitions, speed, freezes),
+/// for the ASS writer.
+pub fn ass_position_spans(clip: &Clip, positions: &SegmentPositions, tmap: &rustler_media::compile::TransitionMap) -> Vec<rustler_captions::PositionSpan> {
+    position_spans(clip, positions)
+        .into_iter()
+        .map(|(_, a, b, y)| rustler_captions::PositionSpan { out_start: tmap.map_time(a), out_end: tmap.map_time(b), position_y: y })
+        .filter(|s| s.out_end > s.out_start)
+        .collect()
+}
+
+/// Keeps per-segment caption positions on their picture after a timeline edit that re-cuts
+/// segments (split, remove-pauses, remove-words: new ids): a new id without a position gets the
+/// one of the old segment it overlaps most (same source), like grade overrides and crop paths.
+/// Positions of segments that are gone with no successor are dropped with a warning (the edit's
+/// history snapshot keeps them for `history undo`).
+pub fn carry_caption_positions(store: &ProjectStore, old: &Clip, new: &Clip) -> Result<Vec<String>> {
+    let mut warnings = Vec::new();
+    let pos = load_positions(store, &new.id)?;
+    if pos.is_empty() {
+        return Ok(warnings);
+    }
+    let mut out = pos.clone();
+    out.retain(|k, _| new.segments.iter().any(|s| s.id.as_str() == k.as_str()));
+    let mut inherited: Vec<&str> = Vec::new();
+    for seg in &new.segments {
+        if out.contains_key(seg.id.as_str()) || old.segments.iter().any(|o| o.id == seg.id) {
+            continue;
+        }
+        let overlap = |o: &Segment| (o.end.min(seg.end) - o.start.max(seg.start)).max(0.0);
+        if let Some(o) = old
+            .segments
+            .iter()
+            .filter(|o| o.source_id == seg.source_id && pos.contains_key(o.id.as_str()) && overlap(o) > 0.0)
+            .max_by(|a, b| overlap(a).total_cmp(&overlap(b)))
+        {
+            out.insert(seg.id.to_string(), pos[o.id.as_str()]);
+            inherited.push(o.id.as_str());
+        }
+    }
+    for (id, y) in &pos {
+        let was_in_old = old.segments.iter().any(|o| o.id.as_str() == id.as_str());
+        if was_in_old && !out.contains_key(id) && !inherited.contains(&id.as_str()) {
+            warnings.push(format!(
+                "segment {id} had its own caption position {y:.2}; the segment is gone, so that position was dropped (`rustler history undo {}` brings it back)",
+                new.id
+            ));
+        }
+    }
+    if out != pos {
+        let v = if out.is_empty() { None } else { Some(serde_json::to_value(&out).map_err(|e| RustlerError::new(ErrorCode::Internal, STAGE, e.to_string()))?) };
+        crate::extras::update(store, &new.id, POSITIONS_KEY, |_| Ok(v))?;
+    }
+    Ok(warnings)
+}
+
+/// Sets (`Some`) or removes (`None`) one segment's own caption position as one new clip
+/// revision (`history undo` reverts exactly this). Returns the new revision, `None` when nothing
+/// changed.
+pub fn set_segment_position(store: &ProjectStore, clip: &Clip, segment: &str, y: Option<f64>) -> Result<Option<u64>> {
+    crate::extras::update_revision(store, &clip.id, POSITIONS_KEY, |cur| {
+        let mut m: SegmentPositions = match cur {
+            None | Some(serde_json::Value::Null) => SegmentPositions::new(),
+            Some(v) => serde_json::from_value(v).map_err(|e| {
+                RustlerError::new(ErrorCode::Internal, STAGE, format!("extras.json key '{POSITIONS_KEY}' is invalid: {e}"))
+                    .hint(format!("fix or remove '{POSITIONS_KEY}' in clips/<clip_id>/extras.json"))
+            })?,
+        };
+        match y {
+            Some(y) => {
+                m.insert(segment.to_string(), r3(y));
+            }
+            None => {
+                m.remove(segment);
+            }
+        }
+        Ok((!m.is_empty()).then(|| json!(m)))
+    })
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -427,10 +541,21 @@ pub struct SegPlace {
     pub safe_ranges: Vec<[f64; 2]>,
     /// Best position_y for this segment alone.
     pub best_y: f64,
+    /// The position the captions use here now: the segment's own (`caption set --segment-id`),
+    /// else the clip-wide one.
+    pub current_y: f64,
     /// What the current position covers here (empty = fine).
     pub at_current: Vec<String>,
-    /// What the suggested position covers here (empty = fine).
+    /// What the suggested clip-wide position covers here (empty = fine).
     pub at_suggested: Vec<String>,
+    /// What this segment's own best position still covers (empty = fine).
+    pub at_best: Vec<String>,
+}
+
+/// True when a list of [`describe`] findings holds a real blocker (subtitles or a face), not only
+/// static text.
+fn blocked(found: &[String]) -> bool {
+    found.iter().any(|c| !c.starts_with("touches static"))
 }
 
 pub(crate) struct Measured {
@@ -520,8 +645,10 @@ pub(crate) async fn measure(ctx: &Ctx, store: &ProjectStore, paths: &ToolPaths, 
             source_text: text,
             faces: face,
             best_y: 0.0,
+            current_y: clip.captions.position_y,
             at_current: Vec::new(),
             at_suggested: Vec::new(),
+            at_best: Vec::new(),
         });
     }
     if let Some(e) = engine {
@@ -538,7 +665,7 @@ pub(crate) async fn measure(ctx: &Ctx, store: &ProjectStore, paths: &ToolPaths, 
 }
 
 /// Picks the clip-wide position_y (weighted by segment length) and fills each segment's best y
-/// and collisions. Returns the suggestion.
+/// and collisions (`at_current` at the segment's own `current_y`). Returns the suggestion.
 fn decide(segs: &mut [SegPlace], current: f64) -> f64 {
     let cands = candidates();
     let mut best = (f64::MAX, current);
@@ -561,10 +688,37 @@ fn decide(segs: &mut [SegPlace], current: f64) -> f64 {
             }
         }
         s.best_y = b.1;
-        s.at_current = describe(hits_at(current, &s.source_text, &s.faces));
+        s.at_current = describe(hits_at(s.current_y, &s.source_text, &s.faces));
         s.at_suggested = describe(hits_at(y, &s.source_text, &s.faces));
+        s.at_best = describe(hits_at(s.best_y, &s.source_text, &s.faces));
     }
     y
+}
+
+/// Per-segment positions that go with the clip-wide `suggested` one: every segment the
+/// suggestion still leaves on subtitles or a face gets its own best position when that position
+/// is clear of them (or at least of more of them). Empty when one position suits every segment.
+fn plan_segments(segs: &[SegPlace], suggested: f64) -> SegmentPositions {
+    segs.iter()
+        .filter(|s| needs_own(s, &s.at_suggested, suggested))
+        .map(|s| (s.segment_id.clone(), s.best_y))
+        .collect()
+}
+
+/// The `--per-segment` alternative: the clip-wide position stays at `current`; every segment it
+/// leaves on subtitles or a face gets its own best position.
+fn plan_keep_clip_wide(segs: &[SegPlace], current: f64) -> SegmentPositions {
+    segs.iter()
+        .filter(|s| needs_own(s, &describe(hits_at(current, &s.source_text, &s.faces)), current))
+        .map(|s| (s.segment_id.clone(), s.best_y))
+        .collect()
+}
+
+/// True when `at` (what position `y` covers in `s`) blocks and the segment's own best position
+/// is elsewhere and clears more.
+fn needs_own(s: &SegPlace, at: &[String], y: f64) -> bool {
+    let n = |f: &[String]| f.iter().filter(|c| !c.starts_with("touches static")).count();
+    blocked(at) && (s.best_y - y).abs() >= 0.005 && n(&s.at_best) < n(at)
 }
 
 /// Burned-in source subtitles on the canvas per output span, for QC's `caption_over_source_text`.
@@ -595,14 +749,18 @@ pub(crate) async fn subtitle_spans(store: &ProjectStore, paths: &ToolPaths, clip
 #[serde(deny_unknown_fields)]
 pub struct PlaceIn {
     pub clip_id: ClipId,
-    /// Set the suggested position_y on the clip (one new revision, `history undo` reverts it).
-    /// Default false: measure and suggest only.
+    /// Set the suggestion on the clip: the clip-wide position_y and, when segments need different
+    /// spots, each such segment's own position (replacing earlier per-segment positions). One new
+    /// revision, `history undo` reverts it. Default false: measure and suggest only.
     #[serde(default)]
     pub apply: bool,
     /// Seconds between scanned source frames (default 0.5; 0.2..5).
     pub every: Option<f64>,
     /// Measure faces too (faces.json, else the engine's faces.track). Default true.
     pub faces: Option<bool>,
+    /// Keep the clip-wide position and give only the segments it does not suit their own
+    /// position (`per_segment_positions`), instead of moving the clip-wide one. Default false.
+    pub per_segment: Option<bool>,
     /// With apply: fail with revision_conflict unless the clip is at this revision.
     pub base_revision: Option<u64>,
 }
@@ -615,9 +773,19 @@ pub struct PlaceOut {
     pub current_position_y: f64,
     /// Best clip-wide caption baseline (0 top .. 1 bottom) inside the safe zone 0.10..0.85.
     pub suggested_position_y: f64,
-    /// True when the current position covers no source subtitles and faces in <= 20 % of samples anywhere.
+    /// Segments that use their own caption position now (`caption set --segment-id`).
+    pub current_segment_positions: SegmentPositions,
+    /// Segments the clip-wide suggestion leaves on subtitles or a face, with their own better
+    /// position (`--apply true` sets them). Empty when one position suits every segment.
+    pub suggested_segment_positions: SegmentPositions,
+    /// The `--per-segment true` alternative: the clip-wide position stays, these segments get
+    /// their own (each one the current position leaves on subtitles or a face).
+    pub per_segment_positions: SegmentPositions,
+    /// The plan `--apply true` sets (or set): "clip-wide" or "per-segment".
+    pub strategy: String,
+    /// True when the current positions cover no source subtitles and faces in <= 20 % of samples anywhere.
     pub current_ok: bool,
-    /// What the suggestion still covers (segment: problem), when no single position clears everything.
+    /// What the suggestion (clip-wide + per segment) still covers (segment: problem).
     pub remaining_conflicts: Vec<String>,
     pub applied: bool,
     pub segments: Vec<SegPlace>,
@@ -646,11 +814,35 @@ async fn caption_place(ctx: Ctx, i: PlaceIn) -> Result<PlaceOut> {
     let mut segs = m.segments;
     let mut warnings = m.warnings;
     let current = clip.captions.position_y;
+    // Stored per-segment positions of segments still in the clip.
+    let mut current_seg = load_positions(&store, &clip.id)?;
+    current_seg.retain(|k, _| clip.segments.iter().any(|s| s.id.as_str() == k.as_str()));
+    for s in segs.iter_mut() {
+        s.current_y = current_seg.get(&s.segment_id).copied().unwrap_or(current);
+    }
     let suggested = decide(&mut segs, current);
-    let current_ok = segs.iter().all(|s| s.at_current.is_empty() || s.at_current.iter().all(|c| c.starts_with("touches static")));
+    let plan = plan_segments(&segs, suggested);
+    let keep = plan_keep_clip_wide(&segs, current);
+    let per_segment = i.per_segment.unwrap_or(false);
+    // What --apply sets: the clip-wide suggestion (+ segments it does not suit), or with
+    // --per-segment the current clip-wide position + its own position for each segment it does not suit.
+    let (wide, target) = if per_segment { (current, &keep) } else { (suggested, &plan) };
+    let current_ok = segs.iter().all(|s| !blocked(&s.at_current));
     let remaining: Vec<String> = segs
         .iter()
-        .flat_map(|s| s.at_suggested.iter().map(move |c| format!("{} ({:.1}-{:.1} s): {c}; its own best position is {:.2}", s.segment_id, s.out_start, s.out_end, s.best_y)))
+        .flat_map(|s| {
+            let (y, own) = match target.get(&s.segment_id) {
+                Some(y) => (*y, true),
+                None => (wide, false),
+            };
+            describe(hits_at(y, &s.source_text, &s.faces)).into_iter().map(move |c| {
+                if own {
+                    format!("{} ({:.1}-{:.1} s) at its own {y:.2}: {c}", s.segment_id, s.out_start, s.out_end)
+                } else {
+                    format!("{} ({:.1}-{:.1} s): {c}; its own best position is {:.2}", s.segment_id, s.out_start, s.out_end, s.best_y)
+                }
+            })
+        })
         .collect();
     if !clip.captions.enabled {
         warnings.push(format!("captions are off on this clip; the suggestion applies when you turn them on (`rustler caption set {} --enabled true`)", clip.id));
@@ -660,14 +852,31 @@ async fn caption_place(ctx: Ctx, i: PlaceIn) -> Result<PlaceOut> {
     }
     let mut revision = clip.revision;
     let mut applied = false;
-    let change = (suggested - current).abs() >= 0.005;
+    let wide_change = (wide - current).abs() >= 0.005;
+    let seg_change = *target != current_seg || load_positions(&store, &clip.id)?.len() != current_seg.len();
+    let change = wide_change || seg_change;
     if i.apply && change && !ctx.dry_run {
-        let mut c = clip.clone();
-        c.captions.position_y = suggested;
-        crate::extras::save_clip(&store, &mut c, clip.revision)?;
-        revision = c.revision;
+        let value = (!target.is_empty()).then(|| json!(target));
+        if wide_change {
+            // Clip-wide + per-segment positions as ONE revision: the sidecar of the superseded
+            // revision is snapshotted by save_clip, then the new positions are written.
+            let mut c = clip.clone();
+            c.captions.position_y = wide;
+            crate::extras::save_clip(&store, &mut c, clip.revision)?;
+            revision = c.revision;
+            if seg_change {
+                crate::extras::update(&store, &clip.id, POSITIONS_KEY, |_| Ok(value))?;
+            }
+        } else if let Some(r) = crate::extras::update_revision(&store, &clip.id, POSITIONS_KEY, |_| Ok(value))? {
+            revision = r;
+        }
         applied = true;
-        log_event(&ctx, &store, STAGE, json!({"clip_id": clip.id, "from": current, "position_y": suggested, "to_revision": revision}))?;
+        log_event(
+            &ctx,
+            &store,
+            STAGE,
+            json!({"clip_id": clip.id, "from": current, "position_y": wide, "segment_positions": target, "per_segment": per_segment, "to_revision": revision}),
+        )?;
     }
     // A frame worth looking at: the middle of the first segment with source text, else of the clip.
     let look = segs
@@ -675,15 +884,34 @@ async fn caption_place(ctx: Ctx, i: PlaceIn) -> Result<PlaceOut> {
         .find(|s| !s.source_text.is_empty())
         .or_else(|| segs.first())
         .map_or(0.5, |s| r2((s.out_start + s.out_end) / 2.0));
+    let mid_of = |seg: &str| segs.iter().find(|s| s.segment_id == seg).map(|s| r2((s.out_start + s.out_end) / 2.0));
     let mut next = Vec::new();
     if applied {
         next.push(format!("rustler render preview-frame {} --out-t {look:.2}", clip.id));
+        for seg in target.keys() {
+            if let Some(t) = mid_of(seg).filter(|t| (t - look).abs() > 0.005) {
+                next.push(format!("look at a segment with its own position: rustler render preview-frame {} --out-t {t:.2}", clip.id));
+            }
+        }
         next.push(format!("undo it: rustler history undo {}", clip.id));
     } else if change {
-        next.push(format!("rustler caption place {} --apply true", clip.id));
-        next.push(format!("or set it yourself: rustler caption set {} --position-y {suggested:.2}", clip.id));
+        let flag = if per_segment { " --per-segment true" } else { "" };
+        next.push(format!("rustler caption place {}{flag} --apply true", clip.id));
+        if wide_change {
+            next.push(format!("or set it yourself: rustler caption set {} --position-y {wide:.2}", clip.id));
+        }
+        for (seg, y) in target.iter() {
+            next.push(format!("and this segment's own position: rustler caption set {} --segment-id {seg} --position-y {y:.2}", clip.id));
+        }
     } else {
-        next.push(format!("the current position {current:.2} is already the best; look: rustler render preview-frame {} --out-t {look:.2}", clip.id));
+        next.push(format!("the current positions are already the best; look: rustler render preview-frame {} --out-t {look:.2}", clip.id));
+    }
+    if !per_segment && !keep.is_empty() && keep != plan {
+        next.push(format!(
+            "or keep the clip-wide {current:.2} and move only the {} segment(s) it does not suit: rustler caption place {} --per-segment true --apply true",
+            keep.len(),
+            clip.id
+        ));
     }
     if segs.iter().any(|s| s.source_text.iter().any(|t| t.kind == TextKind::Subtitles)) {
         next.push(format!(
@@ -697,6 +925,10 @@ async fn caption_place(ctx: Ctx, i: PlaceIn) -> Result<PlaceOut> {
         captions_enabled: clip.captions.enabled,
         current_position_y: current,
         suggested_position_y: suggested,
+        current_segment_positions: current_seg,
+        suggested_segment_positions: plan,
+        per_segment_positions: keep,
+        strategy: if per_segment { "per-segment".into() } else { "clip-wide".into() },
         current_ok,
         remaining_conflicts: remaining,
         applied,
@@ -710,12 +942,13 @@ async fn caption_place(ctx: Ctx, i: PlaceIn) -> Result<PlaceOut> {
 pub fn register(reg: &mut Registry) {
     reg.register(typed(
         "caption.place",
-        "Measure where captions can go: burned-in source subtitles/text and faces per segment on the canvas, then suggest a safe caption position_y (0.10-0.85) that avoids both; --apply true sets it (one undoable revision). Never changes anything without --apply",
+        "Measure where captions can go: burned-in source subtitles/text and faces per segment on the canvas, then suggest a safe caption position_y (0.10-0.85) that avoids both, plus a segment's own position where the segments need different spots (--per-segment true: keep the clip-wide position, move only the segments it does not suit); --apply true sets them (one undoable revision). Never changes anything without --apply",
         &["clip_id"],
         Annotations { long_running: true, ..Annotations::default() },
         vec![
             Example { description: "see where the captions can go", cli: "rustler caption place clp_X" },
             Example { description: "move them there", cli: "rustler caption place clp_X --apply true" },
+            Example { description: "keep the clip-wide spot, move only the shots it does not suit", cli: "rustler caption place clp_X --per-segment true --apply true" },
         ],
         caption_place,
     ));
@@ -760,8 +993,10 @@ mod tests {
             faces: FaceSpan { from: "test".into(), samples: 10, with_face: if faces.is_empty() { 0 } else { 10 }, top: None, bottom: None, per_sample },
             safe_ranges: Vec::new(),
             best_y: 0.0,
+            current_y: 0.70,
             at_current: Vec::new(),
             at_suggested: Vec::new(),
+            at_best: Vec::new(),
         }
     }
 
@@ -789,5 +1024,40 @@ mod tests {
         assert!(s[0].at_suggested.is_empty(), "the long segment is clear at {y}: {:?}", s[0].at_suggested);
         let r = safe_ranges(&s[0].source_text, &s[0].faces);
         assert!(r.iter().any(|r| y >= r[0] && y <= r[1]), "{r:?} {y}");
+    }
+
+    #[test]
+    fn a_segment_the_clip_wide_spot_leaves_blocked_gets_its_own_position() {
+        // Same conflict: the long segment's subtitles win the clip-wide spot, the short segment's
+        // face is covered there, so it gets its own (clear) position.
+        let mut s = vec![seg(vec![(TextKind::Subtitles, 0.75, 0.82)], vec![], 0.0, 10.0), seg(vec![], vec![(0.50, 0.66)], 10.0, 11.0)];
+        s[0].segment_id = "a".into();
+        s[1].segment_id = "b".into();
+        let y = decide(&mut s, 0.78);
+        assert!(!s[1].at_suggested.is_empty(), "the face is covered at {y}");
+        let plan = plan_segments(&s, y);
+        assert_eq!(plan.keys().collect::<Vec<_>>(), ["b"], "{plan:?}");
+        let own = plan["b"];
+        assert!(s[1].at_best.is_empty() && describe(hits_at(own, &s[1].source_text, &s[1].faces)).is_empty(), "{own}");
+        // Its own spot would put the long segment on its subtitles: per-segment is the only way.
+        assert!(!describe(hits_at(own, &s[0].source_text, &s[0].faces)).is_empty());
+
+        // One position suits both: no per-segment positions.
+        let mut free = vec![seg(vec![(TextKind::Subtitles, 0.60, 0.64)], vec![], 0.0, 5.0), seg(vec![], vec![(0.2, 0.4)], 5.0, 8.0)];
+        free[1].segment_id = "b".into();
+        let y = decide(&mut free, 0.70);
+        assert!(plan_segments(&free, y).is_empty());
+
+        // --per-segment: one position clears both, but keeping 0.70 and moving only the segment
+        // it does not suit is the alternative (the free segment keeps 0.70).
+        let keep = plan_keep_clip_wide(&free, 0.70);
+        assert_eq!(keep.keys().collect::<Vec<_>>(), ["s"], "{keep:?}");
+        assert!(describe(hits_at(keep["s"], &free[0].source_text, &free[0].faces)).is_empty());
+        assert!(plan_keep_clip_wide(&[seg(vec![], vec![(0.2, 0.4)], 0.0, 3.0)], 0.70).is_empty(), "nothing in the way: nothing moves");
+
+        // `at_current` is judged at each segment's own current position.
+        s[1].current_y = own;
+        decide(&mut s, 0.78);
+        assert!(s[1].at_current.is_empty(), "{:?}", s[1].at_current);
     }
 }

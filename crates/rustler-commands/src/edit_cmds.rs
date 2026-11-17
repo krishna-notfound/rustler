@@ -320,6 +320,11 @@ fn finish(
     extras.warnings.extend(crate::extras::carry_crop_paths(store, old, &new)?);
     // Per-segment colour grades follow their picture onto re-cut segments too.
     crate::grade_cmds::carry_segment_grades(store, old, &new)?;
+    // A segment's own caption position too (dropped with a warning when its segment is gone);
+    // history undo/restore puts the snapshot's positions back instead.
+    if !kind.starts_with("history.") {
+        extras.warnings.extend(crate::caption_place_cmds::carry_caption_positions(store, old, &new)?);
+    }
     store.append_event(&Event {
         ts: Utc::now(),
         actor: ctx.actor,

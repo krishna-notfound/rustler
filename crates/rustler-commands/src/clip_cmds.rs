@@ -672,11 +672,19 @@ pub struct SetCaptionsIn {
     pub max_words_per_line: Option<u32>,
     /// latin | devanagari | as_transcribed
     pub script: Option<CaptionScript>,
+    /// With position_y: only this segment's captions move there (its own position, stored in
+    /// extras `caption_positions`; the clip-wide position stays). One undoable revision.
+    pub segment_id: Option<SegmentId>,
+    /// With segment_id: remove that segment's own position (it uses the clip-wide one again).
+    pub clear_segment_position: Option<bool>,
     pub base_revision: Option<u64>,
 }
 
 async fn clip_set_captions(ctx: Ctx, i: SetCaptionsIn) -> Result<ClipView> {
-    mutate_clip(&ctx, &i.clip_id, i.base_revision, "clip.set_captions", |_, clip| {
+    if i.segment_id.is_some() || i.clear_segment_position.is_some() {
+        return set_segment_caption_position(&ctx, i);
+    }
+    let mut out = mutate_clip(&ctx, &i.clip_id, i.base_revision, "clip.set_captions", |_, clip| {
         if let Some(style) = &i.style {
             crate::asset_cmds::check_caption_style(&ctx, "clip.set_captions", style)?;
             clip.captions.preset = style.clone();
@@ -700,7 +708,86 @@ async fn clip_set_captions(ctx: Ctx, i: SetCaptionsIn) -> Result<ClipView> {
             clip.captions.enabled = e;
         }
         Ok(Vec::new())
-    })
+    })?;
+    if i.position_y.is_some() {
+        let store = ctx.store()?;
+        let own = crate::caption_place_cmds::position_spans(&out.clip, &crate::caption_place_cmds::load_positions(&store, &out.clip.id)?);
+        if !own.is_empty() {
+            out.warnings.push(format!(
+                "{} segment(s) keep their own caption position ({}); clear one with: rustler caption set {} --segment-id <id> --clear-segment-position true",
+                own.len(),
+                own.iter().map(|(s, _, _, y)| format!("{s}: {y:.2}")).collect::<Vec<_>>().join(", "),
+                out.clip.id
+            ));
+        }
+    }
+    Ok(out)
+}
+
+/// `caption set --segment-id S --position-y Y` / `--clear-segment-position true`: one segment's
+/// own caption position, as one new revision (a layer write through `extras::update_revision`).
+fn set_segment_caption_position(ctx: &Ctx, i: SetCaptionsIn) -> Result<ClipView> {
+    const STAGE: &str = "caption.set";
+    let Some(seg) = i.segment_id.as_ref() else {
+        return Err(validation(STAGE, "clear_segment_position needs segment_id"));
+    };
+    if i.enabled.is_some() || i.style.is_some() || i.max_words_per_line.is_some() || i.script.is_some() {
+        return Err(validation(STAGE, "with segment_id only position_y (or clear_segment_position) can be set; the other caption settings are clip-wide")
+            .hint("run `rustler caption set <clip_id> ...` without --segment-id for clip-wide settings"));
+    }
+    let clear = i.clear_segment_position.unwrap_or(false);
+    let y = match (i.position_y, clear) {
+        (Some(_), true) => return Err(validation(STAGE, "give either position_y or clear_segment_position true, not both")),
+        (None, false) => return Err(validation(STAGE, "segment_id needs position_y (or clear_segment_position true)")),
+        (Some(y), false) => {
+            if !(0.0..=1.0).contains(&y) {
+                return Err(validation(STAGE, "position_y must be between 0 and 1"));
+            }
+            Some(y)
+        }
+        (None, true) => None,
+    };
+    let store = ctx.store()?;
+    let clip = store.load_clip(&i.clip_id)?;
+    if let Some(b) = i.base_revision
+        && b != clip.revision
+    {
+        return Err(RustlerError::new(ErrorCode::RevisionConflict, STAGE, format!("clip {} is at revision {} but base_revision was {b}", clip.id, clip.revision))
+            .hint("reload the clip (`rustler clip show <clip_id>`) and retry with its revision"));
+    }
+    if !clip.segments.iter().any(|s| &s.id == seg) {
+        return Err(RustlerError::new(ErrorCode::NotFound, STAGE, format!("clip {} has no segment {seg}", clip.id))
+            .hint(format!("list the segments: rustler clip show {}", clip.id)));
+    }
+    let mut warnings = Vec::new();
+    if let Some(y) = y
+        && !(rustler_media::qc::SAFE_ZONE_MIN_Y..=rustler_media::qc::SAFE_ZONE_MAX_Y).contains(&y)
+    {
+        warnings.push(format!(
+            "position_y {y:.2} is outside the platform safe zone {}..{}; QC will warn",
+            rustler_media::qc::SAFE_ZONE_MIN_Y,
+            rustler_media::qc::SAFE_ZONE_MAX_Y
+        ));
+    }
+    if ctx.dry_run {
+        return Ok(view(clip, true, Vec::new(), warnings));
+    }
+    let rev = crate::caption_place_cmds::set_segment_position(&store, &clip, seg.as_str(), y)?;
+    if rev.is_none() {
+        warnings.push("nothing changed (the segment already had that setting)".into());
+    } else {
+        log_event(ctx, &store, STAGE, serde_json::json!({"clip_id": clip.id, "segment_id": seg, "position_y": y, "revision": rev}))?;
+    }
+    let clip = store.load_clip(&i.clip_id)?;
+    let out_t = {
+        let tm = TimeMap::from_segments(&clip.segments);
+        clip.segments.iter().zip(tm.segments()).find(|(s, _)| &s.id == seg).map_or(0.0, |(_, m)| (m.out_start + m.out_end) / 2.0)
+    };
+    let next = vec![
+        format!("rustler render preview-frame {} --out-t {out_t:.2}", clip.id),
+        format!("undo it: rustler history undo {}", clip.id),
+    ];
+    Ok(view(clip, false, next, warnings))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1319,10 +1406,14 @@ pub fn register(reg: &mut Registry) {
     ));
     reg.register(typed(
         "caption.set",
-        "Change caption settings of a clip: enabled, style, position_y, max_words_per_line, script",
+        "Change caption settings of a clip: enabled, style, position_y, max_words_per_line, script; with --segment-id, position_y only for that segment (its own position, one undoable revision; --clear-segment-position true removes it)",
         &["clip_id"],
         WRITE,
-        vec![Example { description: "bigger-impact style, two words per line", cli: "rustler caption set clp_x --style hormozi-pop --max-words-per-line 2" }],
+        vec![
+            Example { description: "bigger-impact style, two words per line", cli: "rustler caption set clp_x --style hormozi-pop --max-words-per-line 2" },
+            Example { description: "captions of one segment higher (e.g. above the source's own subtitles)", cli: "rustler caption set clp_x --segment-id seg_x --position-y 0.19" },
+            Example { description: "that segment back to the clip-wide position", cli: "rustler caption set clp_x --segment-id seg_x --clear-segment-position true" },
+        ],
         clip_set_captions,
     ));
     reg.register(typed(

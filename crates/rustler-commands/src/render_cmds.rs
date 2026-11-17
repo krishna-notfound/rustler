@@ -153,10 +153,16 @@ async fn prepare(
             let fonts = stage_fonts(paths, store, &fonts_dir)?;
             let family = caption_font_family(clip.captions.script, &fonts);
             let custom = crate::asset_cmds::custom_presets(&paths.home, Some(&store.root));
-            let text = match &paints {
-                Some(p) => rustler_captions::write_ass_painted_with(&words, p, &clip.captions, &clip.canvas, family, &custom)?,
-                None => crate::speaker_cmds::write_captions_ass(&words, colors.as_deref(), clip, family, &custom)?,
+            // Segments with their own caption position (extras `caption_positions`), on the
+            // rendered timeline like the words.
+            let positions = crate::caption_place_cmds::load_positions(store, &clip.id)?;
+            let spans = crate::caption_place_cmds::ass_position_spans(clip, &positions, &tmap);
+            let looks = match (&paints, &colors) {
+                (Some(p), _) => rustler_captions::WordLooks::Paints(p),
+                (None, Some(c)) => rustler_captions::WordLooks::Colors(c),
+                (None, None) => rustler_captions::WordLooks::Plain,
             };
+            let text = rustler_captions::write_ass_placed(&words, looks, &clip.captions, &clip.canvas, family, &custom, &spans)?;
             let p = workdir.join("captions.ass");
             std::fs::write(&p, text).map_err(|e| io_err("write", &p, e))?;
             ass = Some(p);
